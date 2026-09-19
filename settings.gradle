@@ -12,5 +12,5 @@
           mavenCentral()
       }
   }
-  rootProject.name = "Assimp-Arris.Git.2026"
+  rootProject.name = "Assimp-Android-Lib.Git.2026"
   include ':'
