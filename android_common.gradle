@@ -1,0 +1,63 @@
+println "Root project:	${project.rootProject}";
+println "     rootDir:	${project.rootDir}"
+println "  projectDir:	${project.projectDir}";
+println "    user.dir:	${System.getProperty("user.dir")}";
+
+dependencies {
+	implementation fileTree(dir: 'libs', include: ['*.jar'])
+}
+
+android {
+	compileSdk 34
+	ndkVersion "26.2.11394342"
+
+	defaultConfig {
+		minSdk 21
+		targetSdk 34
+      externalNativeBuild {
+          if (!project.hasProperty(project.name + "ndkBuild") && !project.hasProperty("ndkBuild")) {
+              cmake {
+                  println "CMAKE Global Build CONFIG!!!!"
+                  abiFilters "arm64-v8a"
+                  arguments "-DANDROID_STL=c++_static"
+                  cFlags "-DUSE_FILE32API"
+              }
+          } else {
+              println "NDK Build CONFIG!!!!"
+          }
+      }
+	}
+
+	externalNativeBuild {
+		if (!project.hasProperty(project.name + "ndkBuild") && !project.hasProperty("ndkBuild")) {
+			cmake {
+				path "CMakeLists.txt"
+			}
+		} else {
+			ndkBuild {
+				path "Android.mk"
+			}
+		}
+	}
+
+	packaging {
+		jniLibs {
+			excludes += ["/lib/x86/*so", "/lib/armeabi-v7a/*.so"]
+			keepDebugSymbols += ['*/mips/*.so', '*/mips64/*.so']
+		}
+	}
+
+	lint {
+		abortOnError false
+		disable 'ExpiredTargetSdkVersion'
+	}
+
+	buildTypes {
+		debug {
+		}
+		release {
+			minifyEnabled false
+			shrinkResources false
+		}
+	}
+}
