@@ -22,13 +22,20 @@ jobs:
     - name: Check java version and PATH setting
       run: java --version
 
-    - name: Android SDK/Tools ZIP herunterladen
-      run: curl -L -o archive.zip https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
-
-    - name: ZIP entpacken
-      run: unzip archive.zip -d SDK
-
     - name: Grant execute permission for gradlew
       run: gradle wrapper 
-    - name: Build with Gradle
-      run: ./gradlew clean assembleRelease --info -Pandroid.native.buildOutput=verbose
+    - name: Build the lib with Gradle (generates an aar package ./build/outputs/aar/Assimp-Android-Lib.Git.2026-release.aar)
+      run: ./gradlew assembleRelease --info -Pandroid.native.buildOutput=verbose
+
+    - name: Check AAR exists
+      run: |
+        AAR=build/outputs/aar/Assimp-Android-Lib.Git.2026-release.aar
+        ls -la ./build/outputs/aar/ || true
+        test -f "$AAR"
+        test -s "$AAR"
+        echo "OK: $AAR ($(wc -c < "$AAR") bytes)"
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: assimp-release-aar
+        path: build/outputs/aar/Assimp-Android-Lib.Git.2026-release.aar
