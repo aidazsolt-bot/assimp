@@ -22,7 +22,7 @@ jobs:
     - name: Check java version and PATH setting
       run: java --version
 
-    - name Feth Android SDK
+    - name: Feth Android SDK
       uses: schmiddim/action-wget-unzip@v2
       with:
         url: 'https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip'
