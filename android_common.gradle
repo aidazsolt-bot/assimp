@@ -21,7 +21,7 @@ android {
                 // aktuelle NDK-ABI-Doku; armeabi/mips = seit r17 tot, Gradle baut standardmäßig alle non-deprecated ABIs 
                 //abiFilters "arm64-v8a"
                 //abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
-                arguments "-DANDROID_STL=c++_static", "-DASSIMP_ANDROID_JNIIOSYSTEM=ON", "-DASSIMP_BUILD_ZLIB=OFF", "-DASSIMP_NO_EXPORT=ON", "-DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF", "-DASSIMP_BUILD_OBJ_IMPORTER=ON"
+                arguments "-DANDROID_STL=c++_static", "-DASSIMP_ANDROID_JNIIOSYSTEM=OFF", "-DASSIMP_BUILD_ZLIB=OFF", "-DASSIMP_NO_EXPORT=ON", "-DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF", "-DASSIMP_BUILD_OBJ_IMPORTER=ON"
                 // arguments "-DASSIMP_ANDROID_JNIIOSYSTEM=ON", "-DASSIMP_BUILD_TESTS=OFF", "-DASSIMP_NO_EXPORT=TRUE", "-DASSIMP_BUILD_ZLIB=OFF", "-DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=FALSE", "-DASSIMP_BUILD_OBJ_IMPORTER=TRUE"
                 // ioapi.c / minizip: 64-bit fopen-Wrappers auf Android umgehen
                 // Alternativ als CMake-Flag:
