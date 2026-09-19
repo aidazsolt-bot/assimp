@@ -22,13 +22,21 @@ jobs:
     - name: Check java version and PATH setting
       run: java --version
 
+<<<<<<< HEAD
     - name: Feth Android SDK
       uses: schmiddim/action-wget-unzip@v2
       with:
         url: 'https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip'
         destination: SDK
+=======
+    - name: Android SDK/Tools ZIP herunterladen
+      run: curl -L -o archive.zip https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
+
+    - name: ZIP entpacken
+      run: unzip archive.zip -d SDK
+>>>>>>> 74dec37e5 (ci(android): download SDK with curl/unzip and verbose Gradle build)
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
     - name: Build with Gradle
-      run: ./gradlew build
+      run: ./gradlew clean assembleRelease --info -Pandroid.native.buildOutput=verbose
