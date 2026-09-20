@@ -1,0 +1,45 @@
+name: Android CI
+
+on:
+  push:
+    branches: [ "(buildtoolsupdate)-linux-android-2026" ]
+  pull_request:
+    branches: [ "(buildtoolsupdate)-linux-android-2026" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: set up JDK 21
+      uses: actions/setup-java@v6
+      with:
+        java-version: '21'
+        distribution: 'redhat'
+        cache: gradle
+    - name: Check java version and PATH setting
+      run: java --version
+
+    - name: Setup Gradle 9.7.1
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        gradle-version: '9.7.1' # Quotes required to prevent YAML converting to number
+    - name: Grant execute permission for gradlew
+      run: gradle wrapper 
+    - name: Build the lib with Gradle (generates an aar package ./build/outputs/aar/Assimp-Android-Lib.Git.2026-release.aar)
+      run: ./gradlew assembleRelease --info -Pandroid.native.buildOutput=verbose
+
+    - name: Check AAR exists
+      run: |
+        AAR=build/outputs/aar/Assimp-Android-Lib.Git.2026-release.aar
+        ls -la ./build/outputs/aar/ || true
+        test -f "$AAR"
+        test -s "$AAR"
+        echo "OK: $AAR ($(wc -c < "$AAR") bytes)"
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: assimp-release-aar
+        path: build/outputs/aar/Assimp-Android-Lib.Git.2026-release.aar
