@@ -760,7 +760,9 @@ ELSE()
         set_property(DIRECTORY "contrib/draco" PROPERTY BUILD_SHARED_LIBS OFF)
       ENDIF()
 
-      IF(MSVC OR WIN32)
+      # MSVC builds a single "draco" target; MinGW/GCC (WIN32 but not MSVC)
+      # build draco_static / draco_shared like other non-MSVC platforms.
+      IF(MSVC)
         SET(draco_LIBRARIES "draco")
       ELSE()
         IF(ASSIMP_BUILD_DRACO_STATIC)
