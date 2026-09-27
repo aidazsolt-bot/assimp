@@ -21,6 +21,8 @@ jobs:
       # 2. <Linux, Release, latest GCC compiler toolchain on the default runner image, default generator>
       # 3. <Linux, Release, latest Clang compiler toolchain on the default runner image, default generator>
       #
+      # MinGW-w64 is covered by the separate build-mingw job (Linux cross via cmake-modules/MinGW_x86_64.cmake).
+      #
       # To add more build types (Release, Debug, RelWithDebInfo, etc.) customize the build_type list.
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -73,3 +75,41 @@ jobs:
       # Execute tests defined by the CMake configuration. Note that --build-config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
       run: ctest --build-config ${{ matrix.build_type }}
+
+  # MinGW-w64 cross-compile on Linux using the in-tree toolchain
+  # (cmake-modules/MinGW_x86_64.cmake). Validates the Windows/MinGW link;
+  # unit tests are skipped because PE binaries cannot run on the Linux runner.
+  build-mingw:
+    name: ubuntu-mingw-w64-cross
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install MinGW-w64 toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends g++-mingw-w64-x86-64
+
+    - name: Set reusable strings
+      id: strings
+      shell: bash
+      run: |
+        echo "build-output-dir=${{ github.workspace }}/build-mingw" >> "$GITHUB_OUTPUT"
+
+    - name: Configure CMake (MinGW cross)
+      run: >
+        cmake -B ${{ steps.strings.outputs.build-output-dir }}
+        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/cmake-modules/MinGW_x86_64.cmake
+        -DCMAKE_BUILD_TYPE=Release
+        -DASSIMP_BUILD_ZLIB=ON
+        -DASSIMP_BUILD_TESTS=OFF
+        -DASSIMP_BUILD_ASSIMP_TOOLS=OFF
+        -DASSIMP_WARNINGS_AS_ERRORS=OFF
+        -S ${{ github.workspace }}
+
+    - name: Build
+      run: >
+        cmake --build ${{ steps.strings.outputs.build-output-dir }}
+        --config Release
+        --parallel
