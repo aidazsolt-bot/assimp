@@ -10,44 +10,75 @@ on:
 
 jobs:
   build:
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
 
     strategy:
       # Set fail-fast to false to ensure that feedback is delivered for all matrix combinations. Consider changing this to true when your workflow is stable.
       fail-fast: false
 
-      # Set up a matrix to run the following 3 configurations:
-      # 1. <Windows, Release, latest MSVC compiler toolchain on the default runner image, default generator>
-      # 2. <Linux, Release, latest GCC compiler toolchain on the default runner image, default generator>
-      # 3. <Linux, Release, latest Clang compiler toolchain on the default runner image, default generator>
-      #
-      # MinGW-w64 is covered by the separate build-mingw job (Linux cross via cmake-modules/MinGW_x86_64.cmake).
-      #
-      # To add more build types (Release, Debug, RelWithDebInfo, etc.) customize the build_type list.
+      # Explicit include-only matrix (no cartesian product):
+      # 1. Windows MSVC
+      # 2. Linux GCC
+      # 3. Linux Clang
+      # 4. Linux MinGW-w64 cross (cmake-modules/MinGW_x86_64.cmake)
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        build_type: [Release]
-        c_compiler: [gcc, clang, cl]
         include:
-          - os: windows-latest
+          - name: windows-msvc
+            os: windows-latest
+            build_type: Release
             c_compiler: cl
             cpp_compiler: cl
-          - os: ubuntu-latest
+            toolchain: ""
+            cmake_extra: ""
+            parallel: ""
+            run_tests: true
+
+          - name: ubuntu-gcc
+            os: ubuntu-latest
+            build_type: Release
             c_compiler: gcc
             cpp_compiler: g++
-          - os: ubuntu-latest
+            toolchain: ""
+            cmake_extra: ""
+            parallel: ""
+            run_tests: true
+
+          - name: ubuntu-clang
+            os: ubuntu-latest
+            build_type: Release
             c_compiler: clang
             cpp_compiler: clang++
-        exclude:
-          - os: windows-latest
-            c_compiler: gcc
-          - os: windows-latest
-            c_compiler: clang
-          - os: ubuntu-latest
-            c_compiler: cl
+            toolchain: ""
+            cmake_extra: ""
+            parallel: ""
+            run_tests: true
+
+          - name: ubuntu-mingw-w64-cross
+            os: ubuntu-latest
+            build_type: Release
+            # Compilers come from the toolchain file; placeholders for matrix display.
+            c_compiler: x86_64-w64-mingw32-gcc
+            cpp_compiler: x86_64-w64-mingw32-g++
+            toolchain: cmake-modules/MinGW_x86_64.cmake
+            # PE unit tests cannot run on the Linux runner.
+            cmake_extra: >-
+              -DASSIMP_BUILD_ZLIB=ON
+              -DASSIMP_BUILD_TESTS=OFF
+              -DASSIMP_BUILD_ASSIMP_TOOLS=OFF
+              -DASSIMP_WARNINGS_AS_ERRORS=OFF
+            # Cap jobs: unbounded --parallel OOMs MinGW cc1plus on ubuntu-latest (~7GB).
+            parallel: "2"
+            run_tests: false
 
     steps:
     - uses: actions/checkout@v7
+
+    - name: Install MinGW-w64 toolchain
+      if: matrix.toolchain != ''
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends g++-mingw-w64-x86-64
 
     - name: Set reusable strings
       # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
@@ -56,7 +87,8 @@ jobs:
       run: |
         echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
 
-    - name: Configure CMake
+    - name: Configure CMake (native)
+      if: matrix.toolchain == ''
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
       run: >
@@ -66,51 +98,32 @@ jobs:
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -S ${{ github.workspace }}
 
+    - name: Configure CMake (MinGW cross)
+      if: matrix.toolchain != ''
+      run: >
+        cmake -B ${{ steps.strings.outputs.build-output-dir }}
+        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/${{ matrix.toolchain }}
+        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        ${{ matrix.cmake_extra }}
+        -S ${{ github.workspace }}
+
     - name: Build
-      # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
-      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
+      if: matrix.parallel == ''
+      # --config is needed for multi-config generators (Visual Studio on Windows).
+      run: >
+        cmake --build ${{ steps.strings.outputs.build-output-dir }}
+        --config ${{ matrix.build_type }}
+
+    - name: Build (limited parallelism)
+      if: matrix.parallel != ''
+      run: >
+        cmake --build ${{ steps.strings.outputs.build-output-dir }}
+        --config ${{ matrix.build_type }}
+        --parallel ${{ matrix.parallel }}
 
     - name: Test
+      if: matrix.run_tests
       working-directory: ${{ steps.strings.outputs.build-output-dir }}
       # Execute tests defined by the CMake configuration. Note that --build-config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
       run: ctest --build-config ${{ matrix.build_type }}
-
-  # MinGW-w64 cross-compile on Linux using the in-tree toolchain
-  # (cmake-modules/MinGW_x86_64.cmake). Validates the Windows/MinGW link;
-  # unit tests are skipped because PE binaries cannot run on the Linux runner.
-  build-mingw:
-    name: ubuntu-mingw-w64-cross
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v7
-
-    - name: Install MinGW-w64 toolchain
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends g++-mingw-w64-x86-64
-
-    - name: Set reusable strings
-      id: strings
-      shell: bash
-      run: |
-        echo "build-output-dir=${{ github.workspace }}/build-mingw" >> "$GITHUB_OUTPUT"
-
-    - name: Configure CMake (MinGW cross)
-      run: >
-        cmake -B ${{ steps.strings.outputs.build-output-dir }}
-        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/cmake-modules/MinGW_x86_64.cmake
-        -DCMAKE_BUILD_TYPE=Release
-        -DASSIMP_BUILD_ZLIB=ON
-        -DASSIMP_BUILD_TESTS=OFF
-        -DASSIMP_BUILD_ASSIMP_TOOLS=OFF
-        -DASSIMP_WARNINGS_AS_ERRORS=OFF
-        -S ${{ github.workspace }}
-
-    - name: Build
-      # Cap jobs: unbounded --parallel OOMs MinGW cc1plus on ubuntu-latest (~7GB).
-      run: >
-        cmake --build ${{ steps.strings.outputs.build-output-dir }}
-        --config Release
-        --parallel 2
