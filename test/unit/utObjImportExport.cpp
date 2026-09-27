@@ -540,8 +540,9 @@ TEST_F(utObjImportExport, issue2355_mtl_texture_prefix) {
     EXPECT_STREQ("folder/image.jpg", texturePath.C_Str());
 }
 
-// Regression: OBJ MTL "refl" / "map_refl" must populate aiTextureType_REFLECTION.
+// Regression: OBJ MTL "refl" must populate aiTextureType_REFLECTION.
 // Historically broken by an early return that skipped getTextureOption (-type sphere).
+// Non-standard "map_refl" is ignored (Wavefront documents "refl" only).
 TEST_F(utObjImportExport, mtl_reflection_sphere_and_map_refl) {
     ::Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(
@@ -572,5 +573,8 @@ TEST_F(utObjImportExport, mtl_reflection_sphere_and_map_refl) {
 
     expectRefl(findMat("ChromeSphere"), "chrome_env.jpg");
     expectRefl(findMat("ChromeBare"), "bare_env.jpg");
-    expectRefl(findMat("ChromeMapRefl"), "map_refl_env.jpg");
+
+    const aiMaterial *mapReflMat = findMat("ChromeMapRefl");
+    ASSERT_NE(nullptr, mapReflMat);
+    EXPECT_EQ(mapReflMat->GetTextureCount(aiTextureType_REFLECTION), 0U);
 }

@@ -22,4 +22,5 @@ Kd 0.1 0.1 0.1
 Ks 1.0 1.0 1.0
 Ns 200
 illum 3
+# Non-standard Blender-style keyword; Assimp ignores it (use Wavefront "refl").
 map_refl -type sphere map_refl_env.jpg
