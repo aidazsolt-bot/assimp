@@ -543,9 +543,15 @@ void ObjFileMtlImporter::getTexture() {
         // Normal map
         out = &m_pModel->mCurrentMaterial->textureNormal;
         clampIndex = ObjFile::Material::TextureNormalType;
-    } else if (!ASSIMP_strincmp(pPtr, MapReflectionTexture, static_cast<unsigned int>(strlen(MapReflectionTexture))) ||
-               !ASSIMP_strincmp(pPtr, ReflectionTexture, static_cast<unsigned int>(strlen(ReflectionTexture)))) {
-        // Wavefront reflection map: "refl" / "map_refl" [-type sphere|cube_*] file
+    } else if (!ASSIMP_strincmp(pPtr, MapReflectionTexture, static_cast<unsigned int>(strlen(MapReflectionTexture)))) {
+        // Non-standard (e.g. Blender). Wavefront MTL documents "refl", not "map_refl".
+        ASSIMP_LOG_WARN(
+                "OBJ/MTL: map_refl is not Wavefront MTL and is ignored. "
+                "Use: refl [-type sphere|cube_*] <file>. "
+                "See http://paulbourke.net/dataformats/mtl/");
+        return;
+    } else if (!ASSIMP_strincmp(pPtr, ReflectionTexture, static_cast<unsigned int>(strlen(ReflectionTexture)))) {
+        // Wavefront reflection map: "refl" [-type sphere|cube_*] file
         // Francesco Guastella (2015) wired -type handling in getTextureOption; out stays
         // null here on purpose so -type can select textureReflection[i].
         // Andrew Parlane (2016) added an early return to avoid a NULL clamp[] crash when
@@ -580,7 +586,7 @@ void ObjFileMtlImporter::getTexture() {
     bool clamp = false;
     getTextureOption(clamp, clampIndex, out);
 
-    // Bare "refl file" / "map_refl file" without -type → sphere (Wavefront default).
+    // Bare "refl file" without -type → sphere (Wavefront default).
     if (isReflection && out == nullptr) {
         clampIndex = ObjFile::Material::TextureReflectionSphereType;
         out = &m_pModel->mCurrentMaterial->textureReflection[0];
