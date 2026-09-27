@@ -109,7 +109,8 @@ jobs:
         -S ${{ github.workspace }}
 
     - name: Build
+      # Cap jobs: unbounded --parallel OOMs MinGW cc1plus on ubuntu-latest (~7GB).
       run: >
         cmake --build ${{ steps.strings.outputs.build-output-dir }}
         --config Release
-        --parallel
+        --parallel 2
