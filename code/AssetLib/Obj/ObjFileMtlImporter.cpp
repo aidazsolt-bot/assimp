@@ -66,6 +66,7 @@ static constexpr char BumpTexture2[] = "bump";
 static constexpr char NormalTextureV1[] = "map_Kn";
 static constexpr char NormalTextureV2[] = "norm";
 static constexpr char ReflectionTexture[] = "refl";
+static constexpr char MapReflectionTexture[] = "map_refl";
 static constexpr char DisplacementTexture1[] = "map_disp";
 static constexpr char DisplacementTexture2[] = "disp";
 static constexpr char SpecularityTexture[] = "map_ns";
@@ -498,6 +499,7 @@ void ObjFileMtlImporter::createMaterial() {
 void ObjFileMtlImporter::getTexture() {
     aiString *out = nullptr;
     int clampIndex = -1;
+    bool isReflection = false;
 
     if (m_pModel->mCurrentMaterial == nullptr) {
         m_pModel->mCurrentMaterial = new ObjFile::Material();
@@ -541,10 +543,15 @@ void ObjFileMtlImporter::getTexture() {
         // Normal map
         out = &m_pModel->mCurrentMaterial->textureNormal;
         clampIndex = ObjFile::Material::TextureNormalType;
-    } else if (!ASSIMP_strincmp(pPtr, ReflectionTexture, static_cast<unsigned int>(strlen(ReflectionTexture)))) {
-        // Reflection texture(s)
-        //Do nothing here
-        return;
+    } else if (!ASSIMP_strincmp(pPtr, MapReflectionTexture, static_cast<unsigned int>(strlen(MapReflectionTexture))) ||
+               !ASSIMP_strincmp(pPtr, ReflectionTexture, static_cast<unsigned int>(strlen(ReflectionTexture)))) {
+        // Wavefront reflection map: "refl" / "map_refl" [-type sphere|cube_*] file
+        // Francesco Guastella (2015) wired -type handling in getTextureOption; out stays
+        // null here on purpose so -type can select textureReflection[i].
+        // Andrew Parlane (2016) added an early return to avoid a NULL clamp[] crash when
+        // -type was missing — that also skipped getTextureOption and dropped all refl maps.
+        // Restore the intended path: parse options, default bare refl to sphere, guard clamp.
+        isReflection = true;
     } else if (!ASSIMP_strincmp(pPtr, SpecularityTexture, static_cast<unsigned int>(strlen(SpecularityTexture)))) {
         // Specularity scaling (glossiness)
         out = &m_pModel->mCurrentMaterial->textureSpecularity;
@@ -572,7 +579,16 @@ void ObjFileMtlImporter::getTexture() {
 
     bool clamp = false;
     getTextureOption(clamp, clampIndex, out);
-    m_pModel->mCurrentMaterial->clamp[clampIndex] = clamp;
+
+    // Bare "refl file" / "map_refl file" without -type → sphere (Wavefront default).
+    if (isReflection && out == nullptr) {
+        clampIndex = ObjFile::Material::TextureReflectionSphereType;
+        out = &m_pModel->mCurrentMaterial->textureReflection[0];
+    }
+
+    if (clampIndex >= 0) {
+        m_pModel->mCurrentMaterial->clamp[clampIndex] = clamp;
+    }
 
     std::string texture;
     m_DataIt = getName<DataArrayIt>(m_DataIt, m_DataItEnd, texture);

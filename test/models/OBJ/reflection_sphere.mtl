@@ -1,0 +1,25 @@
+# Wavefront reflection map regression (sphere)
+newmtl ChromeSphere
+Ka 0.05 0.05 0.05
+Kd 0.10 0.10 0.12
+Ks 0.90 0.90 0.95
+Ns 500
+illum 3
+refl -type sphere chrome_env.jpg
+
+newmtl ChromeBare
+Ka 0.0 0.0 0.0
+Kd 0.1 0.1 0.1
+Ks 1.0 1.0 1.0
+Ns 200
+illum 3
+# no -type → should default to sphere
+refl bare_env.jpg
+
+newmtl ChromeMapRefl
+Ka 0.0 0.0 0.0
+Kd 0.1 0.1 0.1
+Ks 1.0 1.0 1.0
+Ns 200
+illum 3
+map_refl -type sphere map_refl_env.jpg

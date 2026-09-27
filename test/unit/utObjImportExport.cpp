@@ -539,3 +539,38 @@ TEST_F(utObjImportExport, issue2355_mtl_texture_prefix) {
     // The MTL file is in `folder`, the image path should have been prefixed with the folder
     EXPECT_STREQ("folder/image.jpg", texturePath.C_Str());
 }
+
+// Regression: OBJ MTL "refl" / "map_refl" must populate aiTextureType_REFLECTION.
+// Historically broken by an early return that skipped getTextureOption (-type sphere).
+TEST_F(utObjImportExport, mtl_reflection_sphere_and_map_refl) {
+    ::Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/OBJ/reflection_sphere.obj", 0);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_GE(scene->mNumMaterials, 3U);
+
+    auto findMat = [&](const char *name) -> const aiMaterial * {
+        for (unsigned i = 0; i < scene->mNumMaterials; ++i) {
+            aiString n;
+            scene->mMaterials[i]->Get(AI_MATKEY_NAME, n);
+            if (std::strcmp(n.C_Str(), name) == 0) {
+                return scene->mMaterials[i];
+            }
+        }
+        return nullptr;
+    };
+
+    auto expectRefl = [](const aiMaterial *mat, const char *expectPath) {
+        ASSERT_NE(nullptr, mat);
+        EXPECT_GE(mat->GetTextureCount(aiTextureType_REFLECTION), 1U);
+        aiString path;
+        ASSERT_EQ(AI_SUCCESS, mat->GetTexture(aiTextureType_REFLECTION, 0, &path));
+        // Path may be prefixed with directory; match basename suffix.
+        const std::string p(path.C_Str());
+        EXPECT_NE(p.find(expectPath), std::string::npos) << p;
+    };
+
+    expectRefl(findMat("ChromeSphere"), "chrome_env.jpg");
+    expectRefl(findMat("ChromeBare"), "bare_env.jpg");
+    expectRefl(findMat("ChromeMapRefl"), "map_refl_env.jpg");
+}

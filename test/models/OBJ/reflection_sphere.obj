@@ -1,0 +1,16 @@
+mtllib reflection_sphere.mtl
+o SpherePart
+v 0 1 0
+v 1 0 0
+v 0 0 1
+vn 0 1 0
+vn 1 0 0
+vn 0 0 1
+usemtl ChromeSphere
+f 1//1 2//2 3//3
+o BarePart
+usemtl ChromeBare
+f 1//1 2//2 3//3
+o MapReflPart
+usemtl ChromeMapRefl
+f 1//1 2//2 3//3
