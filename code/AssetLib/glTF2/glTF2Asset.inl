@@ -49,6 +49,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/schema.h>
 #include <rapidjson/stringbuffer.h>
 
+#include <cmath>
+
 // clang-format off
 #ifdef ASSIMP_ENABLE_DRACO
 
@@ -1462,6 +1464,61 @@ inline void Material::Read(Value &material, Asset &r) {
             }
         }
 
+        // Parse iridescence when present on the material (even if extensionsUsed omitted it).
+        if (Value *curMaterialIridescence = FindObject(*extensions, "KHR_materials_iridescence")) {
+            MaterialIridescence iri;
+
+            auto readFiniteFloat = [](Value &obj, const char *key, Nullable<float> &out) {
+                Value *num = FindNumberInContext(obj, key, "KHR_materials_iridescence");
+                if (num == nullptr || !num->IsNumber()) {
+                    return;
+                }
+                const double d = num->GetDouble();
+                if (!std::isfinite(d)) {
+                    return;
+                }
+                out.value = static_cast<float>(d);
+                out.isPresent = true;
+            };
+
+            readFiniteFloat(*curMaterialIridescence, "iridescenceFactor", iri.iridescenceFactor);
+            readFiniteFloat(*curMaterialIridescence, "iridescenceIor", iri.iridescenceIor);
+            readFiniteFloat(*curMaterialIridescence, "iridescenceThicknessMinimum", iri.iridescenceThicknessMinimum);
+            readFiniteFloat(*curMaterialIridescence, "iridescenceThicknessMaximum", iri.iridescenceThicknessMaximum);
+
+            if (Value *texProp = FindMember(*curMaterialIridescence, "iridescenceTexture")) {
+                if (texProp->IsObject()) {
+                    iri.hasIridescenceTexture = true;
+                    SetTextureProperties(r, texProp, iri.iridescenceTexture);
+                    if (FindUInt(*texProp, "texCoord") != nullptr) {
+                        iri.hasIridescenceTexCoord = true;
+                    }
+                    if (Value *xform = FindExtension(*texProp, "KHR_texture_transform")) {
+                        if (FindArray(*xform, "scale") != nullptr) {
+                            iri.hasIridescenceTransformScale = true;
+                        }
+                    }
+                }
+            }
+
+            if (Value *texProp = FindMember(*curMaterialIridescence, "iridescenceThicknessTexture")) {
+                if (texProp->IsObject()) {
+                    iri.hasThicknessTexture = true;
+                    SetTextureProperties(r, texProp, iri.iridescenceThicknessTexture);
+                    if (FindUInt(*texProp, "texCoord") != nullptr) {
+                        iri.hasThicknessTexCoord = true;
+                    }
+                    if (Value *xform = FindExtension(*texProp, "KHR_texture_transform")) {
+                        if (FindArray(*xform, "scale") != nullptr) {
+                            iri.hasThicknessTransformScale = true;
+                        }
+                    }
+                }
+            }
+
+            this->materialIridescence = Nullable<MaterialIridescence>(iri);
+        }
+
         unlit = nullptr != FindObject(*extensions, "KHR_materials_unlit");
     }
 }
@@ -2262,6 +2319,7 @@ inline void Asset::ReadExtensionsUsed(Document &doc) {
     CHECK_EXT(KHR_materials_ior);
     CHECK_EXT(KHR_materials_emissive_strength);
     CHECK_EXT(KHR_materials_anisotropy);
+    CHECK_EXT(KHR_materials_iridescence);
     CHECK_EXT(KHR_draco_mesh_compression);
     CHECK_EXT(KHR_texture_basisu);
     CHECK_EXT(EXT_texture_webp);

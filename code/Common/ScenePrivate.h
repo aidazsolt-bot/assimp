@@ -83,6 +83,9 @@ struct ScenePrivateData {
     // Optional generic mesh sidecar data, indexed by mesh index (nullptr = none).
     // Does not change public aiMesh / aiScene ABI.
     std::vector<aiMeshSidecar *> mMeshSidecars;
+
+    // Optional material sidecar data, indexed by material index (nullptr = none).
+    std::vector<aiMaterialSidecar *> mMaterialSidecars;
 };
 
 inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
@@ -90,7 +93,8 @@ inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
           mPPStepsApplied(0),
           mIsCopy(false),
           mGaussianSplats(),
-          mMeshSidecars() {
+          mMeshSidecars(),
+          mMaterialSidecars() {
     // empty
 }
 
@@ -103,6 +107,10 @@ inline ScenePrivateData::~ScenePrivateData() {
         delete s;
     }
     mMeshSidecars.clear();
+    for (aiMaterialSidecar *s : mMaterialSidecars) {
+        delete s;
+    }
+    mMaterialSidecars.clear();
 }
 
 // Access private data stored in the scene

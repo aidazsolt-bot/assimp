@@ -64,6 +64,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "Common/ScenePrivate.h"
 
 #include <array>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -581,11 +582,125 @@ static aiMaterial *ImportMaterial(std::vector<int> &embeddedTexIdxs, Asset &r, M
             SetMaterialTextureProperty(embeddedTexIdxs, r, anisotropy.anisotropyTexture, aimat, AI_MATKEY_ANISOTROPY_TEXTURE);
         }
 
+        // KHR_materials_iridescence: no typed MATKEYs yet - material sidecar JSON only.
+
         return aimat;
     } catch (...) {
         delete aimat;
         throw;
     }
+}
+
+static bool SidecarResolveTexturePath(const std::vector<int> &embeddedTexIdxs, TextureInfo prop, std::string &outPath) {
+    if (!prop.texture) {
+        return false;
+    }
+    Texture &tex = *prop.texture;
+    if (!tex.source) {
+        return false;
+    }
+    const unsigned int imageIndex = tex.source.GetIndex();
+    if (imageIndex < embeddedTexIdxs.size() && embeddedTexIdxs[imageIndex] != -1) {
+        outPath = "*";
+        outPath += ai_to_string(embeddedTexIdxs[imageIndex]);
+        return true;
+    }
+    outPath = tex.source->uri;
+    return !outPath.empty();
+}
+
+static void SidecarAddTextureJson(rapidjson::Value &parent, rapidjson::Document::AllocatorType &al,
+        const char *key, TextureInfo prop, bool hasTexCoord, bool hasTransformScale,
+        const std::vector<int> &embeddedTexIdxs) {
+    if (!prop.texture) {
+        return;
+    }
+    std::string path;
+    if (!SidecarResolveTexturePath(embeddedTexIdxs, prop, path)) {
+        ASSIMP_LOG_WARN("GLTF: Skipping iridescence texture \"", key, "\" without resolvable path");
+        return;
+    }
+
+    rapidjson::Value texObj(rapidjson::kObjectType);
+    texObj.AddMember("index", prop.texture.GetIndex(), al);
+    if (hasTexCoord) {
+        texObj.AddMember("texCoord", prop.texCoord, al);
+    }
+    rapidjson::Value pathVal(path.c_str(), al);
+    texObj.AddMember("path", pathVal, al);
+    if (hasTransformScale && prop.textureTransformSupported) {
+        // Scalar convenience: first transform scale component (glTF transform scale is VEC2).
+        const float sx = prop.TextureTransformExt_t.scale[0];
+        if (std::isfinite(sx)) {
+            texObj.AddMember("scale", sx, al);
+        }
+    }
+    rapidjson::Value keyVal(key, al);
+    parent.AddMember(keyVal, texObj, al);
+}
+
+static void SidecarTryAttachMaterialIridescence(aiScene *scene, unsigned int materialIndex,
+        const std::vector<int> &embeddedTexIdxs, const Material &mat) {
+    if (!mat.materialIridescence.isPresent) {
+        return;
+    }
+    const MaterialIridescence &iri = mat.materialIridescence.value;
+
+    rapidjson::Document doc;
+    doc.SetObject();
+    rapidjson::Document::AllocatorType &al = doc.GetAllocator();
+
+    rapidjson::Value iriObj(rapidjson::kObjectType);
+    bool anyField = false;
+
+    auto addFloat = [&](const char *key, const Nullable<float> &v) {
+        if (!v.isPresent || !std::isfinite(v.value)) {
+            return;
+        }
+        iriObj.AddMember(rapidjson::Value(key, al).Move(), v.value, al);
+        anyField = true;
+    };
+    addFloat("iridescenceFactor", iri.iridescenceFactor);
+    addFloat("iridescenceIor", iri.iridescenceIor);
+    addFloat("iridescenceThicknessMinimum", iri.iridescenceThicknessMinimum);
+    addFloat("iridescenceThicknessMaximum", iri.iridescenceThicknessMaximum);
+
+    if (iri.hasIridescenceTexture) {
+        const size_t before = iriObj.MemberCount();
+        SidecarAddTextureJson(iriObj, al, "iridescenceTexture", iri.iridescenceTexture,
+                iri.hasIridescenceTexCoord, iri.hasIridescenceTransformScale, embeddedTexIdxs);
+        if (iriObj.MemberCount() > before) {
+            anyField = true;
+        }
+    }
+    if (iri.hasThicknessTexture) {
+        const size_t before = iriObj.MemberCount();
+        SidecarAddTextureJson(iriObj, al, "iridescenceThicknessTexture", iri.iridescenceThicknessTexture,
+                iri.hasThicknessTexCoord, iri.hasThicknessTransformScale, embeddedTexIdxs);
+        if (iriObj.MemberCount() > before) {
+            anyField = true;
+        }
+    }
+
+    if (!anyField) {
+        return;
+    }
+
+    doc.AddMember("KHR_materials_iridescence", iriObj, al);
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    doc.Accept(writer);
+    const std::string json = buffer.GetString();
+    if (json.empty() || json == "{}") {
+        return;
+    }
+
+    std::unique_ptr<aiMaterialSidecar> sidecar(new aiMaterialSidecar());
+    sidecar->mExtensionsJsonLength = json.size();
+    sidecar->mExtensionsJson = new char[json.size() + 1];
+    memcpy(sidecar->mExtensionsJson, json.c_str(), json.size() + 1);
+    AttachMaterialSidecar(scene, materialIndex, sidecar.release());
 }
 
 void glTF2Importer::ImportMaterials(Asset &r) {
@@ -600,6 +715,7 @@ void glTF2Importer::ImportMaterials(Asset &r) {
 
     for (unsigned int i = 0; i < numImportedMaterials; ++i) {
         mScene->mMaterials[i] = ImportMaterial(mEmbeddedTexIdxs, r, r.materials[i]);
+        SidecarTryAttachMaterialIridescence(mScene, i, mEmbeddedTexIdxs, r.materials[i]);
     }
 }
 
@@ -2046,7 +2162,8 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
     const bool hasSceneMetadata = a.scene->customExtensions;
     const bool hasSceneExtras = a.scene->extras.HasExtras();
     const bool hasMeshSidecar = aiSceneHasMeshSidecar(mScene) != 0;
-    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMeshSidecar) {
+    const bool hasMaterialSidecar = aiSceneHasMaterialSidecar(mScene) != 0;
+    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMeshSidecar || hasMaterialSidecar) {
         mScene->mMetaData = new aiMetadata;
         if (hasVersion) {
             mScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(a.asset.version));
@@ -2066,6 +2183,10 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
         if (hasMeshSidecar) {
             const bool flag = true;
             mScene->mMetaData->Add(AI_METADATA_MESH_SIDECAR, flag);
+        }
+        if (hasMaterialSidecar) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_MATERIAL_SIDECAR, flag);
         }
     }
 }

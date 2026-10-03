@@ -1,12 +1,14 @@
-# Generic mesh sidecar API
+# Generic mesh / material sidecar API
 
-ABI-safe side channel for importer data that does **not** fit the public
-`aiMesh` / `aiScene` layout (avoids the ABI break class of
+ABI-safe side channels for importer data that do **not** fit the public
+`aiMesh` / `aiMaterial` / `aiScene` layout (avoids the ABI break class of
 [PR #6593](https://github.com/assimp/assimp/pull/6593)).
 
 Header: `include/assimp/sidecar.h`
 
 ## What it stores
+
+### Mesh sidecar (`aiMeshSidecar`)
 
 Per mesh index (same indexing as `aiScene::mMeshes`):
 
@@ -16,9 +18,20 @@ Per mesh index (same indexing as `aiScene::mMeshes`):
 | `mExtrasJson` | UTF-8 JSON object: merged mesh + primitive `extras` |
 | `mExtensionsJson` | UTF-8 JSON object: merged mesh + primitive `extensions` |
 
-Lifetime = scene. **Not** preserved by `aiCopyScene` / SceneCombiner.
+Scene metadata: `AI_METADATA_MESH_SIDECAR` (`bool`).
 
-Scene metadata key when any sidecar is present: `AI_METADATA_MESH_SIDECAR` (`bool`).
+### Material sidecar (`aiMaterialSidecar`)
+
+Per material index (same as `aiScene::mMaterials` / `aiMesh::mMaterialIndex`):
+
+| Field | Meaning |
+|---|---|
+| `mExtensionsJson` | UTF-8 JSON object of **unmapped** material extensions |
+
+Do **not** put material extensions on `aiMeshSidecar`. Scene metadata:
+`AI_METADATA_MATERIAL_SIDECAR` (`bool`).
+
+Lifetime = scene. **Not** preserved by `aiCopyScene` / SceneCombiner.
 
 ## Consumer example
 
@@ -39,6 +52,10 @@ if (aiSceneHasMeshSidecar(scene)) {
         // parse JSON string of length sc->mExtrasJsonLength
     }
 }
+if (aiSceneHasMaterialSidecar(scene)) {
+    const aiMaterialSidecar *msc = aiGetMaterialSidecar(scene, mesh->mMaterialIndex);
+    // msc->mExtensionsJson: e.g. KHR_materials_iridescence object
+}
 ```
 
 ## glTF2 importer behaviour
@@ -49,9 +66,21 @@ application attributes) is extracted with the same vertex remapping as
 positions and attached via `AttachMeshSidecar`.
 
 Mesh- and primitive-level `extras` / `extensions` are serialized to JSON on the
-same sidecar bag.
+same mesh sidecar bag.
 
-Fixture: `test/models/glTF2/SidecarCustomAttr/SidecarCustomAttr.gltf`.
+### Material: `KHR_materials_iridescence`
+
+Assimp does **not** yet write typed `AI_MATKEY_IRIDESCENCE_*` properties. Until
+that exists, the glTF2 importer attaches a material sidecar whose
+`mExtensionsJson` contains only keys **present in the source** (no Assimp
+defaults such as factor=0 / ior=1.3 when omitted; no non-finite floats).
+
+Texture objects include a resolved `path` (same rules as `aiMaterial::GetTexture`:
+external URI or `*N` embedded). glTF `index` alone is never enough for the
+RenderAssimp pack. `texCoord` / transform `scale` are emitted only when authored.
+
+Fixtures: `test/models/glTF2/SidecarCustomAttr/`,
+`test/models/glTF2/SidecarIridescence/`.
 
 ## Babylon mapping (RenderAssimp2026 follow-up)
 

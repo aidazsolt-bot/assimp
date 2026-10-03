@@ -1209,6 +1209,57 @@ TEST_F(utglTF2ImportExport, importglTF2_MeshSidecarAbsentOnPlainMesh) {
     ASSERT_NE(nullptr, scene) << importer.GetErrorString();
     EXPECT_FALSE(aiSceneHasMeshSidecar(scene));
     EXPECT_EQ(nullptr, aiGetMeshSidecar(scene, 0));
+    EXPECT_FALSE(aiSceneHasMaterialSidecar(scene));
+    EXPECT_EQ(nullptr, aiGetMaterialSidecar(scene, 0));
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_MaterialSidecarIridescenceFactors) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarIridescence/IridescenceFactors.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_GE(scene->mNumMaterials, 1u);
+
+    EXPECT_TRUE(aiSceneHasMaterialSidecar(scene));
+    const aiMaterialSidecar *sc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, sc);
+    ASSERT_NE(nullptr, sc->mExtensionsJson);
+    const std::string json(sc->mExtensionsJson, sc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("KHR_materials_iridescence"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceFactor"));
+    EXPECT_NE(std::string::npos, json.find("0.5"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceIor"));
+    EXPECT_NE(std::string::npos, json.find("1.5"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceThicknessMinimum"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceThicknessMaximum"));
+    // Must not live on mesh sidecar
+    EXPECT_FALSE(aiSceneHasMeshSidecar(scene));
+
+    bool metaFlag = false;
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_MATERIAL_SIDECAR, metaFlag));
+    EXPECT_TRUE(metaFlag);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_MaterialSidecarIridescenceTextures) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarIridescence/IridescenceTextures.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+
+    const aiMaterialSidecar *sc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, sc);
+    ASSERT_NE(nullptr, sc->mExtensionsJson);
+    const std::string json(sc->mExtensionsJson, sc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("iridescenceTexture"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceThicknessTexture"));
+    EXPECT_NE(std::string::npos, json.find("\"path\""));
+    // weight texture authored texCoord:0; thickness texture omitted texCoord -> absent in JSON
+    EXPECT_NE(std::string::npos, json.find("texCoord"));
+    // Embedded image path should be *N
+    EXPECT_NE(std::string::npos, json.find("\"*"));
 }
 
 TEST_F(utglTF2ImportExport, importAnimationInterpolationIsPreserved) {

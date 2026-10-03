@@ -28,6 +28,8 @@ __Importers__:
   + KHR_texture_transform ( 5.1 under test )
   Custom / underscore vertex attributes and mesh/primitive extras are exposed via the
   ABI-safe [sidecar API](Sidecar.md) (`include/assimp/sidecar.h`).
+  Unmapped material extensions such as `KHR_materials_iridescence` use the material
+  sidecar (`aiMaterialSidecar`) until typed MATKEYs exist.
 - HMB
 - IFC-STEP
 - IQM

@@ -821,6 +821,25 @@ struct MaterialAnisotropy {
     void SetDefaults();
 };
 
+/** KHR_materials_iridescence - fields only set when present in the source JSON
+ *  (no Assimp defaults; consumer applies Babylon/glTF defaults). */
+struct MaterialIridescence {
+    Nullable<float> iridescenceFactor;
+    Nullable<float> iridescenceIor;
+    Nullable<float> iridescenceThicknessMinimum;
+    Nullable<float> iridescenceThicknessMaximum;
+
+    bool hasIridescenceTexture{ false };
+    bool hasIridescenceTexCoord{ false };
+    bool hasIridescenceTransformScale{ false };
+    TextureInfo iridescenceTexture;
+
+    bool hasThicknessTexture{ false };
+    bool hasThicknessTexCoord{ false };
+    bool hasThicknessTransformScale{ false };
+    TextureInfo iridescenceThicknessTexture;
+};
+
 //! The material appearance of a primitive.
 struct Material : public Object {
     //PBR metallic roughness properties
@@ -861,6 +880,9 @@ struct Material : public Object {
 
     //extension: KHR_materials_anisotropy
     Nullable<MaterialAnisotropy> materialAnisotropy;
+
+    //extension: KHR_materials_iridescence (sidecar JSON until typed MATKEYs exist)
+    Nullable<MaterialIridescence> materialIridescence;
 
     //extension: KHR_materials_unlit
     bool unlit;
@@ -1140,6 +1162,7 @@ public:
         bool KHR_materials_ior{false};
         bool KHR_materials_emissive_strength{false};
         bool KHR_materials_anisotropy{false};
+        bool KHR_materials_iridescence{false};
         bool KHR_draco_mesh_compression{false};
         bool FB_ngon_encoding{false};
         bool KHR_texture_basisu{false};

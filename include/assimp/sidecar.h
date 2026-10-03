@@ -40,12 +40,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 /** @file sidecar.h
- *  @brief ABI-safe generic mesh side channel for importer-only data.
+ *  @brief ABI-safe generic side channels for importer-only data.
  *
- *  Does **not** extend aiMesh / aiScene layout. Named attribute buffers and
- *  JSON extras/extensions live in scene-private storage and are reached via
- *  getters. Use this for data Assimp's public scene graph does not map
- *  (e.g. glTF custom / underscore vertex attributes, mesh extras).
+ *  Does **not** extend aiMesh / aiMaterial / aiScene layout. Data lives in
+ *  scene-private storage and is reached via getters.
+ *
+ *  - Mesh sidecar: custom / underscore vertex attributes, mesh extras JSON.
+ *  - Material sidecar: unmapped material extensions (e.g. KHR_materials_iridescence)
+ *    as UTF-8 JSON until typed MATKEYs exist.
  *
  *  See doc/Sidecar.md.
  */
@@ -68,6 +70,9 @@ struct aiScene;
 
 /** Scene metadata: present and true when at least one mesh has sidecar data. */
 #define AI_METADATA_MESH_SIDECAR "HasMeshSidecar"
+
+/** Scene metadata: present and true when at least one material has sidecar data. */
+#define AI_METADATA_MATERIAL_SIDECAR "HasMaterialSidecar"
 
 /** Component type for #aiSidecarBuffer::mComponentType (glTF-aligned). */
 enum aiSidecarComponentType {
@@ -191,6 +196,51 @@ ASSIMP_API const C_STRUCT aiMeshSidecar *aiGetMeshSidecar(
         const C_STRUCT aiScene *pScene,
         unsigned int meshIndex);
 
+/**
+ * Per-material sidecar bag for unmapped material extensions (UTF-8 JSON).
+ *
+ * Indexed by material index (same as aiScene::mMaterials / aiMesh::mMaterialIndex).
+ * Do not put material extensions on #aiMeshSidecar.
+ */
+struct aiMaterialSidecar {
+    /** UTF-8 JSON object of unmapped extensions, or nullptr. */
+    char *mExtensionsJson;
+
+    /** Byte length of mExtensionsJson excluding trailing NUL (0 if nullptr). */
+    size_t mExtensionsJsonLength;
+
+#ifdef __cplusplus
+    aiMaterialSidecar() AI_NO_EXCEPT
+            : mExtensionsJson(nullptr),
+              mExtensionsJsonLength(0) {}
+
+    ~aiMaterialSidecar() {
+        delete[] mExtensionsJson;
+        mExtensionsJson = nullptr;
+        mExtensionsJsonLength = 0;
+    }
+
+private:
+    aiMaterialSidecar(const aiMaterialSidecar &) = delete;
+    aiMaterialSidecar &operator=(const aiMaterialSidecar &) = delete;
+#endif
+};
+
+/**
+ * @brief Non-zero if the scene carries any material sidecar data.
+ */
+ASSIMP_API int aiSceneHasMaterialSidecar(const C_STRUCT aiScene *pScene);
+
+/**
+ * @brief Get sidecar for a material, or nullptr if none.
+ *
+ * Lifetime is tied to the aiScene (valid until aiReleaseImport / delete).
+ * Not preserved by aiCopyScene / SceneCombiner copies.
+ */
+ASSIMP_API const C_STRUCT aiMaterialSidecar *aiGetMaterialSidecar(
+        const C_STRUCT aiScene *pScene,
+        unsigned int materialIndex);
+
 #ifdef __cplusplus
 } // extern "C"
 
@@ -198,6 +248,9 @@ namespace Assimp {
 
 /** Attach ownership of @p sidecar for @p meshIndex (importer use). Takes ownership. */
 void AttachMeshSidecar(aiScene *scene, unsigned int meshIndex, aiMeshSidecar *sidecar);
+
+/** Attach ownership of @p sidecar for @p materialIndex (importer use). Takes ownership. */
+void AttachMaterialSidecar(aiScene *scene, unsigned int materialIndex, aiMaterialSidecar *sidecar);
 
 } // namespace Assimp
 #endif
