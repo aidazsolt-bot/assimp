@@ -577,4 +577,16 @@ TEST_F(utObjImportExport, mtl_reflection_sphere_and_map_refl) {
     const aiMaterial *mapReflMat = findMat("ChromeMapRefl");
     ASSERT_NE(nullptr, mapReflMat);
     EXPECT_EQ(mapReflMat->GetTextureCount(aiTextureType_REFLECTION), 0U);
+
+    // Clara.io / community PBR tokens are logged and not imported.
+    const aiMaterial *pbrMat = findMat("CommunityPbr");
+    ASSERT_NE(nullptr, pbrMat);
+    ai_real roughness = -1.0f;
+    ai_real metallic = -1.0f;
+    EXPECT_NE(AI_SUCCESS, pbrMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness));
+    EXPECT_NE(AI_SUCCESS, pbrMat->Get(AI_MATKEY_METALLIC_FACTOR, metallic));
+    EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_DIFFUSE_ROUGHNESS), 0U);
+    EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_METALNESS), 0U);
+    EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_SHEEN), 0U);
+    EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_NORMALS), 0U);
 }

@@ -14,3 +14,6 @@ f 1//1 2//2 3//3
 o MapReflPart
 usemtl ChromeMapRefl
 f 1//1 2//2 3//3
+o CommunityPbrPart
+usemtl CommunityPbr
+f 1//1 2//2 3//3
