@@ -84,6 +84,9 @@ struct ScenePrivateData {
 
     // Optional animation sidecar data, indexed by animation index (nullptr = none).
     std::vector<aiAnimationSidecar *> mAnimationSidecars;
+
+    // Optional scene-level physics sidecar (KHR_physics_* JSON bag).
+    aiPhysicsSidecar *mPhysicsSidecar;
 };
 
 inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
@@ -92,7 +95,8 @@ inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
           mIsCopy(false),
           mMeshSidecars(),
           mMaterialSidecars(),
-          mAnimationSidecars() {
+          mAnimationSidecars(),
+          mPhysicsSidecar(nullptr) {
     // empty
 }
 
@@ -109,6 +113,8 @@ inline ScenePrivateData::~ScenePrivateData() {
         delete s;
     }
     mAnimationSidecars.clear();
+    delete mPhysicsSidecar;
+    mPhysicsSidecar = nullptr;
 }
 
 // Access private data stored in the scene
