@@ -50,6 +50,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *    as UTF-8 JSON until typed MATKEYs exist.
  *  - Animation sidecar: KHR_animation_pointer channels that do not map to aiNodeAnim,
  *    as UTF-8 JSON + optional float sampler buffers.
+ *  - Physics sidecar: KHR_implicit_shapes + KHR_physics_rigid_bodies (scene JSON bag).
  *
  *  See doc/Sidecar.md.
  */
@@ -78,6 +79,9 @@ struct aiScene;
 
 /** Scene metadata: present and true when at least one animation has sidecar data. */
 #define AI_METADATA_ANIMATION_SIDECAR "HasAnimationSidecar"
+
+/** Scene metadata: present and true when physics sidecar JSON is attached. */
+#define AI_METADATA_PHYSICS_SIDECAR "HasPhysicsSidecar"
 
 /** Component type for #aiSidecarBuffer::mComponentType (glTF-aligned). */
 enum aiSidecarComponentType {
@@ -302,6 +306,48 @@ ASSIMP_API const C_STRUCT aiAnimationSidecar *aiGetAnimationSidecar(
         const C_STRUCT aiScene *pScene,
         unsigned int animationIndex);
 
+/**
+ * Scene-level physics sidecar (KHR_implicit_shapes + KHR_physics_rigid_bodies).
+ *
+ * Assimp does not simulate - host resolves JSON and steps a solver.
+ */
+struct aiPhysicsSidecar {
+    /** UTF-8 JSON object, or nullptr. */
+    char *mExtensionsJson;
+
+    /** Byte length of mExtensionsJson excluding trailing NUL (0 if nullptr). */
+    size_t mExtensionsJsonLength;
+
+#ifdef __cplusplus
+    aiPhysicsSidecar() AI_NO_EXCEPT
+            : mExtensionsJson(nullptr),
+              mExtensionsJsonLength(0) {}
+
+    ~aiPhysicsSidecar() {
+        delete[] mExtensionsJson;
+        mExtensionsJson = nullptr;
+        mExtensionsJsonLength = 0;
+    }
+
+private:
+    aiPhysicsSidecar(const aiPhysicsSidecar &) = delete;
+    aiPhysicsSidecar &operator=(const aiPhysicsSidecar &) = delete;
+#endif
+};
+
+/**
+ * @brief Non-zero if the scene carries physics sidecar data.
+ */
+ASSIMP_API int aiSceneHasPhysicsSidecar(const C_STRUCT aiScene *pScene);
+
+/**
+ * @brief Get physics sidecar, or nullptr if none.
+ *
+ * Lifetime is tied to the aiScene (valid until aiReleaseImport / delete).
+ * Not preserved by aiCopyScene / SceneCombiner copies.
+ */
+ASSIMP_API const C_STRUCT aiPhysicsSidecar *aiGetPhysicsSidecar(const C_STRUCT aiScene *pScene);
+
 #ifdef __cplusplus
 } // extern "C"
 
@@ -315,6 +361,9 @@ void AttachMaterialSidecar(aiScene *scene, unsigned int materialIndex, aiMateria
 
 /** Attach ownership of @p sidecar for @p animationIndex (importer use). Takes ownership. */
 void AttachAnimationSidecar(aiScene *scene, unsigned int animationIndex, aiAnimationSidecar *sidecar);
+
+/** Attach ownership of scene physics sidecar (importer use). Takes ownership. */
+void AttachPhysicsSidecar(aiScene *scene, aiPhysicsSidecar *sidecar);
 
 } // namespace Assimp
 #endif

@@ -2504,8 +2504,9 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
     const bool hasMeshSidecar = aiSceneHasMeshSidecar(mScene) != 0;
     const bool hasMaterialSidecar = aiSceneHasMaterialSidecar(mScene) != 0;
     const bool hasAnimationSidecar = aiSceneHasAnimationSidecar(mScene) != 0;
+    const bool hasPhysicsSidecar = aiSceneHasPhysicsSidecar(mScene) != 0;
     if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMeshSidecar ||
-            hasMaterialSidecar || hasAnimationSidecar) {
+            hasMaterialSidecar || hasAnimationSidecar || hasPhysicsSidecar) {
         mScene->mMetaData = new aiMetadata;
         if (hasVersion) {
             mScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(a.asset.version));
@@ -2533,6 +2534,10 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
         if (hasAnimationSidecar) {
             const bool flag = true;
             mScene->mMetaData->Add(AI_METADATA_ANIMATION_SIDECAR, flag);
+        }
+        if (hasPhysicsSidecar) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_PHYSICS_SIDECAR, flag);
         }
     }
 }
@@ -2569,6 +2574,15 @@ void glTF2Importer::InternReadFile(const std::string &pFile, aiScene *pScene, IO
     ImportNodes(asset);
 
     ImportAnimations(asset);
+
+    if (!asset.physicsSidecarJson.empty()) {
+        std::unique_ptr<aiPhysicsSidecar> sc(new aiPhysicsSidecar());
+        sc->mExtensionsJsonLength = asset.physicsSidecarJson.size();
+        sc->mExtensionsJson = new char[sc->mExtensionsJsonLength + 1];
+        memcpy(sc->mExtensionsJson, asset.physicsSidecarJson.c_str(), sc->mExtensionsJsonLength + 1);
+        AttachPhysicsSidecar(mScene, sc.release());
+        ASSIMP_LOG_DEBUG("GLTF: Attached physics sidecar (", asset.physicsSidecarJson.size(), " bytes)");
+    }
 
     ImportCommonMetadata(asset);
 

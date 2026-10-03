@@ -1166,6 +1166,8 @@ public:
         bool KHR_materials_anisotropy{false};
         bool KHR_materials_iridescence{false};
         bool KHR_animation_pointer{false};
+        bool KHR_implicit_shapes{false};
+        bool KHR_physics_rigid_bodies{false};
         bool KHR_draco_mesh_compression{false};
         bool FB_ngon_encoding{false};
         bool KHR_texture_basisu{false};
@@ -1205,6 +1207,9 @@ public:
     LazyDict<Texture> textures;
 
     Ref<Scene> scene;
+
+    /** Prebuilt UTF-8 JSON for aiPhysicsSidecar (filled in Load when physics ext used). */
+    std::string physicsSidecarJson;
 
 public:
     Asset(IOSystem *io = nullptr, rapidjson::IRemoteSchemaDocumentProvider *schemaDocumentProvider = nullptr) :

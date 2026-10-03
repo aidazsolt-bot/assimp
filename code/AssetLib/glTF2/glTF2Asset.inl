@@ -48,6 +48,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/document.h>
 #include <rapidjson/schema.h>
 #include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 
 #include <cmath>
 
@@ -100,6 +101,7 @@ using glTFCommon::MemberOrDefault;
 using glTFCommon::ReadMember;
 using glTFCommon::FindMember;
 using glTFCommon::FindObject;
+using glTFCommon::FindString;
 using glTFCommon::FindUInt;
 using glTFCommon::FindArray;
 using glTFCommon::FindArray;
@@ -2205,6 +2207,56 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
     ReadExtensionsUsed(doc);
     ReadExtensionsRequired(doc);
 
+    // Build physics sidecar JSON while Document is alive (host Bullet / SV semantics).
+    physicsSidecarJson.clear();
+    if (extensionsUsed.KHR_implicit_shapes || extensionsUsed.KHR_physics_rigid_bodies) {
+        rapidjson::Document out;
+        out.SetObject();
+        rapidjson::Document::AllocatorType &al = out.GetAllocator();
+        if (Value *extRoot = FindObject(doc, "extensions")) {
+            if (Value *imp = FindObject(*extRoot, "KHR_implicit_shapes")) {
+                rapidjson::Value copy(*imp, al);
+                out.AddMember("KHR_implicit_shapes", copy, al);
+            }
+            if (Value *prb = FindObject(*extRoot, "KHR_physics_rigid_bodies")) {
+                rapidjson::Value copy(*prb, al);
+                out.AddMember("KHR_physics_rigid_bodies", copy, al);
+            }
+        }
+        rapidjson::Value nodesArr(rapidjson::kArrayType);
+        if (Value *nodes = FindArray(doc, "nodes")) {
+            for (rapidjson::SizeType i = 0; i < nodes->Size(); ++i) {
+                Value &node = (*nodes)[i];
+                if (!node.IsObject()) {
+                    continue;
+                }
+                Value *nodeExt = FindObject(node, "extensions");
+                if (!nodeExt) {
+                    continue;
+                }
+                Value *nodePhys = FindObject(*nodeExt, "KHR_physics_rigid_bodies");
+                if (!nodePhys) {
+                    continue;
+                }
+                rapidjson::Value entry(rapidjson::kObjectType);
+                entry.AddMember("index", static_cast<unsigned>(i), al);
+                if (Value *name = glTFCommon::FindString(node, "name")) {
+                    entry.AddMember("name", rapidjson::Value(name->GetString(), al).Move(), al);
+                }
+                rapidjson::Value physCopy(*nodePhys, al);
+                entry.AddMember("KHR_physics_rigid_bodies", physCopy, al);
+                nodesArr.PushBack(entry, al);
+            }
+        }
+        if (!nodesArr.Empty()) {
+            out.AddMember("nodes", nodesArr, al);
+        }
+        rapidjson::StringBuffer sbuf;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(sbuf);
+        out.Accept(writer);
+        physicsSidecarJson = sbuf.GetString();
+    }
+
 #ifndef ASSIMP_ENABLE_DRACO
     // Is Draco required?
     if (extensionsRequired.KHR_draco_mesh_compression) {
@@ -2330,6 +2382,8 @@ inline void Asset::ReadExtensionsUsed(Document &doc) {
     CHECK_EXT(KHR_materials_anisotropy);
     CHECK_EXT(KHR_materials_iridescence);
     CHECK_EXT(KHR_animation_pointer);
+    CHECK_EXT(KHR_implicit_shapes);
+    CHECK_EXT(KHR_physics_rigid_bodies);
     CHECK_EXT(KHR_draco_mesh_compression);
     CHECK_EXT(KHR_texture_basisu);
     CHECK_EXT(EXT_texture_webp);

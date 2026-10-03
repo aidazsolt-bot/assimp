@@ -179,3 +179,13 @@ host must build the same pass (see `ensureOpaqueTransmissionPass` /
 
 Sidecar is for **missing file payload** (custom attrs, extras JSON), not for
 **missing renderer features**.
+
+## Physics sidecar
+
+Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_METADATA_PHYSICS_SIDECAR`).
+
+- `aiSceneHasPhysicsSidecar` / `aiGetPhysicsSidecar`
+- JSON: root extension objects + `nodes[]` with `{index,name,KHR_physics_rigid_bodies}`
+- Assimp does not simulate; host (Bullet) steps and writes node TRS.
+- Collider `geometry.mesh` stays in the JSON bag only. Do **not** promote those
+  meshes onto `aiNode::mMeshes` (proxies are often intentionally mesh-less).
