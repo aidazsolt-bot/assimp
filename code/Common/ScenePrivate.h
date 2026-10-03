@@ -47,6 +47,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <assimp/ai_assert.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
+
+#include <vector>
 
 namespace Assimp {
 
@@ -54,12 +57,13 @@ namespace Assimp {
 class Importer;
 
 struct ScenePrivateData {
-    //  The struct constructor.
     ScenePrivateData() AI_NO_EXCEPT;
+
+    ~ScenePrivateData();
 
     // Importer that originally loaded the scene though the C-API
     // If set, this object is owned by this private data instance.
-    Assimp::Importer* mOrigImporter;
+    Assimp::Importer *mOrigImporter;
 
     // List of post-processing steps already applied to the scene.
     unsigned int mPPStepsApplied;
@@ -70,14 +74,25 @@ struct ScenePrivateData {
     // and mOrigImporter are no longer safe to rely on and only
     // serve informative purposes.
     bool mIsCopy;
+
+    // Optional generic mesh sidecar data, indexed by mesh index (nullptr = none).
+    // Does not change public aiMesh / aiScene ABI.
+    std::vector<aiMeshSidecar *> mMeshSidecars;
 };
 
-inline
-ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
-: mOrigImporter( nullptr )
-, mPPStepsApplied( 0 )
-, mIsCopy( false ) {
+inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
+        : mOrigImporter(nullptr),
+          mPPStepsApplied(0),
+          mIsCopy(false),
+          mMeshSidecars() {
     // empty
+}
+
+inline ScenePrivateData::~ScenePrivateData() {
+    for (aiMeshSidecar *s : mMeshSidecars) {
+        delete s;
+    }
+    mMeshSidecars.clear();
 }
 
 // Access private data stored in the scene

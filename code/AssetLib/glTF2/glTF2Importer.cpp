@@ -57,16 +57,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/commonMetaData.h>
 #include <assimp/importerdesc.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 #include <assimp/DefaultLogger.hpp>
 #include <assimp/Importer.hpp>
 
+#include "Common/ScenePrivate.h"
+
 #include <array>
 #include <memory>
+#include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <rapidjson/document.h>
-#include <rapidjson/rapidjson.h>
 #include <rapidjson/error/en.h>
+#include <rapidjson/rapidjson.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 
 using namespace Assimp;
 using namespace glTF2;
@@ -78,6 +86,193 @@ namespace {
         aiVector3D xyz;
         ai_real w;
     };
+
+    rapidjson::Value SidecarCustomExtensionToJson(const CustomExtension &ext, rapidjson::Document::AllocatorType &al) {
+        if (ext.mStringValue.isPresent) {
+            return rapidjson::Value(ext.mStringValue.value.c_str(), al);
+        }
+        if (ext.mDoubleValue.isPresent) {
+            return rapidjson::Value(ext.mDoubleValue.value);
+        }
+        if (ext.mUint64Value.isPresent) {
+            return rapidjson::Value(ext.mUint64Value.value);
+        }
+        if (ext.mInt64Value.isPresent) {
+            return rapidjson::Value(ext.mInt64Value.value);
+        }
+        if (ext.mBoolValue.isPresent) {
+            return rapidjson::Value(ext.mBoolValue.value);
+        }
+        if (ext.mValues.isPresent) {
+            bool asArray = !ext.mValues.value.empty();
+            for (const CustomExtension &child : ext.mValues.value) {
+                if (child.name != ext.name) {
+                    asArray = false;
+                    break;
+                }
+            }
+            if (asArray) {
+                rapidjson::Value arr(rapidjson::kArrayType);
+                for (const CustomExtension &child : ext.mValues.value) {
+                    arr.PushBack(SidecarCustomExtensionToJson(child, al), al);
+                }
+                return arr;
+            }
+            rapidjson::Value obj(rapidjson::kObjectType);
+            for (const CustomExtension &child : ext.mValues.value) {
+                rapidjson::Value key(child.name.c_str(), al);
+                obj.AddMember(key, SidecarCustomExtensionToJson(child, al), al);
+            }
+            return obj;
+        }
+        return rapidjson::Value(rapidjson::kNullType);
+    }
+
+    void SidecarAddExtrasToObject(rapidjson::Value &obj, const Extras &extras, rapidjson::Document::AllocatorType &al) {
+        for (const CustomExtension &ext : extras.mValues) {
+            rapidjson::Value::MemberIterator it = obj.FindMember(ext.name.c_str());
+            if (it != obj.MemberEnd()) {
+                obj.RemoveMember(it);
+            }
+            rapidjson::Value key(ext.name.c_str(), al);
+            obj.AddMember(key, SidecarCustomExtensionToJson(ext, al), al);
+        }
+    }
+
+    void SidecarAddExtensionsToObject(rapidjson::Value &obj, const CustomExtension &extensionsRoot, rapidjson::Document::AllocatorType &al) {
+        if (!extensionsRoot.mValues.isPresent) {
+            return;
+        }
+        for (const CustomExtension &ext : extensionsRoot.mValues.value) {
+            rapidjson::Value::MemberIterator it = obj.FindMember(ext.name.c_str());
+            if (it != obj.MemberEnd()) {
+                obj.RemoveMember(it);
+            }
+            rapidjson::Value key(ext.name.c_str(), al);
+            obj.AddMember(key, SidecarCustomExtensionToJson(ext, al), al);
+        }
+    }
+
+    char *SidecarDupJson(const std::string &json, size_t &outLength) {
+        if (json.empty() || json == "{}") {
+            outLength = 0;
+            return nullptr;
+        }
+        outLength = json.size();
+        char *copy = new char[outLength + 1];
+        memcpy(copy, json.c_str(), outLength + 1);
+        return copy;
+    }
+
+    std::string SidecarSerializeMergedExtras(const Extras &meshExtras, const Extras &primExtras) {
+        if (!meshExtras.HasExtras() && !primExtras.HasExtras()) {
+            return {};
+        }
+        rapidjson::Document doc;
+        doc.SetObject();
+        SidecarAddExtrasToObject(doc, meshExtras, doc.GetAllocator());
+        SidecarAddExtrasToObject(doc, primExtras, doc.GetAllocator());
+        rapidjson::StringBuffer buffer;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+        doc.Accept(writer);
+        return buffer.GetString();
+    }
+
+    std::string SidecarSerializeMergedExtensions(const CustomExtension &meshExt, const CustomExtension &primExt) {
+        if (!meshExt.mValues.isPresent && !primExt.mValues.isPresent) {
+            return {};
+        }
+        if (meshExt.Size() == 0 && primExt.Size() == 0) {
+            return {};
+        }
+        rapidjson::Document doc;
+        doc.SetObject();
+        SidecarAddExtensionsToObject(doc, meshExt, doc.GetAllocator());
+        SidecarAddExtensionsToObject(doc, primExt, doc.GetAllocator());
+        if (doc.ObjectEmpty()) {
+            return {};
+        }
+        rapidjson::StringBuffer buffer;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+        doc.Accept(writer);
+        return buffer.GetString();
+    }
+
+    uint8_t *SidecarExtractAccessorBytes(Accessor &acc, const std::vector<unsigned int> *remappingIndices,
+            size_t &outElements, size_t &outByteLength) {
+        uint8_t *data = acc.GetPointer();
+        if (data == nullptr) {
+            throw DeadlyImportError("GLTF2: data is null when extracting sidecar attribute from ",
+                    getContextForErrorMessages(acc.id, acc.name));
+        }
+        const size_t usedCount = (remappingIndices != nullptr) ? remappingIndices->size() : acc.count;
+        const size_t elemSize = acc.GetElementSize();
+        const size_t stride = acc.GetStride();
+        uint8_t *outData = new uint8_t[usedCount * elemSize];
+        if (remappingIndices != nullptr) {
+            for (size_t i = 0; i < usedCount; ++i) {
+                const size_t srcIdx = (*remappingIndices)[i];
+                if (srcIdx >= acc.count) {
+                    delete[] outData;
+                    throw DeadlyImportError("GLTF: sidecar index ", srcIdx, " >= count ", acc.count, " in ",
+                            getContextForErrorMessages(acc.id, acc.name));
+                }
+                memcpy(outData + i * elemSize, data + srcIdx * stride, elemSize);
+            }
+        } else if (stride == elemSize) {
+            memcpy(outData, data, usedCount * elemSize);
+        } else {
+            for (size_t i = 0; i < usedCount; ++i) {
+                memcpy(outData + i * elemSize, data + i * stride, elemSize);
+            }
+        }
+        outElements = usedCount;
+        outByteLength = usedCount * elemSize;
+        return outData;
+    }
+
+    void SidecarTryAttachForPrimitive(aiScene *scene, unsigned int meshIndex, Mesh &mesh, Mesh::Primitive &prim,
+            const std::vector<unsigned int> *vertexRemappingTable) {
+        const bool hasCustomAttrs = !prim.attributes.custom.empty();
+        const bool hasExtras = mesh.extras.HasExtras() || prim.extras.HasExtras();
+        const bool hasExtensions = (mesh.customExtensions.Size() != 0) || (prim.customExtensions.Size() != 0);
+        if (!hasCustomAttrs && !hasExtras && !hasExtensions) {
+            return;
+        }
+
+        std::unique_ptr<aiMeshSidecar> sidecar(new aiMeshSidecar());
+
+        if (hasCustomAttrs) {
+            sidecar->mNumBuffers = static_cast<unsigned int>(prim.attributes.custom.size());
+            sidecar->mBuffers = new aiSidecarBuffer[sidecar->mNumBuffers];
+            for (unsigned int i = 0; i < sidecar->mNumBuffers; ++i) {
+                const std::pair<std::string, Ref<Accessor>> &entry = prim.attributes.custom[i];
+                Ref<Accessor> accessor = entry.second;
+                if (!accessor) {
+                    ASSIMP_LOG_WARN("GLTF: Skipping null sidecar attribute \"", entry.first, "\"");
+                    continue;
+                }
+                size_t numElements = 0;
+                size_t byteLength = 0;
+                uint8_t *bytes = SidecarExtractAccessorBytes(*accessor, vertexRemappingTable, numElements, byteLength);
+                aiSidecarBuffer &buf = sidecar->mBuffers[i];
+                buf.mName.Set(entry.first);
+                buf.mNumElements = static_cast<unsigned int>(numElements);
+                buf.mNumComponents = accessor->GetNumComponents();
+                buf.mComponentType = static_cast<unsigned int>(accessor->componentType);
+                buf.mData = bytes;
+                buf.mByteLength = byteLength;
+            }
+        }
+
+        const std::string extrasJson = SidecarSerializeMergedExtras(mesh.extras, prim.extras);
+        sidecar->mExtrasJson = SidecarDupJson(extrasJson, sidecar->mExtrasJsonLength);
+
+        const std::string extensionsJson = SidecarSerializeMergedExtensions(mesh.customExtensions, prim.customExtensions);
+        sidecar->mExtensionsJson = SidecarDupJson(extensionsJson, sidecar->mExtensionsJsonLength);
+
+        AttachMeshSidecar(scene, meshIndex, sidecar.release());
+    }
 } // namespace
 
 //
@@ -939,6 +1134,9 @@ void glTF2Importer::ImportMeshes(glTF2::Asset &r) {
             } else {
                 aim->mMaterialIndex = mScene->mNumMaterials - 1;
             }
+
+            const unsigned int meshIndex = static_cast<unsigned int>(meshes.size() - 1u);
+            SidecarTryAttachForPrimitive(mScene, meshIndex, mesh, prim, vertexRemappingTable);
         }
     }
 
@@ -1847,7 +2045,8 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
     const bool hasCopyright = !a.asset.copyright.empty();
     const bool hasSceneMetadata = a.scene->customExtensions;
     const bool hasSceneExtras = a.scene->extras.HasExtras();
-    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras) {
+    const bool hasMeshSidecar = aiSceneHasMeshSidecar(mScene) != 0;
+    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMeshSidecar) {
         mScene->mMetaData = new aiMetadata;
         if (hasVersion) {
             mScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(a.asset.version));
@@ -1863,6 +2062,10 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
         }
         if (hasSceneExtras) {
             ParseExtras(mScene->mMetaData, a.scene->extras);
+        }
+        if (hasMeshSidecar) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_MESH_SIDECAR, flag);
         }
     }
 }

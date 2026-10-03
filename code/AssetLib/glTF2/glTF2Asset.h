@@ -884,6 +884,8 @@ struct Mesh : public Object {
 
         struct Attributes {
             AccessorList position, normal, tangent, texcoord, color, joint, jointmatrix, weight;
+            /** Non-standard / underscore attributes (e.g. _SCALE) kept for sidecar export. */
+            std::vector<std::pair<std::string, Ref<Accessor>>> custom;
         } attributes;
 
         Ref<Accessor> indices;
@@ -898,7 +900,11 @@ struct Mesh : public Object {
         // extension: FB_ngon_encoding
         bool ngonEncoded;
 
-        Primitive(): ngonEncoded(false) {}
+        /** Primitive-level extras / extensions (mesh-level live on Object). */
+        Extras extras;
+        CustomExtension customExtensions;
+
+        Primitive() : ngonEncoded(false) {}
     };
 
     std::vector<Primitive> primitives;
