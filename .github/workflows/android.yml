@@ -18,7 +18,6 @@ jobs:
       with:
         java-version: '21'
         distribution: 'redhat'
-        cache: gradle
     - name: Check java version and PATH setting
       run: java --version
 
