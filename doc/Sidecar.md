@@ -186,6 +186,9 @@ Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_
 
 - `aiSceneHasPhysicsSidecar` / `aiGetPhysicsSidecar`
 - JSON: root extension objects + `nodes[]` with `{index,name,KHR_physics_rigid_bodies}`
+- `index` is the glTF `nodes[]` array index (not DFS order under Assimp's synthetic ROOT).
 - Assimp does not simulate; host (Bullet) steps and writes node TRS.
 - Collider `geometry.mesh` stays in the JSON bag only. Do **not** promote those
   meshes onto `aiNode::mMeshes` (proxies are often intentionally mesh-less).
+
+Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/`.
