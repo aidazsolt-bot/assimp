@@ -59,6 +59,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <array>
 #include <cstring>
+#include <functional>
 #include <fstream>
 #include <sstream>
 
@@ -1264,6 +1265,8 @@ TEST_F(utglTF2ImportExport, importglTF2_MeshSidecarAbsentOnPlainMesh) {
     EXPECT_EQ(nullptr, aiGetMaterialSidecar(scene, 0));
     EXPECT_FALSE(aiSceneHasAnimationSidecar(scene));
     EXPECT_EQ(nullptr, aiGetAnimationSidecar(scene, 0));
+    EXPECT_FALSE(aiSceneHasPhysicsSidecar(scene));
+    EXPECT_EQ(nullptr, aiGetPhysicsSidecar(scene));
 }
 
 TEST_F(utglTF2ImportExport, importglTF2_MaterialSidecarIridescenceFactors) {
@@ -1421,6 +1424,58 @@ TEST_F(utglTF2ImportExport, importglTF2_AnimationSidecarPointerMixed) {
     EXPECT_NE(std::string::npos, json.find("/materials/0/pbrMetallicRoughness/baseColorFactor"));
     // Node TRS pointer path must not appear as sidecar channel (classic path used).
     EXPECT_EQ(std::string::npos, json.find("/nodes/0/translation"));
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_PhysicsSidecarRigidBodies) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarPhysicsRigidBodies/SidecarPhysicsRigidBodies.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+
+    EXPECT_TRUE(aiSceneHasPhysicsSidecar(scene));
+    const aiPhysicsSidecar *psc = aiGetPhysicsSidecar(scene);
+    ASSERT_NE(nullptr, psc);
+    ASSERT_NE(nullptr, psc->mExtensionsJson);
+    const std::string json(psc->mExtensionsJson, psc->mExtensionsJsonLength);
+
+    EXPECT_NE(std::string::npos, json.find("KHR_implicit_shapes"));
+    EXPECT_NE(std::string::npos, json.find("KHR_physics_rigid_bodies"));
+    EXPECT_NE(std::string::npos, json.find("sphere"));
+    EXPECT_NE(std::string::npos, json.find("marble2"));
+    EXPECT_NE(std::string::npos, json.find("proxy-spiral"));
+    EXPECT_NE(std::string::npos, json.find("angularVelocity"));
+    EXPECT_NE(std::string::npos, json.find("physicsMaterials"));
+    EXPECT_NE(std::string::npos, json.find("collisionFilters"));
+    // Collider mesh reference stays in JSON (orphan mesh index 1).
+    EXPECT_NE(std::string::npos, json.find("\"mesh\""));
+
+    // glTF node indices preserved in sidecar bag
+    EXPECT_NE(std::string::npos, json.find("\"index\":0"));
+    EXPECT_NE(std::string::npos, json.find("\"index\":1"));
+
+    // proxy-spiral must remain mesh-less on the aiNode (collider mesh not promoted).
+    const aiNode *proxy = nullptr;
+    std::function<void(const aiNode *)> walk;
+    walk = [&](const aiNode *n) {
+        if (n == nullptr) {
+            return;
+        }
+        if (std::strcmp(n->mName.C_Str(), "proxy-spiral") == 0) {
+            proxy = n;
+        }
+        for (unsigned int i = 0; i < n->mNumChildren; ++i) {
+            walk(n->mChildren[i]);
+        }
+    };
+    walk(scene->mRootNode);
+    ASSERT_NE(nullptr, proxy);
+    EXPECT_EQ(0u, proxy->mNumMeshes);
+
+    bool metaFlag = false;
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_PHYSICS_SIDECAR, metaFlag));
+    EXPECT_TRUE(metaFlag);
 }
 
 TEST_F(utglTF2ImportExport, importAnimationInterpolationIsPreserved) {

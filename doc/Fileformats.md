@@ -32,6 +32,8 @@ __Importers__:
   sidecar (`aiMaterialSidecar`) until typed MATKEYs exist.
   `KHR_animation_pointer` channels that are not classic node TRS/weights use the
   animation sidecar (`aiAnimationSidecar`).
+  `KHR_implicit_shapes` / `KHR_physics_rigid_bodies` use the scene-level physics
+  sidecar (`aiPhysicsSidecar`).
 - HMB
 - IFC-STEP
 - IQM
