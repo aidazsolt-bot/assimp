@@ -71,3 +71,29 @@ the only importer. Suggested mapping for a future app bridge:
 
 Out of scope for the Assimp sidecar branch itself: Embedding bind, replacing
 `look_babylon_scene.js` Append, NativeDraco path changes.
+
+### Transmission: file data vs Babylon runtime (honest split)
+
+Symptom often reported when skipping `SceneLoader.Append`:
+
+> Transmission factors are set, but Babylon needs an opaque-scene RTT
+> (`TransmissionHelper` from the glTF loader). Assimp pack without Append
+> falls back to IBL refraction only - gloss/tint OK, no real see-through
+> (e.g. cloth behind dragon glass).
+
+| Piece | In the glTF/model file? | Assimp today | Sidecar? |
+|---|---|---|---|
+| `KHR_materials_transmission` factor / texture | **Yes** | Already on `aiMaterial` (`AI_MATKEY_TRANSMISSION_FACTOR` / `AI_MATKEY_TRANSMISSION_TEXTURE`) | **No** - not needed |
+| `KHR_materials_volume` thickness / attenuation | **Yes** | Already on `aiMaterial` volume keys | **No** - not needed |
+| Opaque-scene color buffer / `TransmissionHelper` RTT | **No** - runtime only | Cannot invent a framebuffer | **No** - never |
+| Binding `subSurface.refractionTexture` to that RTT | **No** - engine wiring | App / Babylon JS | **No** |
+
+So: Assimp (and sidecar) can deliver **authored** transmission numbers honestly.
+They **cannot** deliver "true see-through" - that is Babylon painting an opaque
+pass into a render target and sampling it as refraction, which
+`babylonjs.loaders` + `TransmissionHelper` set up on Append. Without Append the
+host must build the same pass (see `ensureOpaqueTransmissionPass` /
+`refractionTexture` in RenderAssimp2026 `look_babylon_scene.js`).
+
+Sidecar is for **missing file payload** (custom attrs, extras JSON), not for
+**missing renderer features**.
