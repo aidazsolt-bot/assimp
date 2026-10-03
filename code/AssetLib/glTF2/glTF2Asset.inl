@@ -2009,6 +2009,15 @@ inline void Animation::Read(Value &obj, Asset &r) {
                         c.target.path = AnimationPath_SCALE;
                     } else if (p == "weights") {
                         c.target.path = AnimationPath_WEIGHTS;
+                    } else if (p == "pointer") {
+                        c.target.path = AnimationPath_POINTER;
+                        if (Value *extensions = FindObject(*target, "extensions")) {
+                            if (Value *kap = FindObject(*extensions, "KHR_animation_pointer")) {
+                                if (Value *ptr = FindString(*kap, "pointer")) {
+                                    c.target.pointer = ptr->GetString();
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2320,6 +2329,7 @@ inline void Asset::ReadExtensionsUsed(Document &doc) {
     CHECK_EXT(KHR_materials_emissive_strength);
     CHECK_EXT(KHR_materials_anisotropy);
     CHECK_EXT(KHR_materials_iridescence);
+    CHECK_EXT(KHR_animation_pointer);
     CHECK_EXT(KHR_draco_mesh_compression);
     CHECK_EXT(KHR_texture_basisu);
     CHECK_EXT(EXT_texture_webp);

@@ -48,6 +48,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *  - Mesh sidecar: custom / underscore vertex attributes, mesh extras JSON.
  *  - Material sidecar: unmapped material extensions (e.g. KHR_materials_iridescence)
  *    as UTF-8 JSON until typed MATKEYs exist.
+ *  - Animation sidecar: KHR_animation_pointer channels that do not map to aiNodeAnim,
+ *    as UTF-8 JSON + optional float sampler buffers.
  *
  *  See doc/Sidecar.md.
  */
@@ -73,6 +75,9 @@ struct aiScene;
 
 /** Scene metadata: present and true when at least one material has sidecar data. */
 #define AI_METADATA_MATERIAL_SIDECAR "HasMaterialSidecar"
+
+/** Scene metadata: present and true when at least one animation has sidecar data. */
+#define AI_METADATA_ANIMATION_SIDECAR "HasAnimationSidecar"
 
 /** Component type for #aiSidecarBuffer::mComponentType (glTF-aligned). */
 enum aiSidecarComponentType {
@@ -241,6 +246,62 @@ ASSIMP_API const C_STRUCT aiMaterialSidecar *aiGetMaterialSidecar(
         const C_STRUCT aiScene *pScene,
         unsigned int materialIndex);
 
+/**
+ * Per-animation sidecar bag for unmapped animation extensions (e.g. KHR_animation_pointer).
+ *
+ * Indexed by animation index (same as aiScene::mAnimations).
+ * Assimp does not play these back - host resolves JSON pointers and samples buffers.
+ */
+struct aiAnimationSidecar {
+    /** UTF-8 JSON object of unmapped animation extension data, or nullptr. */
+    char *mExtensionsJson;
+
+    /** Byte length of mExtensionsJson excluding trailing NUL (0 if nullptr). */
+    size_t mExtensionsJsonLength;
+
+    /** Number of named sampler buffers (times / values). */
+    unsigned int mNumBuffers;
+
+    /** Array of mNumBuffers buffers (owned). */
+    C_STRUCT aiSidecarBuffer *mBuffers;
+
+#ifdef __cplusplus
+    aiAnimationSidecar() AI_NO_EXCEPT
+            : mExtensionsJson(nullptr),
+              mExtensionsJsonLength(0),
+              mNumBuffers(0),
+              mBuffers(nullptr) {}
+
+    ~aiAnimationSidecar() {
+        delete[] mExtensionsJson;
+        mExtensionsJson = nullptr;
+        mExtensionsJsonLength = 0;
+        delete[] mBuffers;
+        mBuffers = nullptr;
+        mNumBuffers = 0;
+    }
+
+private:
+    aiAnimationSidecar(const aiAnimationSidecar &) = delete;
+    aiAnimationSidecar &operator=(const aiAnimationSidecar &) = delete;
+#endif
+};
+
+/**
+ * @brief Non-zero if the scene carries any animation sidecar data.
+ */
+ASSIMP_API int aiSceneHasAnimationSidecar(const C_STRUCT aiScene *pScene);
+
+/**
+ * @brief Get sidecar for an animation, or nullptr if none.
+ *
+ * Lifetime is tied to the aiScene (valid until aiReleaseImport / delete).
+ * Not preserved by aiCopyScene / SceneCombiner copies.
+ */
+ASSIMP_API const C_STRUCT aiAnimationSidecar *aiGetAnimationSidecar(
+        const C_STRUCT aiScene *pScene,
+        unsigned int animationIndex);
+
 #ifdef __cplusplus
 } // extern "C"
 
@@ -251,6 +312,9 @@ void AttachMeshSidecar(aiScene *scene, unsigned int meshIndex, aiMeshSidecar *si
 
 /** Attach ownership of @p sidecar for @p materialIndex (importer use). Takes ownership. */
 void AttachMaterialSidecar(aiScene *scene, unsigned int materialIndex, aiMaterialSidecar *sidecar);
+
+/** Attach ownership of @p sidecar for @p animationIndex (importer use). Takes ownership. */
+void AttachAnimationSidecar(aiScene *scene, unsigned int animationIndex, aiAnimationSidecar *sidecar);
 
 } // namespace Assimp
 #endif

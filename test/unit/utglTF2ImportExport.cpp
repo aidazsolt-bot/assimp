@@ -58,6 +58,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/schema.h>
 
 #include <array>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 
@@ -1261,6 +1262,8 @@ TEST_F(utglTF2ImportExport, importglTF2_MeshSidecarAbsentOnPlainMesh) {
     EXPECT_EQ(nullptr, aiGetMeshSidecar(scene, 0));
     EXPECT_FALSE(aiSceneHasMaterialSidecar(scene));
     EXPECT_EQ(nullptr, aiGetMaterialSidecar(scene, 0));
+    EXPECT_FALSE(aiSceneHasAnimationSidecar(scene));
+    EXPECT_EQ(nullptr, aiGetAnimationSidecar(scene, 0));
 }
 
 TEST_F(utglTF2ImportExport, importglTF2_MaterialSidecarIridescenceFactors) {
@@ -1310,6 +1313,114 @@ TEST_F(utglTF2ImportExport, importglTF2_MaterialSidecarIridescenceTextures) {
     EXPECT_NE(std::string::npos, json.find("texCoord"));
     // Embedded image path should be *N
     EXPECT_NE(std::string::npos, json.find("\"*"));
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_AnimationSidecarPointerMaterial) {
+    Assimp::Importer importer;
+    // Pointer-only animations have mNumChannels==0; ValidateDataStructure allows that when
+    // an animation sidecar is present (see Validation).
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarAnimPointerMaterial/SidecarAnimPointerMaterial.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_EQ(1u, scene->mNumAnimations);
+    EXPECT_EQ(0u, scene->mAnimations[0]->mNumChannels);
+    EXPECT_NEAR(1000.0, scene->mAnimations[0]->mDuration, 1e-3);
+
+    EXPECT_TRUE(aiSceneHasAnimationSidecar(scene));
+    const aiAnimationSidecar *asc = aiGetAnimationSidecar(scene, 0);
+    ASSERT_NE(nullptr, asc);
+    ASSERT_NE(nullptr, asc->mExtensionsJson);
+    const std::string json(asc->mExtensionsJson, asc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("KHR_animation_pointer"));
+    EXPECT_NE(std::string::npos, json.find("/materials/0/pbrMetallicRoughness/baseColorFactor"));
+    EXPECT_NE(std::string::npos, json.find("sampler_0_input"));
+    EXPECT_NE(std::string::npos, json.find("sampler_0_output"));
+    EXPECT_NE(std::string::npos, json.find("\"outputComponents\":4"));
+
+    ASSERT_EQ(2u, asc->mNumBuffers);
+    const aiSidecarBuffer *inBuf = nullptr;
+    const aiSidecarBuffer *outBuf = nullptr;
+    for (unsigned int i = 0; i < asc->mNumBuffers; ++i) {
+        if (std::strcmp(asc->mBuffers[i].mName.C_Str(), "sampler_0_input") == 0) {
+            inBuf = &asc->mBuffers[i];
+        } else if (std::strcmp(asc->mBuffers[i].mName.C_Str(), "sampler_0_output") == 0) {
+            outBuf = &asc->mBuffers[i];
+        }
+    }
+    ASSERT_NE(nullptr, inBuf);
+    ASSERT_NE(nullptr, outBuf);
+    EXPECT_EQ(2u, inBuf->mNumElements);
+    EXPECT_EQ(1u, inBuf->mNumComponents);
+    EXPECT_EQ(static_cast<unsigned int>(aiSidecarComponentType_Float), inBuf->mComponentType);
+    EXPECT_EQ(2u, outBuf->mNumElements);
+    EXPECT_EQ(4u, outBuf->mNumComponents);
+    const float *times = reinterpret_cast<const float *>(inBuf->mData);
+    const float *cols = reinterpret_cast<const float *>(outBuf->mData);
+    EXPECT_FLOAT_EQ(0.f, times[0]);
+    EXPECT_FLOAT_EQ(1.f, times[1]);
+    EXPECT_FLOAT_EQ(1.f, cols[0]);
+    EXPECT_FLOAT_EQ(0.f, cols[1]);
+    EXPECT_FLOAT_EQ(0.f, cols[2]);
+    EXPECT_FLOAT_EQ(1.f, cols[3]);
+    EXPECT_FLOAT_EQ(0.f, cols[4]);
+    EXPECT_FLOAT_EQ(1.f, cols[5]);
+
+    bool metaFlag = false;
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_ANIMATION_SIDECAR, metaFlag));
+    EXPECT_TRUE(metaFlag);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_AnimationSidecarPointerTexTransform) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarAnimPointerTexTransform/SidecarAnimPointerTexTransform.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_EQ(1u, scene->mNumAnimations);
+    EXPECT_EQ(0u, scene->mAnimations[0]->mNumChannels);
+
+    const aiAnimationSidecar *asc = aiGetAnimationSidecar(scene, 0);
+    ASSERT_NE(nullptr, asc);
+    const std::string json(asc->mExtensionsJson, asc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("KHR_texture_transform/offset"));
+    EXPECT_NE(std::string::npos, json.find("\"outputComponents\":2"));
+
+    const aiSidecarBuffer *outBuf = nullptr;
+    for (unsigned int i = 0; i < asc->mNumBuffers; ++i) {
+        if (std::strcmp(asc->mBuffers[i].mName.C_Str(), "sampler_0_output") == 0) {
+            outBuf = &asc->mBuffers[i];
+        }
+    }
+    ASSERT_NE(nullptr, outBuf);
+    EXPECT_EQ(2u, outBuf->mNumElements);
+    EXPECT_EQ(2u, outBuf->mNumComponents);
+    const float *offs = reinterpret_cast<const float *>(outBuf->mData);
+    EXPECT_FLOAT_EQ(0.f, offs[0]);
+    EXPECT_FLOAT_EQ(0.f, offs[1]);
+    EXPECT_FLOAT_EQ(0.5f, offs[2]);
+    EXPECT_FLOAT_EQ(0.25f, offs[3]);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_AnimationSidecarPointerMixed) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarAnimPointerMixed/SidecarAnimPointerMixed.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_EQ(1u, scene->mNumAnimations);
+    // Classic node translation still on aiNodeAnim
+    ASSERT_EQ(1u, scene->mAnimations[0]->mNumChannels);
+    ASSERT_NE(nullptr, scene->mAnimations[0]->mChannels[0]);
+    EXPECT_EQ(2u, scene->mAnimations[0]->mChannels[0]->mNumPositionKeys);
+
+    const aiAnimationSidecar *asc = aiGetAnimationSidecar(scene, 0);
+    ASSERT_NE(nullptr, asc);
+    const std::string json(asc->mExtensionsJson, asc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("/materials/0/pbrMetallicRoughness/baseColorFactor"));
+    // Node TRS pointer path must not appear as sidecar channel (classic path used).
+    EXPECT_EQ(std::string::npos, json.find("/nodes/0/translation"));
 }
 
 TEST_F(utglTF2ImportExport, importAnimationInterpolationIsPreserved) {

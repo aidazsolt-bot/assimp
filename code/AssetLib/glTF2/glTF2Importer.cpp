@@ -65,6 +65,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -1948,47 +1949,336 @@ aiMeshMorphAnim *CreateMeshMorphAnim(glTF2::Asset &, Node &node, AnimationSample
     }
 }
 
+static bool AnimationSamplerUsable(Animation &anim, Animation::Channel &channel) {
+    if (channel.sampler < 0 || channel.sampler >= static_cast<int>(anim.samplers.size())) {
+        return false;
+    }
+    Animation::Sampler &animsampler = anim.samplers[static_cast<size_t>(channel.sampler)];
+    if (!animsampler.input || !animsampler.output) {
+        ASSIMP_LOG_WARN("Animation ", anim.name, ": Missing sampler input/output. Skipping.");
+        return false;
+    }
+    const size_t inCount = (*animsampler.input).count;
+    const size_t outCount = (*animsampler.output).count;
+    if (inCount > outCount) {
+        ASSIMP_LOG_WARN("Animation ", anim.name, ": Number of keyframes in sampler input ", inCount,
+                " exceeds number of keyframes in sampler output ", outCount);
+        return false;
+    }
+    return true;
+}
+
+/** Map /nodes/N/translation|rotation|scale|weights -> classic node anim path. */
+static bool TryParseNodePropertyPointer(const std::string &pointer, unsigned int &nodeIndex, AnimationPath &path) {
+    static const char kPrefix[] = "/nodes/";
+    if (pointer.size() < sizeof(kPrefix) || pointer.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0) {
+        return false;
+    }
+    size_t i = sizeof(kPrefix) - 1;
+    if (i >= pointer.size() || pointer[i] < '0' || pointer[i] > '9') {
+        return false;
+    }
+    unsigned int idx = 0;
+    while (i < pointer.size() && pointer[i] >= '0' && pointer[i] <= '9') {
+        idx = idx * 10u + static_cast<unsigned int>(pointer[i] - '0');
+        ++i;
+    }
+    if (i >= pointer.size() || pointer[i] != '/') {
+        return false;
+    }
+    const char *rest = pointer.c_str() + i + 1;
+    if (std::strcmp(rest, "translation") == 0) {
+        path = AnimationPath_TRANSLATION;
+    } else if (std::strcmp(rest, "rotation") == 0) {
+        path = AnimationPath_ROTATION;
+    } else if (std::strcmp(rest, "scale") == 0) {
+        path = AnimationPath_SCALE;
+    } else if (std::strcmp(rest, "weights") == 0) {
+        path = AnimationPath_WEIGHTS;
+    } else {
+        return false;
+    }
+    nodeIndex = idx;
+    return true;
+}
+
+static void AssignNodeAnimSampler(AnimationSamplers &sampler, AnimationPath path, Animation::Sampler *animSampler) {
+    if (path == AnimationPath_TRANSLATION) {
+        if (sampler.translation != nullptr) {
+            ASSIMP_LOG_WARN("GLTF: Duplicate translation sampler for node; keeping first.");
+            return;
+        }
+        sampler.translation = animSampler;
+    } else if (path == AnimationPath_ROTATION) {
+        if (sampler.rotation != nullptr) {
+            ASSIMP_LOG_WARN("GLTF: Duplicate rotation sampler for node; keeping first.");
+            return;
+        }
+        sampler.rotation = animSampler;
+    } else if (path == AnimationPath_SCALE) {
+        if (sampler.scale != nullptr) {
+            ASSIMP_LOG_WARN("GLTF: Duplicate scale sampler for node; keeping first.");
+            return;
+        }
+        sampler.scale = animSampler;
+    } else if (path == AnimationPath_WEIGHTS) {
+        if (sampler.weight != nullptr) {
+            ASSIMP_LOG_WARN("GLTF: Duplicate weights sampler for node; keeping first.");
+            return;
+        }
+        sampler.weight = animSampler;
+    }
+}
+
 std::unordered_map<unsigned int, AnimationSamplers> GatherSamplers(Animation &anim) {
     std::unordered_map<unsigned int, AnimationSamplers> samplers;
     for (unsigned int c = 0; c < anim.channels.size(); ++c) {
         Animation::Channel &channel = anim.channels[c];
-        if (channel.sampler < 0 || channel.sampler >= static_cast<int>(anim.samplers.size())) {
+        if (!AnimationSamplerUsable(anim, channel)) {
             continue;
         }
 
-        auto &animsampler = anim.samplers[channel.sampler];
-
-        if (!animsampler.input) {
-            ASSIMP_LOG_WARN("Animation ", anim.name, ": Missing sampler input. Skipping.");
+        // Classic node channels require a valid node ref.
+        if (channel.target.path == AnimationPath_POINTER) {
+            unsigned int nodeIndex = 0;
+            AnimationPath mappedPath = AnimationPath_TRANSLATION;
+            if (TryParseNodePropertyPointer(channel.target.pointer, nodeIndex, mappedPath)) {
+                AssignNodeAnimSampler(samplers[nodeIndex], mappedPath, &anim.samplers[static_cast<size_t>(channel.sampler)]);
+            }
+            // Non-node pointers are handled by the animation sidecar.
             continue;
         }
 
-        if (!animsampler.output) {
-            ASSIMP_LOG_WARN("Animation ", anim.name, ": Missing sampler output. Skipping.");
-            continue;
-        }
-
-        if (animsampler.input->count > animsampler.output->count) {
-            ASSIMP_LOG_WARN("Animation ", anim.name, ": Number of keyframes in sampler input ", animsampler.input->count,
-                            " exceeds number of keyframes in sampler output ", animsampler.output->count);
+        if (!channel.target.node) {
+            ASSIMP_LOG_WARN("Animation ", anim.name, ": Channel missing target node. Skipping.");
             continue;
         }
 
         const unsigned int node_index = channel.target.node.GetIndex();
-
-        AnimationSamplers &sampler = samplers[node_index];
-        if (channel.target.path == AnimationPath_TRANSLATION) {
-            sampler.translation = &anim.samplers[channel.sampler];
-        } else if (channel.target.path == AnimationPath_ROTATION) {
-            sampler.rotation = &anim.samplers[channel.sampler];
-        } else if (channel.target.path == AnimationPath_SCALE) {
-            sampler.scale = &anim.samplers[channel.sampler];
-        } else if (channel.target.path == AnimationPath_WEIGHTS) {
-            sampler.weight = &anim.samplers[channel.sampler];
-        }
+        AssignNodeAnimSampler(samplers[node_index], channel.target.path, &anim.samplers[static_cast<size_t>(channel.sampler)]);
     }
 
     return samplers;
+}
+
+static const char *InterpolationToString(Interpolation interp) {
+    switch (interp) {
+        case Interpolation_STEP:
+            return "STEP";
+        case Interpolation_CUBICSPLINE:
+            return "CUBICSPLINE";
+        default:
+            return "LINEAR";
+    }
+}
+
+/** Extract accessor as tightly packed float components (KHR_animation_pointer conversion). */
+static bool SidecarExtractAccessorFloats(Accessor &acc, std::vector<float> &outFloats,
+        unsigned int &numElements, unsigned int &numComponents) {
+    numComponents = acc.GetNumComponents();
+    numElements = static_cast<unsigned int>(acc.count);
+    if (numComponents == 0 || numElements == 0) {
+        return false;
+    }
+
+    uint8_t *data = acc.GetPointer();
+    if (data == nullptr) {
+        return false;
+    }
+    const size_t elemSize = acc.GetElementSize();
+    const size_t stride = acc.GetStride();
+    const size_t usedCount = acc.count;
+    const size_t byteLength = usedCount * elemSize;
+    std::unique_ptr<uint8_t[]> bytes(new uint8_t[byteLength]);
+    if (stride == elemSize) {
+        memcpy(bytes.get(), data, byteLength);
+    } else {
+        for (size_t i = 0; i < usedCount; ++i) {
+            memcpy(bytes.get() + i * elemSize, data + i * stride, elemSize);
+        }
+    }
+
+    outFloats.resize(static_cast<size_t>(numElements) * static_cast<size_t>(numComponents));
+    if (acc.componentType == ComponentType_FLOAT && !acc.normalized) {
+        memcpy(outFloats.data(), bytes.get(), byteLength);
+        return true;
+    }
+
+    const size_t totalComps = outFloats.size();
+    const unsigned int bytesPerComp = acc.GetBytesPerComponent();
+    for (size_t i = 0; i < totalComps; ++i) {
+        const uint8_t *p = bytes.get() + i * bytesPerComp;
+        float v = 0.f;
+        switch (acc.componentType) {
+            case ComponentType_BYTE: {
+                const int8_t s = *reinterpret_cast<const int8_t *>(p);
+                v = acc.normalized ? (std::max(s / 127.f, -1.f)) : static_cast<float>(s);
+                break;
+            }
+            case ComponentType_UNSIGNED_BYTE: {
+                const uint8_t u = *p;
+                v = acc.normalized ? (u / 255.f) : static_cast<float>(u);
+                break;
+            }
+            case ComponentType_SHORT: {
+                const int16_t s = *reinterpret_cast<const int16_t *>(p);
+                v = acc.normalized ? (std::max(s / 32767.f, -1.f)) : static_cast<float>(s);
+                break;
+            }
+            case ComponentType_UNSIGNED_SHORT: {
+                const uint16_t u = *reinterpret_cast<const uint16_t *>(p);
+                v = acc.normalized ? (u / 65535.f) : static_cast<float>(u);
+                break;
+            }
+            case ComponentType_UNSIGNED_INT: {
+                const uint32_t u = *reinterpret_cast<const uint32_t *>(p);
+                v = static_cast<float>(u);
+                break;
+            }
+            default:
+                return false;
+        }
+        outFloats[i] = v;
+    }
+    return true;
+}
+
+static void SidecarTryAttachAnimationPointer(aiScene *scene, unsigned int animIndex, Animation &anim) {
+    struct PendingChannel {
+        int samplerIndex;
+        std::string pointer;
+        Interpolation interpolation;
+        unsigned int outputComponents;
+        std::string inputName;
+        std::string outputName;
+    };
+    std::vector<PendingChannel> pending;
+    std::unordered_map<int, std::pair<std::string, std::string>> samplerBufferNames;
+
+    for (unsigned int c = 0; c < anim.channels.size(); ++c) {
+        Animation::Channel &channel = anim.channels[c];
+        if (channel.target.path != AnimationPath_POINTER) {
+            continue;
+        }
+        if (channel.target.pointer.empty()) {
+            ASSIMP_LOG_WARN("Animation ", anim.name, ": pointer channel missing KHR_animation_pointer.pointer. Skipping.");
+            continue;
+        }
+        unsigned int nodeIndex = 0;
+        AnimationPath mappedPath = AnimationPath_TRANSLATION;
+        if (TryParseNodePropertyPointer(channel.target.pointer, nodeIndex, mappedPath)) {
+            // Already folded into aiNodeAnim / morph channels.
+            continue;
+        }
+        if (!AnimationSamplerUsable(anim, channel)) {
+            continue;
+        }
+
+        auto namesIt = samplerBufferNames.find(channel.sampler);
+        if (namesIt == samplerBufferNames.end()) {
+            const std::string inName = "sampler_" + ai_to_string(channel.sampler) + "_input";
+            const std::string outName = "sampler_" + ai_to_string(channel.sampler) + "_output";
+            namesIt = samplerBufferNames.emplace(channel.sampler, std::make_pair(inName, outName)).first;
+        }
+
+        Animation::Sampler &samp = anim.samplers[static_cast<size_t>(channel.sampler)];
+        PendingChannel pc;
+        pc.samplerIndex = channel.sampler;
+        pc.pointer = channel.target.pointer;
+        pc.interpolation = samp.interpolation;
+        pc.outputComponents = samp.output->GetNumComponents();
+        pc.inputName = namesIt->second.first;
+        pc.outputName = namesIt->second.second;
+        pending.push_back(std::move(pc));
+    }
+
+    if (pending.empty()) {
+        return;
+    }
+
+    // Build unique float buffers for referenced samplers.
+    struct BuiltBuffer {
+        std::string name;
+        std::vector<float> data;
+        unsigned int numElements;
+        unsigned int numComponents;
+    };
+    std::vector<BuiltBuffer> built;
+    std::unordered_map<std::string, size_t> builtByName;
+
+    auto ensureBuffer = [&](const std::string &name, Accessor &acc, bool forceScalarTime) -> bool {
+        if (builtByName.find(name) != builtByName.end()) {
+            return true;
+        }
+        BuiltBuffer bb;
+        bb.name = name;
+        if (!SidecarExtractAccessorFloats(acc, bb.data, bb.numElements, bb.numComponents)) {
+            ASSIMP_LOG_WARN("Animation ", anim.name, ": Failed to extract sampler buffer \"", name, "\".");
+            return false;
+        }
+        if (forceScalarTime) {
+            bb.numComponents = 1;
+        }
+        builtByName[name] = built.size();
+        built.push_back(std::move(bb));
+        return true;
+    };
+
+    for (const PendingChannel &pc : pending) {
+        Animation::Sampler &samp = anim.samplers[static_cast<size_t>(pc.samplerIndex)];
+        if (!ensureBuffer(pc.inputName, *samp.input, true) || !ensureBuffer(pc.outputName, *samp.output, false)) {
+            return;
+        }
+    }
+
+    rapidjson::Document doc;
+    doc.SetObject();
+    rapidjson::Document::AllocatorType &al = doc.GetAllocator();
+    rapidjson::Value channelsArr(rapidjson::kArrayType);
+    for (const PendingChannel &pc : pending) {
+        rapidjson::Value ch(rapidjson::kObjectType);
+        ch.AddMember("sampler", pc.samplerIndex, al);
+        ch.AddMember("pointer", rapidjson::Value(pc.pointer.c_str(), al).Move(), al);
+        ch.AddMember("interpolation", rapidjson::Value(InterpolationToString(pc.interpolation), al).Move(), al);
+        ch.AddMember("inputBuffer", rapidjson::Value(pc.inputName.c_str(), al).Move(), al);
+        ch.AddMember("outputBuffer", rapidjson::Value(pc.outputName.c_str(), al).Move(), al);
+        ch.AddMember("outputComponents", pc.outputComponents, al);
+        channelsArr.PushBack(ch, al);
+    }
+    rapidjson::Value kap(rapidjson::kObjectType);
+    kap.AddMember("channels", channelsArr, al);
+    doc.AddMember("KHR_animation_pointer", kap, al);
+
+    rapidjson::StringBuffer sbuf;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(sbuf);
+    doc.Accept(writer);
+    const std::string json = sbuf.GetString();
+    if (json.empty() || json == "{}") {
+        return;
+    }
+
+    std::unique_ptr<aiAnimationSidecar> sidecar(new aiAnimationSidecar());
+    sidecar->mExtensionsJsonLength = json.size();
+    sidecar->mExtensionsJson = new char[json.size() + 1];
+    memcpy(sidecar->mExtensionsJson, json.c_str(), json.size() + 1);
+
+    sidecar->mNumBuffers = static_cast<unsigned int>(built.size());
+    sidecar->mBuffers = new aiSidecarBuffer[sidecar->mNumBuffers];
+    for (unsigned int i = 0; i < sidecar->mNumBuffers; ++i) {
+        BuiltBuffer &bb = built[i];
+        aiSidecarBuffer &dst = sidecar->mBuffers[i];
+        dst.mName.Set(bb.name);
+        dst.mNumElements = bb.numElements;
+        dst.mNumComponents = bb.numComponents;
+        dst.mComponentType = static_cast<unsigned int>(aiSidecarComponentType_Float);
+        dst.mByteLength = bb.data.size() * sizeof(float);
+        dst.mData = new uint8_t[dst.mByteLength];
+        memcpy(dst.mData, bb.data.data(), dst.mByteLength);
+    }
+
+    AttachAnimationSidecar(scene, animIndex, sidecar.release());
+    ASSIMP_LOG_DEBUG("GLTF: Attached animation sidecar with ", pending.size(),
+            " KHR_animation_pointer channel(s) for animation index ", animIndex);
 }
 
 void glTF2Importer::ImportAnimations(glTF2::Asset &r) {
@@ -2107,6 +2397,30 @@ void glTF2Importer::ImportAnimations(glTF2::Asset &r) {
             }
         }
 
+        // Pointer channels that are not node TRS/weights -> animation sidecar.
+        SidecarTryAttachAnimationPointer(mScene, i, anim);
+
+        // Duration may also come from sidecar input times (seconds -> ms).
+        if (const aiAnimationSidecar *asc = aiGetAnimationSidecar(mScene, i)) {
+            for (unsigned int b = 0; b < asc->mNumBuffers; ++b) {
+                const aiSidecarBuffer &buf = asc->mBuffers[b];
+                if (buf.mNumComponents != 1 || buf.mData == nullptr || buf.mNumElements == 0) {
+                    continue;
+                }
+                // Input buffers are named sampler_N_input
+                const char *name = buf.mName.C_Str();
+                if (name == nullptr || std::strstr(name, "_input") == nullptr) {
+                    continue;
+                }
+                const float *times = reinterpret_cast<const float *>(buf.mData);
+                const double lastMs = static_cast<double>(times[buf.mNumElements - 1]) * 1000.0;
+                if (lastMs > maxDuration) {
+                    maxDuration = lastMs;
+                }
+                maxNumberOfKeys = std::max(maxNumberOfKeys, buf.mNumElements);
+            }
+        }
+
         ai_anim->mDuration = maxDuration;
         ai_anim->mTicksPerSecond = 1000.0;
     }
@@ -2189,7 +2503,9 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
     const bool hasSceneExtras = a.scene->extras.HasExtras();
     const bool hasMeshSidecar = aiSceneHasMeshSidecar(mScene) != 0;
     const bool hasMaterialSidecar = aiSceneHasMaterialSidecar(mScene) != 0;
-    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMeshSidecar || hasMaterialSidecar) {
+    const bool hasAnimationSidecar = aiSceneHasAnimationSidecar(mScene) != 0;
+    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMeshSidecar ||
+            hasMaterialSidecar || hasAnimationSidecar) {
         mScene->mMetaData = new aiMetadata;
         if (hasVersion) {
             mScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(a.asset.version));
@@ -2213,6 +2529,10 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
         if (hasMaterialSidecar) {
             const bool flag = true;
             mScene->mMetaData->Add(AI_METADATA_MATERIAL_SIDECAR, flag);
+        }
+        if (hasAnimationSidecar) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_ANIMATION_SIDECAR, flag);
         }
     }
 }

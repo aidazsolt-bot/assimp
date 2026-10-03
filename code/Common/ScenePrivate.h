@@ -86,6 +86,9 @@ struct ScenePrivateData {
 
     // Optional material sidecar data, indexed by material index (nullptr = none).
     std::vector<aiMaterialSidecar *> mMaterialSidecars;
+
+    // Optional animation sidecar data, indexed by animation index (nullptr = none).
+    std::vector<aiAnimationSidecar *> mAnimationSidecars;
 };
 
 inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
@@ -94,7 +97,8 @@ inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
           mIsCopy(false),
           mGaussianSplats(),
           mMeshSidecars(),
-          mMaterialSidecars() {
+          mMaterialSidecars(),
+          mAnimationSidecars() {
     // empty
 }
 
@@ -111,6 +115,10 @@ inline ScenePrivateData::~ScenePrivateData() {
         delete s;
     }
     mMaterialSidecars.clear();
+    for (aiAnimationSidecar *s : mAnimationSidecars) {
+        delete s;
+    }
+    mAnimationSidecars.clear();
 }
 
 // Access private data stored in the scene

@@ -273,6 +273,7 @@ enum AnimationPath {
     AnimationPath_ROTATION,
     AnimationPath_SCALE,
     AnimationPath_WEIGHTS,
+    AnimationPath_POINTER //!< KHR_animation_pointer (JSON pointer in Target::pointer)
 };
 
 //! Values for the Animation::Sampler::interpolation field
@@ -1030,8 +1031,9 @@ struct Animation : public Object {
     struct Target {
         Target() = default;
 
-        Ref<Node> node; //!< The node to animate.
-        AnimationPath path{AnimationPath_TRANSLATION}; //!< The property of the node to animate.
+        Ref<Node> node; //!< The node to animate (unset for KHR_animation_pointer).
+        AnimationPath path{AnimationPath_TRANSLATION}; //!< The property of the node to animate, or POINTER.
+        std::string pointer; //!< JSON Pointer when path == AnimationPath_POINTER.
     };
 
     struct Channel {
@@ -1163,6 +1165,7 @@ public:
         bool KHR_materials_emissive_strength{false};
         bool KHR_materials_anisotropy{false};
         bool KHR_materials_iridescence{false};
+        bool KHR_animation_pointer{false};
         bool KHR_draco_mesh_compression{false};
         bool FB_ngon_encoding{false};
         bool KHR_texture_basisu{false};

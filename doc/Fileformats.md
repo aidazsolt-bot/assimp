@@ -30,6 +30,8 @@ __Importers__:
   ABI-safe [sidecar API](Sidecar.md) (`include/assimp/sidecar.h`).
   Unmapped material extensions such as `KHR_materials_iridescence` use the material
   sidecar (`aiMaterialSidecar`) until typed MATKEYs exist.
+  `KHR_animation_pointer` channels that are not classic node TRS/weights use the
+  animation sidecar (`aiAnimationSidecar`).
 - HMB
 - IFC-STEP
 - IQM

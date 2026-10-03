@@ -1,7 +1,7 @@
-# Generic mesh / material sidecar API
+# Generic mesh / material / animation sidecar API
 
 ABI-safe side channels for importer data that do **not** fit the public
-`aiMesh` / `aiMaterial` / `aiScene` layout (avoids the ABI break class of
+`aiMesh` / `aiMaterial` / `aiAnimation` / `aiScene` layout (avoids the ABI break class of
 [PR #6593](https://github.com/assimp/assimp/pull/6593)).
 
 Header: `include/assimp/sidecar.h`
@@ -31,6 +31,18 @@ Per material index (same as `aiScene::mMaterials` / `aiMesh::mMaterialIndex`):
 Do **not** put material extensions on `aiMeshSidecar`. Scene metadata:
 `AI_METADATA_MATERIAL_SIDECAR` (`bool`).
 
+### Animation sidecar (`aiAnimationSidecar`)
+
+Per animation index (same as `aiScene::mAnimations`):
+
+| Field | Meaning |
+|---|---|
+| `mExtensionsJson` | UTF-8 JSON: at least `KHR_animation_pointer.channels[]` |
+| `aiSidecarBuffer[]` | Named float sampler curves (`sampler_N_input` / `sampler_N_output`) |
+
+Assimp does **not** play pointer animations. The host samples buffers and applies
+JSON Pointers. Scene metadata: `AI_METADATA_ANIMATION_SIDECAR` (`bool`).
+
 Lifetime = scene. **Not** preserved by `aiCopyScene` / SceneCombiner.
 
 ## Consumer example
@@ -55,6 +67,11 @@ if (aiSceneHasMeshSidecar(scene)) {
 if (aiSceneHasMaterialSidecar(scene)) {
     const aiMaterialSidecar *msc = aiGetMaterialSidecar(scene, mesh->mMaterialIndex);
     // msc->mExtensionsJson: e.g. KHR_materials_iridescence object
+}
+if (aiSceneHasAnimationSidecar(scene)) {
+    const aiAnimationSidecar *asc = aiGetAnimationSidecar(scene, 0);
+    // asc->mExtensionsJson: KHR_animation_pointer channels
+    // asc->mBuffers: float times / values named by inputBuffer / outputBuffer
 }
 ```
 
@@ -82,6 +99,41 @@ RenderAssimp pack. `texCoord` / transform `scale` are emitted only when authored
 Fixtures: `test/models/glTF2/SidecarCustomAttr/`,
 `test/models/glTF2/SidecarIridescence/`.
 
+### Animation: `KHR_animation_pointer`
+
+Classic channels (`target.node` + `translation` / `rotation` / `scale` / `weights`)
+still fill `aiNodeAnim` / morph channels.
+
+Channels with `path: "pointer"`:
+
+| Pointer | Assimp behaviour |
+|---|---|
+| `/nodes/N/translation\|rotation\|scale\|weights` | Mapped to classic `aiNodeAnim` / morph (v1 convenience) |
+| Anything else (materials, texture transforms, lights, cameras, ...) | Animation sidecar |
+
+Sidecar JSON (authored keys only) example channel entry:
+
+```json
+{
+  "sampler": 0,
+  "pointer": "/materials/0/pbrMetallicRoughness/baseColorFactor",
+  "interpolation": "LINEAR",
+  "inputBuffer": "sampler_0_input",
+  "outputBuffer": "sampler_0_output",
+  "outputComponents": 4
+}
+```
+
+Buffers are float (`5126`), tightly packed. Input is SCALAR times in seconds.
+Output element count matches the accessor (`3x` input count for `CUBICSPLINE`).
+An animation that has only pointer channels still creates `aiAnimation` (name /
+duration / ticks) with `mNumChannels == 0`; duration is derived from sidecar
+input times when needed. `aiProcess_ValidateDataStructure` allows that case when
+an animation sidecar is attached.
+
+Fixtures: `SidecarAnimPointerMaterial/`, `SidecarAnimPointerTexTransform/`,
+`SidecarAnimPointerMixed/`.
+
 ## Babylon mapping (RenderAssimp2026 follow-up)
 
 Goal: feed BabylonNative without `BABYLON.SceneLoader.Append`, using Assimp as
@@ -92,6 +144,7 @@ the only importer. Suggested mapping for a future app bridge:
 | `aiMesh` positions / normals / UVs / indices | `VertexData` / `BABYLON.Mesh` |
 | `aiMaterial` + `GltfMaterial.h` keys | `PBRMaterial` (MR, clearcoat, transmission, volume, sheen, …) |
 | `aiAnimation` / node channels | `Animation` / `AnimationGroup` (group packaging is app-side) |
+| `aiAnimationSidecar` (`KHR_animation_pointer`) | Host samples buffers + applies pointers (materials / UV transform / ...) |
 | `aiMesh::mAnimMeshes` | morph target influences |
 | `AI_MATKEY_UVTRANSFORM` | texture `uAng` / `uScale` / `uOffset` |
 | Sidecar buffer `"_FOO"` | `mesh.setVerticesData("_FOO", floats, false, components)` or custom `VertexBuffer` |

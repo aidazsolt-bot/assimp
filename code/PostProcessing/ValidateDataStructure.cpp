@@ -49,6 +49,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ProcessHelper.h"
 #include <assimp/BaseImporter.h>
 #include <assimp/fast_atof.h>
+#include <assimp/sidecar.h>
 #include <memory>
 
 // CRT headers
@@ -482,7 +483,20 @@ void ValidateDSProcess::Validate(const aiAnimation *pAnimation) {
             Validate(pAnimation, pAnimation->mMorphMeshChannels[i]);
         }
     } else {
-        ReportError("aiAnimation::mNumChannels is 0. At least one node animation channel must be there.");
+        // Pointer-only animations (KHR_animation_pointer) may have no classic channels
+        // when an animation sidecar carries the curves.
+        bool hasAnimationSidecar = false;
+        if (mScene != nullptr) {
+            for (unsigned int i = 0; i < mScene->mNumAnimations; ++i) {
+                if (mScene->mAnimations[i] == pAnimation && aiGetAnimationSidecar(mScene, i) != nullptr) {
+                    hasAnimationSidecar = true;
+                    break;
+                }
+            }
+        }
+        if (!hasAnimationSidecar) {
+            ReportError("aiAnimation::mNumChannels is 0. At least one node animation channel must be there.");
+        }
     }
 }
 
