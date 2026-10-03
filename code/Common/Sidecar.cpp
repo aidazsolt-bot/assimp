@@ -135,3 +135,46 @@ void Assimp::AttachMaterialSidecar(aiScene *scene, unsigned int materialIndex, a
     delete priv->mMaterialSidecars[materialIndex];
     priv->mMaterialSidecars[materialIndex] = sidecar;
 }
+
+// ------------------------------------------------------------------------------------------------
+ASSIMP_API int aiSceneHasAnimationSidecar(const aiScene *pScene) {
+    if (pScene == nullptr || pScene->mPrivate == nullptr) {
+        return 0;
+    }
+    const ScenePrivateData *priv = ScenePriv(pScene);
+    for (const aiAnimationSidecar *s : priv->mAnimationSidecars) {
+        if (s != nullptr) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// ------------------------------------------------------------------------------------------------
+ASSIMP_API const aiAnimationSidecar *aiGetAnimationSidecar(const aiScene *pScene, unsigned int animationIndex) {
+    if (pScene == nullptr || pScene->mPrivate == nullptr) {
+        return nullptr;
+    }
+    if (animationIndex >= pScene->mNumAnimations) {
+        return nullptr;
+    }
+    const ScenePrivateData *priv = ScenePriv(pScene);
+    if (animationIndex >= priv->mAnimationSidecars.size()) {
+        return nullptr;
+    }
+    return priv->mAnimationSidecars[animationIndex];
+}
+
+// ------------------------------------------------------------------------------------------------
+void Assimp::AttachAnimationSidecar(aiScene *scene, unsigned int animationIndex, aiAnimationSidecar *sidecar) {
+    if (scene == nullptr || scene->mPrivate == nullptr || sidecar == nullptr) {
+        delete sidecar;
+        return;
+    }
+    ScenePrivateData *priv = ScenePriv(scene);
+    if (animationIndex >= priv->mAnimationSidecars.size()) {
+        priv->mAnimationSidecars.resize(static_cast<size_t>(animationIndex) + 1u, nullptr);
+    }
+    delete priv->mAnimationSidecars[animationIndex];
+    priv->mAnimationSidecars[animationIndex] = sidecar;
+}
