@@ -48,6 +48,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/ai_assert.h>
 #include <assimp/gaussian.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 
 #include <vector>
 
@@ -78,13 +79,18 @@ struct ScenePrivateData {
     // Optional 3DGS side data, indexed by mesh index (nullptr = no splat).
     // Does not change public aiMesh / aiScene ABI.
     std::vector<aiGaussianSplat *> mGaussianSplats;
+
+    // Optional generic mesh sidecar data, indexed by mesh index (nullptr = none).
+    // Does not change public aiMesh / aiScene ABI.
+    std::vector<aiMeshSidecar *> mMeshSidecars;
 };
 
 inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
         : mOrigImporter(nullptr),
           mPPStepsApplied(0),
           mIsCopy(false),
-          mGaussianSplats() {
+          mGaussianSplats(),
+          mMeshSidecars() {
     // empty
 }
 
@@ -93,6 +99,10 @@ inline ScenePrivateData::~ScenePrivateData() {
         delete g;
     }
     mGaussianSplats.clear();
+    for (aiMeshSidecar *s : mMeshSidecars) {
+        delete s;
+    }
+    mMeshSidecars.clear();
 }
 
 // Access private data stored in the scene

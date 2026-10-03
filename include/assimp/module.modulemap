@@ -24,6 +24,7 @@ module libassimp {
     header "quaternion.h"
     header "revision.h"
     header "scene.h"
+    header "sidecar.h"
     header "texture.h"
     header "types.h"
     header "vector2.h"

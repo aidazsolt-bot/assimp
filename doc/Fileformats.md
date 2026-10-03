@@ -26,6 +26,8 @@ __Importers__:
   + KHR_materials_pbrSpecularGlossiness ( 5.0 )
   + KHR_materials_unlit ( 5.0 )
   + KHR_texture_transform ( 5.1 under test )
+  Custom / underscore vertex attributes and mesh/primitive extras are exposed via the
+  ABI-safe [sidecar API](Sidecar.md) (`include/assimp/sidecar.h`).
 - HMB
 - IFC-STEP
 - IQM

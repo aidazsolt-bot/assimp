@@ -48,6 +48,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/postprocess.h>
 #include <assimp/config.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
+#include <string>
 #include <assimp/Exporter.hpp>
 #include <assimp/Importer.hpp>
 #include <assimp/LogStream.hpp>
@@ -1150,6 +1152,63 @@ TEST_F(utglTF2ImportExport, importMalformedSparseAccessor) {
     // ASSERTION: The thrown parser error must match our custom fail-fast string
     std::string errorString = importer.GetErrorString();
     EXPECT_NE(errorString.find("Invalid sparse accessor: missing required 'values' object."), std::string::npos);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_MeshSidecarCustomAttrAndExtras) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarCustomAttr/SidecarCustomAttr.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_GE(scene->mNumMeshes, 1u);
+
+    EXPECT_TRUE(aiSceneHasMeshSidecar(scene));
+    const aiMeshSidecar *sc = aiGetMeshSidecar(scene, 0);
+    ASSERT_NE(nullptr, sc);
+    EXPECT_EQ(nullptr, aiGetMeshSidecar(scene, 1));
+
+    ASSERT_EQ(1u, sc->mNumBuffers);
+    ASSERT_NE(nullptr, sc->mBuffers);
+    const aiSidecarBuffer &buf = sc->mBuffers[0];
+    EXPECT_STREQ("_SCALE", buf.mName.C_Str());
+    EXPECT_EQ(scene->mMeshes[0]->mNumVertices, buf.mNumElements);
+    EXPECT_EQ(3u, buf.mNumComponents);
+    EXPECT_EQ(static_cast<unsigned int>(aiSidecarComponentType_Float), buf.mComponentType);
+    ASSERT_NE(nullptr, buf.mData);
+    EXPECT_EQ(static_cast<size_t>(buf.mNumElements) * 3u * sizeof(float), buf.mByteLength);
+
+    const float *scale = reinterpret_cast<const float *>(buf.mData);
+    EXPECT_FLOAT_EQ(1.f, scale[0]);
+    EXPECT_FLOAT_EQ(2.f, scale[1]);
+    EXPECT_FLOAT_EQ(3.f, scale[2]);
+    EXPECT_FLOAT_EQ(4.f, scale[3]);
+    EXPECT_FLOAT_EQ(5.f, scale[4]);
+    EXPECT_FLOAT_EQ(6.f, scale[5]);
+    EXPECT_FLOAT_EQ(7.f, scale[6]);
+    EXPECT_FLOAT_EQ(8.f, scale[7]);
+    EXPECT_FLOAT_EQ(9.f, scale[8]);
+
+    ASSERT_NE(nullptr, sc->mExtrasJson);
+    const std::string extras(sc->mExtrasJson, sc->mExtrasJsonLength);
+    EXPECT_NE(std::string::npos, extras.find("babylonHint"));
+    EXPECT_NE(std::string::npos, extras.find("sidecar-test"));
+    EXPECT_NE(std::string::npos, extras.find("primitiveTag"));
+    EXPECT_NE(std::string::npos, extras.find("priority"));
+
+    bool metaFlag = false;
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_MESH_SIDECAR, metaFlag));
+    EXPECT_TRUE(metaFlag);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_MeshSidecarAbsentOnPlainMesh) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/glTF-Asset-Generator/Mesh_PrimitiveMode/Mesh_PrimitiveMode_00.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    EXPECT_FALSE(aiSceneHasMeshSidecar(scene));
+    EXPECT_EQ(nullptr, aiGetMeshSidecar(scene, 0));
 }
 
 TEST_F(utglTF2ImportExport, importAnimationInterpolationIsPreserved) {

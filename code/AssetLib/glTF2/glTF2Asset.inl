@@ -1562,8 +1562,18 @@ inline void Mesh::Read(Value &pJSON_Object, Asset &pAsset_Root) {
                         }
                         (*vec).resize(idx + 1);
                         (*vec)[idx] = pAsset_Root.accessors.Retrieve(it->value.GetUint());
+                    } else {
+                        // Keep unknown / underscore attributes for the ABI-safe mesh sidecar.
+                        prim.attributes.custom.emplace_back(attr, pAsset_Root.accessors.Retrieve(it->value.GetUint()));
                     }
                 }
+            }
+
+            if (Value *primExtras = FindObject(primitive, "extras")) {
+                prim.extras = glTF2::ReadExtras(*primExtras);
+            }
+            if (Value *primExt = FindObject(primitive, "extensions")) {
+                prim.customExtensions = glTF2::ReadExtensions("extensions", *primExt);
             }
 
 #ifdef ASSIMP_ENABLE_DRACO
