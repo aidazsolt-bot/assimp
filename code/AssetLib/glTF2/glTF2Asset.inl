@@ -2223,7 +2223,9 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
                 out.AddMember("KHR_physics_rigid_bodies", copy, al);
             }
         }
+        // Walk glTF nodes[]; collect every physics body generically (no author-specific names).
         rapidjson::Value nodesArr(rapidjson::kArrayType);
+        rapidjson::Value nodeNamesArr(rapidjson::kArrayType);
         if (Value *nodes = FindArray(doc, "nodes")) {
             for (rapidjson::SizeType i = 0; i < nodes->Size(); ++i) {
                 Value &node = (*nodes)[i];
@@ -2242,6 +2244,12 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
                 entry.AddMember("index", static_cast<unsigned>(i), al);
                 if (Value *name = glTFCommon::FindString(node, "name")) {
                     entry.AddMember("name", rapidjson::Value(name->GetString(), al).Move(), al);
+                    nodeNamesArr.PushBack(rapidjson::Value(name->GetString(), al).Move(), al);
+                } else {
+                    // Stable fallback so hosts can always walk a name list.
+                    const std::string generated = "node_" + ai_to_string(static_cast<unsigned>(i));
+                    entry.AddMember("name", rapidjson::Value(generated.c_str(), al).Move(), al);
+                    nodeNamesArr.PushBack(rapidjson::Value(generated.c_str(), al).Move(), al);
                 }
                 rapidjson::Value physCopy(*nodePhys, al);
                 entry.AddMember("KHR_physics_rigid_bodies", physCopy, al);
@@ -2250,6 +2258,7 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
         }
         if (!nodesArr.Empty()) {
             out.AddMember("nodes", nodesArr, al);
+            out.AddMember("nodeNames", nodeNamesArr, al);
         }
         rapidjson::StringBuffer sbuf;
         rapidjson::Writer<rapidjson::StringBuffer> writer(sbuf);
