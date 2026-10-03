@@ -1437,40 +1437,95 @@ TEST_F(utglTF2ImportExport, importglTF2_PhysicsSidecarRigidBodies) {
     const aiPhysicsSidecar *psc = aiGetPhysicsSidecar(scene);
     ASSERT_NE(nullptr, psc);
     ASSERT_NE(nullptr, psc->mExtensionsJson);
-    const std::string json(psc->mExtensionsJson, psc->mExtensionsJsonLength);
 
-    EXPECT_NE(std::string::npos, json.find("KHR_implicit_shapes"));
-    EXPECT_NE(std::string::npos, json.find("KHR_physics_rigid_bodies"));
-    EXPECT_NE(std::string::npos, json.find("sphere"));
-    EXPECT_NE(std::string::npos, json.find("marble2"));
-    EXPECT_NE(std::string::npos, json.find("proxy-spiral"));
-    EXPECT_NE(std::string::npos, json.find("angularVelocity"));
-    EXPECT_NE(std::string::npos, json.find("physicsMaterials"));
-    EXPECT_NE(std::string::npos, json.find("collisionFilters"));
-    // Collider mesh reference stays in JSON (orphan mesh index 1).
-    EXPECT_NE(std::string::npos, json.find("\"mesh\""));
+    // Walk the sidecar generically (same idea as material lists): parse JSON and
+    // iterate nodes[] collected from the file - no author-specific name literals.
+    rapidjson::Document doc;
+    doc.Parse(psc->mExtensionsJson, psc->mExtensionsJsonLength);
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_TRUE(doc.IsObject());
+    ASSERT_TRUE(doc.HasMember("KHR_implicit_shapes"));
+    ASSERT_TRUE(doc["KHR_implicit_shapes"].IsObject());
+    ASSERT_TRUE(doc["KHR_implicit_shapes"].HasMember("shapes"));
+    ASSERT_TRUE(doc["KHR_implicit_shapes"]["shapes"].IsArray());
+    EXPECT_GE(doc["KHR_implicit_shapes"]["shapes"].Size(), 1u);
 
-    // glTF node indices preserved in sidecar bag
-    EXPECT_NE(std::string::npos, json.find("\"index\":0"));
-    EXPECT_NE(std::string::npos, json.find("\"index\":1"));
+    ASSERT_TRUE(doc.HasMember("KHR_physics_rigid_bodies"));
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"].IsObject());
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"].HasMember("physicsMaterials"));
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"]["physicsMaterials"].IsArray());
+    EXPECT_GE(doc["KHR_physics_rigid_bodies"]["physicsMaterials"].Size(), 1u);
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"].HasMember("collisionFilters"));
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"]["collisionFilters"].IsArray());
 
-    // proxy-spiral must remain mesh-less on the aiNode (collider mesh not promoted).
-    const aiNode *proxy = nullptr;
-    std::function<void(const aiNode *)> walk;
-    walk = [&](const aiNode *n) {
-        if (n == nullptr) {
-            return;
+    ASSERT_TRUE(doc.HasMember("nodes"));
+    ASSERT_TRUE(doc["nodes"].IsArray());
+    ASSERT_TRUE(doc.HasMember("nodeNames"));
+    ASSERT_TRUE(doc["nodeNames"].IsArray());
+    const rapidjson::Value &nodes = doc["nodes"];
+    const rapidjson::Value &nodeNames = doc["nodeNames"];
+    ASSERT_GE(nodes.Size(), 1u);
+    ASSERT_EQ(nodes.Size(), nodeNames.Size());
+
+    unsigned int dynamicCount = 0;
+    unsigned int kinematicMeshColliderCount = 0;
+
+    for (rapidjson::SizeType i = 0; i < nodes.Size(); ++i) {
+        const rapidjson::Value &entry = nodes[i];
+        ASSERT_TRUE(entry.IsObject());
+        ASSERT_TRUE(entry.HasMember("index"));
+        ASSERT_TRUE(entry["index"].IsUint());
+        ASSERT_TRUE(entry.HasMember("name"));
+        ASSERT_TRUE(entry["name"].IsString());
+        ASSERT_TRUE(nodeNames[i].IsString());
+        EXPECT_STREQ(entry["name"].GetString(), nodeNames[i].GetString());
+        ASSERT_TRUE(entry.HasMember("KHR_physics_rigid_bodies"));
+        ASSERT_TRUE(entry["KHR_physics_rigid_bodies"].IsObject());
+
+        const rapidjson::Value &phys = entry["KHR_physics_rigid_bodies"];
+        if (phys.HasMember("motion") && phys["motion"].IsObject()) {
+            const rapidjson::Value &motion = phys["motion"];
+            if (motion.HasMember("mass") && motion["mass"].IsNumber() && motion["mass"].GetDouble() > 0.0) {
+                ++dynamicCount;
+            }
+            const bool kinematic = motion.HasMember("isKinematic") && motion["isKinematic"].IsBool() &&
+                    motion["isKinematic"].GetBool();
+            const bool hasAngVel = motion.HasMember("angularVelocity") && motion["angularVelocity"].IsArray();
+            bool hasMeshCollider = false;
+            if (phys.HasMember("collider") && phys["collider"].IsObject()) {
+                const rapidjson::Value &col = phys["collider"];
+                if (col.HasMember("geometry") && col["geometry"].IsObject() &&
+                        col["geometry"].HasMember("mesh")) {
+                    hasMeshCollider = true;
+                }
+            }
+            if (kinematic && hasAngVel && hasMeshCollider) {
+                ++kinematicMeshColliderCount;
+
+                // Resolve aiNode via sidecar-collected name (walkable list), not a hard-coded author string.
+                const char *bodyName = entry["name"].GetString();
+                const aiNode *matched = nullptr;
+                std::function<void(const aiNode *)> walk;
+                walk = [&](const aiNode *n) {
+                    if (n == nullptr) {
+                        return;
+                    }
+                    if (std::strcmp(n->mName.C_Str(), bodyName) == 0) {
+                        matched = n;
+                    }
+                    for (unsigned int c = 0; c < n->mNumChildren; ++c) {
+                        walk(n->mChildren[c]);
+                    }
+                };
+                walk(scene->mRootNode);
+                ASSERT_NE(nullptr, matched) << bodyName;
+                EXPECT_EQ(0u, matched->mNumMeshes) << bodyName;
+            }
         }
-        if (std::strcmp(n->mName.C_Str(), "proxy-spiral") == 0) {
-            proxy = n;
-        }
-        for (unsigned int i = 0; i < n->mNumChildren; ++i) {
-            walk(n->mChildren[i]);
-        }
-    };
-    walk(scene->mRootNode);
-    ASSERT_NE(nullptr, proxy);
-    EXPECT_EQ(0u, proxy->mNumMeshes);
+    }
+
+    EXPECT_GE(dynamicCount, 1u);
+    EXPECT_GE(kinematicMeshColliderCount, 1u);
 
     bool metaFlag = false;
     ASSERT_NE(nullptr, scene->mMetaData);

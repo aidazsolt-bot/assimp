@@ -19,11 +19,7 @@
         {
           "type": "box",
           "box": {
-            "size": [
-              1.0,
-              0.1,
-              1.0
-            ]
+            "size": [1.0, 0.1, 1.0]
           }
         }
       ]
@@ -43,21 +39,12 @@
       ],
       "collisionFilters": [
         {
-          "collisionSystems": [
-            "marbles"
-          ],
-          "collideWithSystems": [
-            "world",
-            "marbles"
-          ]
+          "collisionSystems": ["systemA"],
+          "collideWithSystems": ["systemB", "systemA"]
         },
         {
-          "collisionSystems": [
-            "world"
-          ],
-          "collideWithSystems": [
-            "marbles"
-          ]
+          "collisionSystems": ["systemB"],
+          "collideWithSystems": ["systemA"]
         }
       ],
       "physicsJoints": []
@@ -66,21 +53,14 @@
   "scene": 0,
   "scenes": [
     {
-      "nodes": [
-        0,
-        1
-      ]
+      "nodes": [0, 1]
     }
   ],
   "nodes": [
     {
-      "name": "marble2",
+      "name": "BodyDynamic0",
       "mesh": 0,
-      "translation": [
-        0.0,
-        1.0,
-        0.0
-      ],
+      "translation": [0.0, 1.0, 0.0],
       "extensions": {
         "KHR_physics_rigid_bodies": {
           "motion": {
@@ -97,22 +77,14 @@
       }
     },
     {
-      "name": "proxy-spiral",
-      "translation": [
-        0.0,
-        0.0,
-        0.0
-      ],
+      "name": "BodyKinematic0",
+      "translation": [0.0, 0.0, 0.0],
       "extensions": {
         "KHR_physics_rigid_bodies": {
           "motion": {
             "isKinematic": true,
             "mass": 0,
-            "angularVelocity": [
-              0,
-              0,
-              6
-            ]
+            "angularVelocity": [0.0, 0.0, 6.0]
           },
           "collider": {
             "geometry": {
@@ -128,7 +100,7 @@
   ],
   "meshes": [
     {
-      "name": "MarbleVis",
+      "name": "BodyDynamic0Vis",
       "primitives": [
         {
           "attributes": {
@@ -139,7 +111,7 @@
       ]
     },
     {
-      "name": "ProxyHullOrphan",
+      "name": "BodyKinematic0Hull",
       "primitives": [
         {
           "attributes": {
@@ -156,32 +128,16 @@
       "componentType": 5126,
       "count": 3,
       "type": "VEC3",
-      "max": [
-        0.04,
-        0.04,
-        0
-      ],
-      "min": [
-        0,
-        0,
-        0
-      ]
+      "max": [0.04, 0.04, 0],
+      "min": [0, 0, 0]
     },
     {
       "bufferView": 1,
       "componentType": 5126,
       "count": 3,
       "type": "VEC3",
-      "max": [
-        1,
-        1,
-        0
-      ],
-      "min": [
-        -1,
-        0,
-        0
-      ]
+      "max": [1, 1, 0],
+      "min": [-1, 0, 0]
     }
   ],
   "bufferViews": [

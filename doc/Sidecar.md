@@ -185,10 +185,16 @@ Sidecar is for **missing file payload** (custom attrs, extras JSON), not for
 Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_METADATA_PHYSICS_SIDECAR`).
 
 - `aiSceneHasPhysicsSidecar` / `aiGetPhysicsSidecar`
-- JSON: root extension objects + `nodes[]` with `{index,name,KHR_physics_rigid_bodies}`
+- JSON is built generically by scanning the glTF document:
+  - copy root `KHR_implicit_shapes` / `KHR_physics_rigid_bodies` when present
+  - walk every `nodes[i]`; if it has `extensions.KHR_physics_rigid_bodies`, append
+    `{index,name,KHR_physics_rigid_bodies}` to `nodes[]`
+  - `nodeNames[]` lists those names in the same order (fallback `node_<index>` if unnamed)
 - `index` is the glTF `nodes[]` array index (not DFS order under Assimp's synthetic ROOT).
+- Host walks `nodeNames` / `nodes` - do not hardcode author-specific body names in Assimp.
 - Assimp does not simulate; host (Bullet) steps and writes node TRS.
 - Collider `geometry.mesh` stays in the JSON bag only. Do **not** promote those
   meshes onto `aiNode::mMeshes` (proxies are often intentionally mesh-less).
 
-Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/`.
+Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/` (generic `BodyDynamic0` /
+`BodyKinematic0` names only for local geometry; tests walk JSON structure).
