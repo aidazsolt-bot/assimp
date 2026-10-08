@@ -46,9 +46,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *  scene-private storage and are reached via getters. Positions stay in
  *  aiMesh::mVertices (point cloud; 1-index faces per vertex).
  *
- *  Does **not** bake splat attrs into aiMaterial (Kd/Ks/opacity/PBR, …):
- *  values are per-point logits/SH coeffs; conversion is the renderer's job.
- *  See doc/PLY.md for the on-disk PLY convention (f_dc_*, f_rest_*, …).
+ *  Canonical value space matches ratified KHR_gaussian_splatting (ellipse
+ *  kernel): linear opacity in [0,1], non-negative linear scale, unit
+ *  quaternion in glTF order (x,y,z,w), SH coefficients as in the KHR
+ *  attribute layout. PLY graphdeco logits / wxyz quats are converted on
+ *  import. Assimp does not invent COLOR_0, SH bias, or missing meta.
+ *
+ *  Does **not** bake splat attrs into aiMaterial. See doc/PLY.md and
+ *  doc/GaussianSplatting.md.
  */
 #pragma once
 #ifndef AI_GAUSSIAN_H_INC
@@ -72,38 +77,49 @@ struct aiScene;
 /** Scene / node metadata: present and true when at least one mesh has splat data. */
 #define AI_METADATA_GAUSSIAN_SPLAT "IsGaussianSplat"
 
-/** Scene metadata: number of f_rest coeffs per point (often 0 or 45). */
+/** Scene metadata: number of higher-order SH scalars per point (0 or 9/24/45...). */
 #define AI_METADATA_GAUSSIAN_SH_REST_COUNT "GaussianSHRestCount"
 
 /**
- * Per-mesh 3DGS attributes (graphdeco / INRIA PLY layout).
+ * Per-mesh 3DGS attributes in KHR_gaussian_splatting-compatible value space.
  *
  * Positions: use the corresponding aiMesh::mVertices (mNumPoints == mNumVertices).
- * Values are stored as in the file (opacity / scale logits, rot_0..3 order).
  */
 struct aiGaussianSplat {
     /** Number of Gaussians (== owning mesh vertex count). */
     unsigned int mNumPoints;
 
-    /** Number of f_rest_* scalars per point (0 if only DC). */
+    /** Number of higher-order SH scalars per point (0 if only degree 0).
+     *  Degree 1 => 9, degree 2 => 24, degree 3 => 45 (3 * ((d+1)^2 - 1)). */
     unsigned int mNumRestCoeffs;
 
-    /** SH DC colour coeffs f_dc_0..2 as xyz. Size: mNumPoints. */
+    /** SH degree-0 RGB coefficients (KHR SH_DEGREE_0_COEF_0 / PLY f_dc_*). Size: mNumPoints. */
     C_STRUCT aiVector3D *mDC;
 
-    /** Higher-order SH coeffs in file order f_rest_0 .. f_rest_(N-1).
+    /** Higher-order SH scalars in KHR coefficient order (degree 1..N, each RGB).
      *  Size: mNumPoints * mNumRestCoeffs. nullptr if mNumRestCoeffs == 0. */
     ai_real *mRest;
 
-    /** Log-scale scale_0..2 as xyz. Size: mNumPoints. */
+    /** Linear scale (>= 0). Size: mNumPoints. */
     C_STRUCT aiVector3D *mScale;
 
-    /** Rotation quaternion rot_0..3 as (r,g,b,a) == (rot_0, rot_1, rot_2, rot_3).
-     *  Size: mNumPoints. */
+    /** Unit quaternion as (r,g,b,a) == (x,y,z,w) glTF order. Size: mNumPoints. */
     C_STRUCT aiColor4D *mRotation;
 
-    /** Opacity logits. Size: mNumPoints. */
+    /** Linear opacity in [0, 1]. Size: mNumPoints. */
     ai_real *mOpacity;
+
+    /** Authored KHR kernel id (e.g. "ellipse"), or empty if not present in source. */
+    C_STRUCT aiString mKernel;
+
+    /** Authored KHR colorSpace, or empty if not present in source. */
+    C_STRUCT aiString mColorSpace;
+
+    /** Authored KHR projection, or empty (KHR default is "perspective"). */
+    C_STRUCT aiString mProjection;
+
+    /** Authored KHR sortingMethod, or empty (KHR default is "cameraDistance"). */
+    C_STRUCT aiString mSortingMethod;
 
 #ifdef __cplusplus
     aiGaussianSplat() AI_NO_EXCEPT
@@ -113,7 +129,11 @@ struct aiGaussianSplat {
               mRest(nullptr),
               mScale(nullptr),
               mRotation(nullptr),
-              mOpacity(nullptr) {}
+              mOpacity(nullptr),
+              mKernel(),
+              mColorSpace(),
+              mProjection(),
+              mSortingMethod() {}
 
     ~aiGaussianSplat() {
         delete[] mDC;

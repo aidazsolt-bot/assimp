@@ -1521,7 +1521,86 @@ inline void Material::Read(Value &material, Asset &r) {
             this->materialIridescence = Nullable<MaterialIridescence>(iri);
         }
 
+        if (Value *curDispersion = FindObject(*extensions, "KHR_materials_dispersion")) {
+            MaterialDispersion disp;
+            Value *num = FindNumberInContext(*curDispersion, "dispersion", "KHR_materials_dispersion");
+            if (num != nullptr && num->IsNumber()) {
+                const double d = num->GetDouble();
+                if (std::isfinite(d)) {
+                    disp.dispersion.value = static_cast<float>(d);
+                    disp.dispersion.isPresent = true;
+                    this->materialDispersion = Nullable<MaterialDispersion>(disp);
+                }
+            }
+        }
+
+        if (Value *curDiffTx = FindObject(*extensions, "KHR_materials_diffuse_transmission")) {
+            MaterialDiffuseTransmission dtx;
+
+            auto readFiniteFloat = [](Value &obj, const char *key, Nullable<float> &out) {
+                Value *num = FindNumberInContext(obj, key, "KHR_materials_diffuse_transmission");
+                if (num == nullptr || !num->IsNumber()) {
+                    return;
+                }
+                const double d = num->GetDouble();
+                if (!std::isfinite(d)) {
+                    return;
+                }
+                out.value = static_cast<float>(d);
+                out.isPresent = true;
+            };
+            readFiniteFloat(*curDiffTx, "diffuseTransmissionFactor", dtx.diffuseTransmissionFactor);
+
+            if (Value *colorArr = FindArray(*curDiffTx, "diffuseTransmissionColorFactor")) {
+                if (colorArr->Size() >= 3 && (*colorArr)[0].IsNumber() && (*colorArr)[1].IsNumber() &&
+                        (*colorArr)[2].IsNumber()) {
+                    dtx.diffuseTransmissionColorFactor[0] = (*colorArr)[0].GetFloat();
+                    dtx.diffuseTransmissionColorFactor[1] = (*colorArr)[1].GetFloat();
+                    dtx.diffuseTransmissionColorFactor[2] = (*colorArr)[2].GetFloat();
+                    dtx.hasColorFactor = true;
+                }
+            }
+
+            if (Value *texProp = FindMember(*curDiffTx, "diffuseTransmissionTexture")) {
+                if (texProp->IsObject()) {
+                    dtx.hasDiffuseTransmissionTexture = true;
+                    SetTextureProperties(r, texProp, dtx.diffuseTransmissionTexture);
+                    if (FindUInt(*texProp, "texCoord") != nullptr) {
+                        dtx.hasDiffuseTransmissionTexCoord = true;
+                    }
+                    if (Value *xform = FindExtension(*texProp, "KHR_texture_transform")) {
+                        if (FindArray(*xform, "scale") != nullptr) {
+                            dtx.hasDiffuseTransmissionTransformScale = true;
+                        }
+                    }
+                }
+            }
+            if (Value *texProp = FindMember(*curDiffTx, "diffuseTransmissionColorTexture")) {
+                if (texProp->IsObject()) {
+                    dtx.hasColorTexture = true;
+                    SetTextureProperties(r, texProp, dtx.diffuseTransmissionColorTexture);
+                    if (FindUInt(*texProp, "texCoord") != nullptr) {
+                        dtx.hasColorTexCoord = true;
+                    }
+                    if (Value *xform = FindExtension(*texProp, "KHR_texture_transform")) {
+                        if (FindArray(*xform, "scale") != nullptr) {
+                            dtx.hasColorTransformScale = true;
+                        }
+                    }
+                }
+            }
+
+            if (dtx.diffuseTransmissionFactor.isPresent || dtx.hasColorFactor ||
+                    dtx.hasDiffuseTransmissionTexture || dtx.hasColorTexture) {
+                this->materialDiffuseTransmission = Nullable<MaterialDiffuseTransmission>(dtx);
+            }
+        }
+
         unlit = nullptr != FindObject(*extensions, "KHR_materials_unlit");
+
+        // Keep authored material extensions for unmapped sidecar emission (path-resolved
+        // where needed). Does not invent defaults for omitted keys.
+        this->customExtensions = glTF2::ReadExtensions("extensions", *extensions);
     }
 }
 
@@ -2390,6 +2469,7 @@ inline void Asset::ReadExtensionsUsed(Document &doc) {
     CHECK_EXT(KHR_materials_emissive_strength);
     CHECK_EXT(KHR_materials_anisotropy);
     CHECK_EXT(KHR_materials_iridescence);
+    CHECK_EXT(KHR_gaussian_splatting);
     CHECK_EXT(KHR_animation_pointer);
     CHECK_EXT(KHR_implicit_shapes);
     CHECK_EXT(KHR_physics_rigid_bodies);

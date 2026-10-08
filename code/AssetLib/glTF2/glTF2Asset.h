@@ -841,6 +841,28 @@ struct MaterialIridescence {
     TextureInfo iridescenceThicknessTexture;
 };
 
+/** KHR_materials_dispersion - authored keys only (sidecar until a typed MATKEY exists). */
+struct MaterialDispersion {
+    Nullable<float> dispersion;
+};
+
+/** KHR_materials_diffuse_transmission - authored keys only (sidecar). */
+struct MaterialDiffuseTransmission {
+    Nullable<float> diffuseTransmissionFactor;
+    bool hasColorFactor{ false };
+    vec3 diffuseTransmissionColorFactor;
+
+    bool hasDiffuseTransmissionTexture{ false };
+    bool hasDiffuseTransmissionTexCoord{ false };
+    bool hasDiffuseTransmissionTransformScale{ false };
+    TextureInfo diffuseTransmissionTexture;
+
+    bool hasColorTexture{ false };
+    bool hasColorTexCoord{ false };
+    bool hasColorTransformScale{ false };
+    TextureInfo diffuseTransmissionColorTexture;
+};
+
 //! The material appearance of a primitive.
 struct Material : public Object {
     //PBR metallic roughness properties
@@ -884,6 +906,12 @@ struct Material : public Object {
 
     //extension: KHR_materials_iridescence (sidecar JSON until typed MATKEYs exist)
     Nullable<MaterialIridescence> materialIridescence;
+
+    //extension: KHR_materials_dispersion (sidecar JSON; no typed MATKEY yet)
+    Nullable<MaterialDispersion> materialDispersion;
+
+    //extension: KHR_materials_diffuse_transmission (sidecar JSON)
+    Nullable<MaterialDiffuseTransmission> materialDiffuseTransmission;
 
     //extension: KHR_materials_unlit
     bool unlit;
@@ -1165,6 +1193,7 @@ public:
         bool KHR_materials_emissive_strength{false};
         bool KHR_materials_anisotropy{false};
         bool KHR_materials_iridescence{false};
+        bool KHR_gaussian_splatting{false};
         bool KHR_animation_pointer{false};
         bool KHR_implicit_shapes{false};
         bool KHR_physics_rigid_bodies{false};

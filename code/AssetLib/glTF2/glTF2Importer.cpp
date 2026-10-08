@@ -58,11 +58,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/importerdesc.h>
 #include <assimp/scene.h>
 #include <assimp/sidecar.h>
+#include <assimp/gaussian.h>
+#include <assimp/metadata.h>
 #include <assimp/DefaultLogger.hpp>
 #include <assimp/Importer.hpp>
 
 #include "Common/ScenePrivate.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -274,6 +277,372 @@ namespace {
         sidecar->mExtensionsJson = SidecarDupJson(extensionsJson, sidecar->mExtensionsJsonLength);
 
         AttachMeshSidecar(scene, meshIndex, sidecar.release());
+    }
+
+    static bool IsMappedMaterialExtension(const std::string &name) {
+        return name == "KHR_materials_pbrSpecularGlossiness" ||
+               name == "KHR_materials_specular" ||
+               name == "KHR_materials_sheen" ||
+               name == "KHR_materials_clearcoat" ||
+               name == "KHR_materials_transmission" ||
+               name == "KHR_materials_volume" ||
+               name == "KHR_materials_ior" ||
+               name == "KHR_materials_emissive_strength" ||
+               name == "KHR_materials_anisotropy" ||
+               name == "KHR_materials_unlit";
+    }
+
+    static const CustomExtension *FindCustomExtensionChild(const CustomExtension &root, const char *name) {
+        if (!root.mValues.isPresent) {
+            return nullptr;
+        }
+        for (const CustomExtension &child : root.mValues.value) {
+            if (child.name == name) {
+                return &child;
+            }
+        }
+        return nullptr;
+    }
+
+    static bool FindCustomExtensionString(const CustomExtension &obj, const char *key, std::string &out) {
+        const CustomExtension *child = FindCustomExtensionChild(obj, key);
+        if (child == nullptr || !child->mStringValue.isPresent) {
+            return false;
+        }
+        out = child->mStringValue.value;
+        return true;
+    }
+
+    static Ref<Accessor> FindCustomAttribute(Mesh::Primitive &prim, const char *semantic) {
+        for (const std::pair<std::string, Ref<Accessor>> &entry : prim.attributes.custom) {
+            if (entry.first == semantic) {
+                return entry.second;
+            }
+        }
+        return Ref<Accessor>();
+    }
+
+    /** Extract accessor as tightly packed floats (handles normalized ints per glTF). */
+    static bool ExtractAccessorFloatsRemapped(Accessor &acc, const std::vector<unsigned int> *remappingIndices,
+            std::vector<float> &outFloats, unsigned int &numElements, unsigned int &numComponents) {
+        numComponents = acc.GetNumComponents();
+        if (numComponents == 0 || acc.count == 0) {
+            return false;
+        }
+        const size_t usedCount = (remappingIndices != nullptr) ? remappingIndices->size() : acc.count;
+        numElements = static_cast<unsigned int>(usedCount);
+        if (numElements == 0) {
+            return false;
+        }
+
+        uint8_t *data = acc.GetPointer();
+        if (data == nullptr) {
+            return false;
+        }
+        const size_t elemSize = acc.GetElementSize();
+        const size_t stride = acc.GetStride();
+        std::unique_ptr<uint8_t[]> bytes(new uint8_t[usedCount * elemSize]);
+        if (remappingIndices != nullptr) {
+            for (size_t i = 0; i < usedCount; ++i) {
+                const size_t srcIdx = (*remappingIndices)[i];
+                if (srcIdx >= acc.count) {
+                    return false;
+                }
+                memcpy(bytes.get() + i * elemSize, data + srcIdx * stride, elemSize);
+            }
+        } else if (stride == elemSize) {
+            memcpy(bytes.get(), data, usedCount * elemSize);
+        } else {
+            for (size_t i = 0; i < usedCount; ++i) {
+                memcpy(bytes.get() + i * elemSize, data + i * stride, elemSize);
+            }
+        }
+
+        outFloats.resize(static_cast<size_t>(numElements) * static_cast<size_t>(numComponents));
+        if (acc.componentType == ComponentType_FLOAT && !acc.normalized) {
+            memcpy(outFloats.data(), bytes.get(), usedCount * elemSize);
+            return true;
+        }
+
+        const size_t totalComps = outFloats.size();
+        const unsigned int bytesPerComp = acc.GetBytesPerComponent();
+        for (size_t i = 0; i < totalComps; ++i) {
+            const uint8_t *p = bytes.get() + i * bytesPerComp;
+            float v = 0.f;
+            switch (acc.componentType) {
+                case ComponentType_BYTE: {
+                    const int8_t s = *reinterpret_cast<const int8_t *>(p);
+                    v = acc.normalized ? (std::max(s / 127.f, -1.f)) : static_cast<float>(s);
+                    break;
+                }
+                case ComponentType_UNSIGNED_BYTE: {
+                    const uint8_t u = *p;
+                    v = acc.normalized ? (u / 255.f) : static_cast<float>(u);
+                    break;
+                }
+                case ComponentType_SHORT: {
+                    const int16_t s = *reinterpret_cast<const int16_t *>(p);
+                    v = acc.normalized ? (std::max(s / 32767.f, -1.f)) : static_cast<float>(s);
+                    break;
+                }
+                case ComponentType_UNSIGNED_SHORT: {
+                    const uint16_t u = *reinterpret_cast<const uint16_t *>(p);
+                    v = acc.normalized ? (u / 65535.f) : static_cast<float>(u);
+                    break;
+                }
+                case ComponentType_UNSIGNED_INT: {
+                    const uint32_t u = *reinterpret_cast<const uint32_t *>(p);
+                    v = static_cast<float>(u);
+                    break;
+                }
+                case ComponentType_FLOAT: {
+                    v = *reinterpret_cast<const float *>(p);
+                    break;
+                }
+                default:
+                    return false;
+            }
+            outFloats[i] = v;
+        }
+        return true;
+    }
+
+    static void StripPromotedGaussianAttributes(Mesh::Primitive &prim) {
+        auto &custom = prim.attributes.custom;
+        custom.erase(std::remove_if(custom.begin(), custom.end(),
+                             [](const std::pair<std::string, Ref<Accessor>> &e) {
+                                 return e.first.rfind("KHR_gaussian_splatting:", 0) == 0;
+                             }),
+                custom.end());
+    }
+
+    static bool TryAttachGaussianSplatForPrimitive(aiScene *scene, unsigned int meshIndex, Mesh::Primitive &prim,
+            const std::vector<unsigned int> *vertexRemappingTable) {
+        const CustomExtension *gsExt = FindCustomExtensionChild(prim.customExtensions, "KHR_gaussian_splatting");
+        if (gsExt == nullptr) {
+            return false;
+        }
+
+        std::string kernel, colorSpace, projection, sortingMethod;
+        if (!FindCustomExtensionString(*gsExt, "kernel", kernel) ||
+                !FindCustomExtensionString(*gsExt, "colorSpace", colorSpace)) {
+            ASSIMP_LOG_WARN("GLTF: KHR_gaussian_splatting missing required kernel/colorSpace; skipping typed splat");
+            return false;
+        }
+        FindCustomExtensionString(*gsExt, "projection", projection);
+        FindCustomExtensionString(*gsExt, "sortingMethod", sortingMethod);
+
+        // Nested compression drafts are not decoded here; require decoded attrs.
+        if (FindCustomExtensionChild(*gsExt, "extensions") != nullptr) {
+            ASSIMP_LOG_DEBUG("GLTF: KHR_gaussian_splatting has nested extensions (e.g. compression); "
+                             "typed import uses decoded attributes only");
+        }
+
+        Ref<Accessor> rotAcc = FindCustomAttribute(prim, "KHR_gaussian_splatting:ROTATION");
+        Ref<Accessor> scaleAcc = FindCustomAttribute(prim, "KHR_gaussian_splatting:SCALE");
+        Ref<Accessor> opacityAcc = FindCustomAttribute(prim, "KHR_gaussian_splatting:OPACITY");
+        Ref<Accessor> sh0Acc = FindCustomAttribute(prim, "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0");
+        if (!rotAcc || !scaleAcc || !opacityAcc || !sh0Acc) {
+            ASSIMP_LOG_WARN("GLTF: KHR_gaussian_splatting missing required attributes; skipping typed splat");
+            return false;
+        }
+
+        std::vector<float> rotF, scaleF, opacityF, sh0F;
+        unsigned int nRot = 0, cRot = 0, nScale = 0, cScale = 0, nOp = 0, cOp = 0, nSh0 = 0, cSh0 = 0;
+        if (!ExtractAccessorFloatsRemapped(*rotAcc, vertexRemappingTable, rotF, nRot, cRot) || cRot != 4 ||
+                !ExtractAccessorFloatsRemapped(*scaleAcc, vertexRemappingTable, scaleF, nScale, cScale) || cScale != 3 ||
+                !ExtractAccessorFloatsRemapped(*opacityAcc, vertexRemappingTable, opacityF, nOp, cOp) || cOp != 1 ||
+                !ExtractAccessorFloatsRemapped(*sh0Acc, vertexRemappingTable, sh0F, nSh0, cSh0) || cSh0 != 3) {
+            ASSIMP_LOG_WARN("GLTF: KHR_gaussian_splatting attribute extract failed; skipping typed splat");
+            return false;
+        }
+        if (nRot != nScale || nRot != nOp || nRot != nSh0 || nRot == 0) {
+            ASSIMP_LOG_WARN("GLTF: KHR_gaussian_splatting attribute counts disagree; skipping typed splat");
+            return false;
+        }
+        const unsigned int numPoints = nRot;
+
+        // Higher SH degrees: complete bands only (KHR rule).
+        static const char *deg1Names[] = {
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_0",
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_1",
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_2"
+        };
+        static const char *deg2Names[] = {
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_0",
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_1",
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_2",
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_3",
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_4"
+        };
+        static const char *deg3Names[] = {
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_0",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_1",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_2",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_3",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_4",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_5",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_6"
+        };
+
+        auto loadDegree = [&](const char *const *names, size_t nameCount, std::vector<float> &outBand,
+                                   bool &present) -> bool {
+            present = false;
+            for (size_t i = 0; i < nameCount; ++i) {
+                if (FindCustomAttribute(prim, names[i])) {
+                    present = true;
+                    break;
+                }
+            }
+            if (!present) {
+                return true;
+            }
+            outBand.clear();
+            for (size_t i = 0; i < nameCount; ++i) {
+                Ref<Accessor> a = FindCustomAttribute(prim, names[i]);
+                if (!a) {
+                    ASSIMP_LOG_WARN("GLTF: incomplete SH degree band for ", names[i], "; skipping typed splat");
+                    return false;
+                }
+                std::vector<float> tmp;
+                unsigned int n = 0, c = 0;
+                if (!ExtractAccessorFloatsRemapped(*a, vertexRemappingTable, tmp, n, c) || c != 3 || n != numPoints) {
+                    ASSIMP_LOG_WARN("GLTF: bad SH accessor ", names[i], "; skipping typed splat");
+                    return false;
+                }
+                outBand.insert(outBand.end(), tmp.begin(), tmp.end());
+            }
+            return true;
+        };
+
+        std::vector<float> deg1, deg2, deg3;
+        bool has1 = false, has2 = false, has3 = false;
+        if (!loadDegree(deg1Names, 3, deg1, has1) || !loadDegree(deg2Names, 5, deg2, has2) ||
+                !loadDegree(deg3Names, 7, deg3, has3)) {
+            return false;
+        }
+        if (has2 && !has1) {
+            ASSIMP_LOG_WARN("GLTF: SH degree 2 without degree 1; skipping typed splat");
+            return false;
+        }
+        if (has3 && (!has1 || !has2)) {
+            ASSIMP_LOG_WARN("GLTF: SH degree 3 without lower degrees; skipping typed splat");
+            return false;
+        }
+
+        unsigned int restScalars = 0;
+        if (has1) {
+            restScalars += 9;
+        }
+        if (has2) {
+            restScalars += 15;
+        }
+        if (has3) {
+            restScalars += 21;
+        }
+
+        std::unique_ptr<aiGaussianSplat> splat(new aiGaussianSplat());
+        splat->mNumPoints = numPoints;
+        splat->mNumRestCoeffs = restScalars;
+        splat->mDC = new aiVector3D[numPoints];
+        splat->mScale = new aiVector3D[numPoints];
+        splat->mRotation = new aiColor4D[numPoints];
+        splat->mOpacity = new ai_real[numPoints];
+        if (restScalars > 0) {
+            splat->mRest = new ai_real[static_cast<size_t>(numPoints) * static_cast<size_t>(restScalars)];
+        }
+        splat->mKernel.Set(kernel);
+        splat->mColorSpace.Set(colorSpace);
+        if (!projection.empty()) {
+            splat->mProjection.Set(projection);
+        }
+        if (!sortingMethod.empty()) {
+            splat->mSortingMethod.Set(sortingMethod);
+        }
+
+        for (unsigned int i = 0; i < numPoints; ++i) {
+            splat->mDC[i].x = sh0F[i * 3 + 0];
+            splat->mDC[i].y = sh0F[i * 3 + 1];
+            splat->mDC[i].z = sh0F[i * 3 + 2];
+
+            float sx = scaleF[i * 3 + 0];
+            float sy = scaleF[i * 3 + 1];
+            float sz = scaleF[i * 3 + 2];
+            if (sx < 0.f) {
+                sx = 0.f;
+            }
+            if (sy < 0.f) {
+                sy = 0.f;
+            }
+            if (sz < 0.f) {
+                sz = 0.f;
+            }
+            splat->mScale[i].x = sx;
+            splat->mScale[i].y = sy;
+            splat->mScale[i].z = sz;
+
+            float qx = rotF[i * 4 + 0];
+            float qy = rotF[i * 4 + 1];
+            float qz = rotF[i * 4 + 2];
+            float qw = rotF[i * 4 + 3];
+            const double qlen = std::sqrt(static_cast<double>(qx) * qx + static_cast<double>(qy) * qy +
+                                          static_cast<double>(qz) * qz + static_cast<double>(qw) * qw);
+            if (qlen > 0.0) {
+                const float inv = static_cast<float>(1.0 / qlen);
+                qx *= inv;
+                qy *= inv;
+                qz *= inv;
+                qw *= inv;
+            } else {
+                qx = qy = qz = 0.f;
+                qw = 1.f;
+            }
+            splat->mRotation[i].r = qx;
+            splat->mRotation[i].g = qy;
+            splat->mRotation[i].b = qz;
+            splat->mRotation[i].a = qw;
+
+            float op = opacityF[i];
+            if (op < 0.f) {
+                op = 0.f;
+            } else if (op > 1.f) {
+                op = 1.f;
+            }
+            splat->mOpacity[i] = op;
+
+            if (restScalars > 0 && splat->mRest != nullptr) {
+                ai_real *dst = splat->mRest + static_cast<size_t>(i) * static_cast<size_t>(restScalars);
+                unsigned int o = 0;
+                if (has1) {
+                    for (unsigned int k = 0; k < 3; ++k) {
+                        dst[o++] = deg1[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 0];
+                        dst[o++] = deg1[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 1];
+                        dst[o++] = deg1[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 2];
+                    }
+                }
+                if (has2) {
+                    for (unsigned int k = 0; k < 5; ++k) {
+                        dst[o++] = deg2[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 0];
+                        dst[o++] = deg2[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 1];
+                        dst[o++] = deg2[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 2];
+                    }
+                }
+                if (has3) {
+                    for (unsigned int k = 0; k < 7; ++k) {
+                        dst[o++] = deg3[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 0];
+                        dst[o++] = deg3[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 1];
+                        dst[o++] = deg3[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 2];
+                    }
+                }
+            }
+        }
+
+        AttachGaussianSplat(scene, meshIndex, splat.release());
+        StripPromotedGaussianAttributes(prim);
+
+        ASSIMP_LOG_DEBUG("GLTF: Attached KHR_gaussian_splatting typed side data for mesh ", meshIndex,
+                " (", numPoints, " points, restCoeffs=", restScalars, ")");
+        return true;
     }
 } // namespace
 
@@ -618,7 +987,7 @@ static void SidecarAddTextureJson(rapidjson::Value &parent, rapidjson::Document:
     }
     std::string path;
     if (!SidecarResolveTexturePath(embeddedTexIdxs, prop, path)) {
-        ASSIMP_LOG_WARN("GLTF: Skipping iridescence texture \"", key, "\" without resolvable path");
+        ASSIMP_LOG_WARN("GLTF: Skipping material sidecar texture \"", key, "\" without resolvable path");
         return;
     }
 
@@ -640,54 +1009,118 @@ static void SidecarAddTextureJson(rapidjson::Value &parent, rapidjson::Document:
     parent.AddMember(keyVal, texObj, al);
 }
 
-static void SidecarTryAttachMaterialIridescence(aiScene *scene, unsigned int materialIndex,
+static void SidecarTryAttachMaterialUnmapped(aiScene *scene, unsigned int materialIndex,
         const std::vector<int> &embeddedTexIdxs, const Material &mat) {
-    if (!mat.materialIridescence.isPresent) {
-        return;
-    }
-    const MaterialIridescence &iri = mat.materialIridescence.value;
-
     rapidjson::Document doc;
     doc.SetObject();
     rapidjson::Document::AllocatorType &al = doc.GetAllocator();
+    bool any = false;
 
-    rapidjson::Value iriObj(rapidjson::kObjectType);
-    bool anyField = false;
-
-    auto addFloat = [&](const char *key, const Nullable<float> &v) {
-        if (!v.isPresent || !std::isfinite(v.value)) {
-            return;
-        }
-        iriObj.AddMember(rapidjson::Value(key, al).Move(), v.value, al);
-        anyField = true;
-    };
-    addFloat("iridescenceFactor", iri.iridescenceFactor);
-    addFloat("iridescenceIor", iri.iridescenceIor);
-    addFloat("iridescenceThicknessMinimum", iri.iridescenceThicknessMinimum);
-    addFloat("iridescenceThicknessMaximum", iri.iridescenceThicknessMaximum);
-
-    if (iri.hasIridescenceTexture) {
-        const size_t before = iriObj.MemberCount();
-        SidecarAddTextureJson(iriObj, al, "iridescenceTexture", iri.iridescenceTexture,
-                iri.hasIridescenceTexCoord, iri.hasIridescenceTransformScale, embeddedTexIdxs);
-        if (iriObj.MemberCount() > before) {
+    if (mat.materialIridescence.isPresent) {
+        const MaterialIridescence &iri = mat.materialIridescence.value;
+        rapidjson::Value iriObj(rapidjson::kObjectType);
+        bool anyField = false;
+        auto addFloat = [&](const char *key, const Nullable<float> &v) {
+            if (!v.isPresent || !std::isfinite(v.value)) {
+                return;
+            }
+            iriObj.AddMember(rapidjson::Value(key, al).Move(), v.value, al);
             anyField = true;
+        };
+        addFloat("iridescenceFactor", iri.iridescenceFactor);
+        addFloat("iridescenceIor", iri.iridescenceIor);
+        addFloat("iridescenceThicknessMinimum", iri.iridescenceThicknessMinimum);
+        addFloat("iridescenceThicknessMaximum", iri.iridescenceThicknessMaximum);
+        if (iri.hasIridescenceTexture) {
+            const size_t before = iriObj.MemberCount();
+            SidecarAddTextureJson(iriObj, al, "iridescenceTexture", iri.iridescenceTexture,
+                    iri.hasIridescenceTexCoord, iri.hasIridescenceTransformScale, embeddedTexIdxs);
+            if (iriObj.MemberCount() > before) {
+                anyField = true;
+            }
+        }
+        if (iri.hasThicknessTexture) {
+            const size_t before = iriObj.MemberCount();
+            SidecarAddTextureJson(iriObj, al, "iridescenceThicknessTexture", iri.iridescenceThicknessTexture,
+                    iri.hasThicknessTexCoord, iri.hasThicknessTransformScale, embeddedTexIdxs);
+            if (iriObj.MemberCount() > before) {
+                anyField = true;
+            }
+        }
+        if (anyField) {
+            doc.AddMember("KHR_materials_iridescence", iriObj, al);
+            any = true;
         }
     }
-    if (iri.hasThicknessTexture) {
-        const size_t before = iriObj.MemberCount();
-        SidecarAddTextureJson(iriObj, al, "iridescenceThicknessTexture", iri.iridescenceThicknessTexture,
-                iri.hasThicknessTexCoord, iri.hasThicknessTransformScale, embeddedTexIdxs);
-        if (iriObj.MemberCount() > before) {
+
+    if (mat.materialDispersion.isPresent && mat.materialDispersion.value.dispersion.isPresent &&
+            std::isfinite(mat.materialDispersion.value.dispersion.value)) {
+        rapidjson::Value dispObj(rapidjson::kObjectType);
+        dispObj.AddMember("dispersion", mat.materialDispersion.value.dispersion.value, al);
+        doc.AddMember("KHR_materials_dispersion", dispObj, al);
+        any = true;
+    }
+
+    if (mat.materialDiffuseTransmission.isPresent) {
+        const MaterialDiffuseTransmission &dtx = mat.materialDiffuseTransmission.value;
+        rapidjson::Value dtxObj(rapidjson::kObjectType);
+        bool anyField = false;
+        if (dtx.diffuseTransmissionFactor.isPresent && std::isfinite(dtx.diffuseTransmissionFactor.value)) {
+            dtxObj.AddMember("diffuseTransmissionFactor", dtx.diffuseTransmissionFactor.value, al);
             anyField = true;
+        }
+        if (dtx.hasColorFactor) {
+            rapidjson::Value arr(rapidjson::kArrayType);
+            arr.PushBack(dtx.diffuseTransmissionColorFactor[0], al);
+            arr.PushBack(dtx.diffuseTransmissionColorFactor[1], al);
+            arr.PushBack(dtx.diffuseTransmissionColorFactor[2], al);
+            dtxObj.AddMember("diffuseTransmissionColorFactor", arr, al);
+            anyField = true;
+        }
+        if (dtx.hasDiffuseTransmissionTexture) {
+            const size_t before = dtxObj.MemberCount();
+            SidecarAddTextureJson(dtxObj, al, "diffuseTransmissionTexture", dtx.diffuseTransmissionTexture,
+                    dtx.hasDiffuseTransmissionTexCoord, dtx.hasDiffuseTransmissionTransformScale, embeddedTexIdxs);
+            if (dtxObj.MemberCount() > before) {
+                anyField = true;
+            }
+        }
+        if (dtx.hasColorTexture) {
+            const size_t before = dtxObj.MemberCount();
+            SidecarAddTextureJson(dtxObj, al, "diffuseTransmissionColorTexture", dtx.diffuseTransmissionColorTexture,
+                    dtx.hasColorTexCoord, dtx.hasColorTransformScale, embeddedTexIdxs);
+            if (dtxObj.MemberCount() > before) {
+                anyField = true;
+            }
+        }
+        if (anyField) {
+            doc.AddMember("KHR_materials_diffuse_transmission", dtxObj, al);
+            any = true;
         }
     }
 
-    if (!anyField) {
+    // Remaining unmapped authored extensions (e.g. volume_scatter, retroreflectivity):
+    // copy JSON as authored. Skip keys already mapped to MATKEY or handled above.
+    if (mat.customExtensions.mValues.isPresent) {
+        for (const CustomExtension &ext : mat.customExtensions.mValues.value) {
+            if (IsMappedMaterialExtension(ext.name) ||
+                    ext.name == "KHR_materials_iridescence" ||
+                    ext.name == "KHR_materials_dispersion" ||
+                    ext.name == "KHR_materials_diffuse_transmission") {
+                continue;
+            }
+            if (doc.HasMember(ext.name.c_str())) {
+                continue;
+            }
+            rapidjson::Value key(ext.name.c_str(), al);
+            doc.AddMember(key, SidecarCustomExtensionToJson(ext, al), al);
+            any = true;
+        }
+    }
+
+    if (!any) {
         return;
     }
-
-    doc.AddMember("KHR_materials_iridescence", iriObj, al);
 
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -717,7 +1150,7 @@ void glTF2Importer::ImportMaterials(Asset &r) {
 
     for (unsigned int i = 0; i < numImportedMaterials; ++i) {
         mScene->mMaterials[i] = ImportMaterial(mEmbeddedTexIdxs, r, r.materials[i]);
-        SidecarTryAttachMaterialIridescence(mScene, i, mEmbeddedTexIdxs, r.materials[i]);
+        SidecarTryAttachMaterialUnmapped(mScene, i, mEmbeddedTexIdxs, r.materials[i]);
     }
 }
 
@@ -1280,6 +1713,7 @@ void glTF2Importer::ImportMeshes(glTF2::Asset &r) {
             }
 
             const unsigned int meshIndex = static_cast<unsigned int>(meshes.size() - 1u);
+            TryAttachGaussianSplatForPrimitive(mScene, meshIndex, prim, vertexRemappingTable);
             SidecarTryAttachForPrimitive(mScene, meshIndex, mesh, prim, vertexRemappingTable);
         }
     }
@@ -2506,8 +2940,9 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
     const bool hasMaterialSidecar = aiSceneHasMaterialSidecar(mScene) != 0;
     const bool hasAnimationSidecar = aiSceneHasAnimationSidecar(mScene) != 0;
     const bool hasPhysicsSidecar = aiSceneHasPhysicsSidecar(mScene) != 0;
+    const bool hasGaussianSplat = aiSceneHasGaussianSplat(mScene) != 0;
     if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMeshSidecar ||
-            hasMaterialSidecar || hasAnimationSidecar || hasPhysicsSidecar) {
+            hasMaterialSidecar || hasAnimationSidecar || hasPhysicsSidecar || hasGaussianSplat) {
         mScene->mMetaData = new aiMetadata;
         if (hasVersion) {
             mScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(a.asset.version));
@@ -2539,6 +2974,18 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
         if (hasPhysicsSidecar) {
             const bool flag = true;
             mScene->mMetaData->Add(AI_METADATA_PHYSICS_SIDECAR, flag);
+        }
+        if (hasGaussianSplat) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_GAUSSIAN_SPLAT, flag);
+            int32_t maxRest = 0;
+            for (unsigned int mi = 0; mi < mScene->mNumMeshes; ++mi) {
+                const aiGaussianSplat *gs = aiGetGaussianSplat(mScene, mi);
+                if (gs != nullptr) {
+                    maxRest = std::max(maxRest, static_cast<int32_t>(gs->mNumRestCoeffs));
+                }
+            }
+            mScene->mMetaData->Add(AI_METADATA_GAUSSIAN_SH_REST_COUNT, maxRest);
         }
     }
 }

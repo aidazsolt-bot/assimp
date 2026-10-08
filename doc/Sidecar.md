@@ -85,19 +85,24 @@ positions and attached via `AttachMeshSidecar`.
 Mesh- and primitive-level `extras` / `extensions` are serialized to JSON on the
 same mesh sidecar bag.
 
-### Material: `KHR_materials_iridescence`
+### Material: unmapped extensions (iridescence, dispersion, diffuse transmission, …)
 
-Assimp does **not** yet write typed `AI_MATKEY_IRIDESCENCE_*` properties. Until
-that exists, the glTF2 importer attaches a material sidecar whose
-`mExtensionsJson` contains only keys **present in the source** (no Assimp
-defaults such as factor=0 / ior=1.3 when omitted; no non-finite floats).
+Extensions that already have complete typed `AI_MATKEY_*` mapping
+(transmission, volume, IOR, clearcoat, sheen, …) stay on `aiMaterial` only.
 
-Texture objects include a resolved `path` (same rules as `aiMaterial::GetTexture`:
-external URI or `*N` embedded). glTF `index` alone is never enough for the
-RenderAssimp pack. `texCoord` / transform `scale` are emitted only when authored.
+Unmapped material extensions go to `aiMaterialSidecar::mExtensionsJson` with
+**authored keys only** (no Assimp defaults). Path-resolved texture objects are
+emitted for iridescence and diffuse transmission (`path` = URI or `*N`).
+Other unmapped bags (e.g. `KHR_materials_volume_scatter`) are copied as authored JSON.
 
 Fixtures: `test/models/glTF2/SidecarCustomAttr/`,
 `test/models/glTF2/SidecarIridescence/`.
+
+### Mesh: `KHR_gaussian_splatting`
+
+Typed payload: `aiGetGaussianSplat` (`doc/GaussianSplatting.md`). Extension meta
+JSON remains on the mesh sidecar; promoted attribute buffers are stripped from
+`mBuffers`.
 
 ### Animation: `KHR_animation_pointer`
 

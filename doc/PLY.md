@@ -145,12 +145,15 @@ Metadata keys (also on root node):
 
 Test fixtures: `test/models/PLY/gaussian_dc_only.ply`, `gaussian_with_rest.ply`.
 
-**Notes for renderers:** Assimp does not draw Gaussians. Feed `aiGaussianSplat` into your splat path (same field semantics as graphdeco / VVE `GaussianAssetLoader`). Lifetime = scene. Not copied by `aiCopyScene`.
+**Notes for renderers:** Assimp does not draw Gaussians. On import, PLY training
+logits are converted into **KHR_gaussian_splatting value space** (linear opacity /
+scale, glTF xyzw quats) so PLY and glTF share one consumer API — see
+`doc/GaussianSplatting.md`. Lifetime = scene. Not copied by `aiCopyScene`.
 
 **Materials (intentional non-goal):** Assimp does **not** synthesize classic `aiMaterial` colours or factors from splat attributes (`$clr.diffuse` / Kd, `$clr.specular` / Ks, shininess, metallic/roughness, opacity, …). Reasons:
 
 - Splat colour is **per-Gaussian** (and optionally view-dependent via `f_rest_*`); `aiMaterial` is one uniform bag per mesh.
-- File values are **logits / SH coeffs**, not Phong/PBR parameters. Useful conversions (e.g. DC→RGB ≈ `f_dc * 0.28209479 + 0.5`, opacity ≈ `sigmoid(opacity)`, scale ≈ `exp(scale_*)`) belong in the **renderer**, not in the importer.
+- SH→display RGB (KHR bias / \(Y_{0,0}\)) stays in the **renderer**.
 - Inventing Kd/Ks would imply a shading model Assimp does not apply and would mislead non-splat viewers.
 
 3DGS meshes therefore keep the usual default / named material (often `DefaultMaterial` / `?mat.name` only). Query materials for labels if needed; query `aiGetGaussianSplat` for appearance.

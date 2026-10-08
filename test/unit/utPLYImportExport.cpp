@@ -325,18 +325,22 @@ TEST_F(utPLYImportExport, importGaussianPlyDcOnly) {
     ASSERT_NE(nullptr, gs->mOpacity);
     EXPECT_EQ(nullptr, gs->mRest);
 
+    // KHR-native: opacity=sigmoid(logit), scale=exp(log), rotation glTF xyzw.
     EXPECT_NEAR(1.0f, gs->mDC[0].x, 1e-5f);
     EXPECT_NEAR(0.0f, gs->mDC[0].y, 1e-5f);
     EXPECT_NEAR(0.0f, gs->mDC[0].z, 1e-5f);
-    EXPECT_NEAR(0.0f, gs->mOpacity[0], 1e-5f);
-    EXPECT_NEAR(1.0f, gs->mRotation[0].r, 1e-5f);
+    EXPECT_NEAR(0.5f, gs->mOpacity[0], 1e-5f); // sigmoid(0)
+    EXPECT_NEAR(0.0f, gs->mRotation[0].r, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mRotation[0].g, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mRotation[0].b, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mRotation[0].a, 1e-5f); // wxyz(1,0,0,0) -> xyzw
 
     EXPECT_NEAR(0.0f, gs->mDC[1].x, 1e-5f);
     EXPECT_NEAR(1.0f, gs->mDC[1].y, 1e-5f);
-    EXPECT_NEAR(1.0f, gs->mOpacity[1], 1e-5f);
-    EXPECT_NEAR(0.1f, gs->mScale[1].x, 1e-5f);
-    EXPECT_NEAR(0.2f, gs->mScale[1].y, 1e-5f);
-    EXPECT_NEAR(0.3f, gs->mScale[1].z, 1e-5f);
+    EXPECT_NEAR(0.7310586f, gs->mOpacity[1], 1e-5f); // sigmoid(1)
+    EXPECT_NEAR(1.1051709f, gs->mScale[1].x, 1e-5f); // exp(0.1)
+    EXPECT_NEAR(1.2214028f, gs->mScale[1].y, 1e-5f); // exp(0.2)
+    EXPECT_NEAR(1.3498588f, gs->mScale[1].z, 1e-5f); // exp(0.3)
 
     EXPECT_NEAR(1.0f, scene->mMeshes[0]->mVertices[1].x, 1e-5f);
     EXPECT_NEAR(2.0f, scene->mMeshes[0]->mVertices[1].y, 1e-5f);
@@ -362,7 +366,9 @@ TEST_F(utPLYImportExport, importGaussianPlyWithRest) {
     EXPECT_NEAR(7.0f, gs->mRest[0], 1e-5f);
     EXPECT_NEAR(8.0f, gs->mRest[1], 1e-5f);
     EXPECT_NEAR(0.1f, gs->mDC[0].x, 1e-5f);
-    EXPECT_NEAR(-0.5f, gs->mOpacity[0], 1e-5f);
+    EXPECT_NEAR(0.3775407f, gs->mOpacity[0], 1e-5f); // sigmoid(-0.5)
+    EXPECT_NEAR(2.7182818f, gs->mScale[0].x, 1e-4f); // exp(1)
+    EXPECT_NEAR(1.0f, gs->mRotation[0].a, 1e-5f); // identity w
 
     int32_t restMeta = -1;
     ASSERT_NE(nullptr, scene->mMetaData);

@@ -49,6 +49,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/config.h>
 #include <assimp/scene.h>
 #include <assimp/sidecar.h>
+#include <assimp/gaussian.h>
 #include <string>
 #include <assimp/Exporter.hpp>
 #include <assimp/Importer.hpp>
@@ -1316,6 +1317,50 @@ TEST_F(utglTF2ImportExport, importglTF2_MaterialSidecarIridescenceTextures) {
     EXPECT_NE(std::string::npos, json.find("texCoord"));
     // Embedded image path should be *N
     EXPECT_NE(std::string::npos, json.find("\"*"));
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_KHR_gaussian_splatting) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/KHR_gaussian_splatting/KHR_gaussian_splatting_dc.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_EQ(1u, scene->mNumMeshes);
+    EXPECT_EQ(aiPrimitiveType_POINT, scene->mMeshes[0]->mPrimitiveTypes);
+    EXPECT_EQ(2u, scene->mMeshes[0]->mNumVertices);
+
+    EXPECT_TRUE(aiSceneHasGaussianSplat(scene));
+    const aiGaussianSplat *gs = aiGetGaussianSplat(scene, 0);
+    ASSERT_NE(nullptr, gs);
+    EXPECT_EQ(2u, gs->mNumPoints);
+    EXPECT_EQ(0u, gs->mNumRestCoeffs);
+    EXPECT_STREQ("ellipse", gs->mKernel.C_Str());
+    EXPECT_STREQ("srgb_rec709_display", gs->mColorSpace.C_Str());
+
+    EXPECT_NEAR(1.0f, gs->mDC[0].x, 1e-5f);
+    EXPECT_NEAR(0.5f, gs->mOpacity[0], 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mScale[0].x, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mRotation[0].r, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mRotation[0].a, 1e-5f);
+
+    EXPECT_NEAR(0.0f, gs->mDC[1].x, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mDC[1].y, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mOpacity[1], 1e-5f);
+    EXPECT_NEAR(2.0f, gs->mScale[1].x, 1e-5f);
+
+    // Promoted attrs must not remain as mesh-sidecar custom buffers.
+    if (aiSceneHasMeshSidecar(scene)) {
+        const aiMeshSidecar *msc = aiGetMeshSidecar(scene, 0);
+        ASSERT_NE(nullptr, msc);
+        for (unsigned int i = 0; i < msc->mNumBuffers; ++i) {
+            const std::string name(msc->mBuffers[i].mName.C_Str());
+            EXPECT_EQ(std::string::npos, name.find("KHR_gaussian_splatting:"));
+        }
+        ASSERT_NE(nullptr, msc->mExtensionsJson);
+        const std::string ext(msc->mExtensionsJson, msc->mExtensionsJsonLength);
+        EXPECT_NE(std::string::npos, ext.find("KHR_gaussian_splatting"));
+        EXPECT_NE(std::string::npos, ext.find("ellipse"));
+    }
 }
 
 TEST_F(utglTF2ImportExport, importglTF2_AnimationSidecarPointerMaterial) {

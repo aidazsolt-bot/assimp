@@ -34,6 +34,8 @@ __Importers__:
   animation sidecar (`aiAnimationSidecar`).
   `KHR_implicit_shapes` / `KHR_physics_rigid_bodies` use the scene-level physics
   sidecar (`aiPhysicsSidecar`).
+  `KHR_gaussian_splatting` uses the typed [Gaussian API](GaussianSplatting.md)
+  (`aiGetGaussianSplat`) plus mesh-sidecar extension JSON.
 - HMB
 - IFC-STEP
 - IQM
