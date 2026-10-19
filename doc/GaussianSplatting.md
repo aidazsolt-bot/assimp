@@ -29,10 +29,23 @@ the host, not in Assimp invents.
 - Promoted `KHR_gaussian_splatting:*` attrs are **removed** from mesh-sidecar
   custom buffers to avoid duplication.
 - Extension JSON remains on `aiMeshSidecar::mExtensionsJson`.
-- Nested compression drafts (e.g. SPZ) are **not** decoded; import needs
-  decoded accessors.
+- Nested compression drafts (e.g. SPZ buffers inside glTF) are **not**
+  decoded in-place; use decoded accessors, or load a standalone `.spz`
+  with the SPZ importer.
 
 Fixture: `test/models/glTF2/KHR_gaussian_splatting/`.
+
+### SPZ — Niantic Labs `.spz`
+
+- Standalone importer (`code/AssetLib/SPZ/`, vendored `contrib/spz`).
+- Detects NGSP v4 (ZSTD) and legacy gzip v1–3.
+- Converts on import: `opacity = sigmoid(logit)`, `scale = exp(logScale)`,
+  quaternion kept as glTF xyzw, SH DC + rest as authored.
+- Requires system `libzstd` at build time (`ASSIMP_BUILD_SPZ_IMPORTER`).
+- Does not invent `mKernel` / `mColorSpace`.
+
+Fixtures: `test/models/SPZ/tiny_dc.spz`; upstream samples under
+`test/models-nonbsd/SPZ/` (hornedlizard, racoonfamily).
 
 ### PLY — graphdeco / INRIA convention
 
@@ -53,6 +66,14 @@ const aiGaussianSplat *gs = aiGetGaussianSplat(scene, meshIndex);
 ```
 
 Lifetime = scene. Not copied by `aiCopyScene`.
+
+### `assimp info`
+
+When a scene carries splat data, `assimp info` prints a **Gaussian Splats**
+block (per-mesh point count, rest coeffs, present attrs, authored kernel /
+colorSpace / projection / sorting when set). Use `-v` for opacity/scale ranges.
+Use `-r` for a raw import without MaxQuality post-process (avoids vertex joins
+that can make vertex counts differ from splat point counts).
 
 ## Related material / physics sidecars
 

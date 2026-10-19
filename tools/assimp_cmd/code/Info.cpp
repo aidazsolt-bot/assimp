@@ -44,6 +44,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "Main.h"
 
+#include <assimp/gaussian.h>
+#include <assimp/metadata.h>
+
+#include <algorithm>
 #include <cstdio>
 #include <iostream>
 #include <string>
@@ -197,6 +201,97 @@ std::string FindPTypes(const aiScene *scene) {
     }
     return (haveit[0] ? std::string("points") : "") + (haveit[1] ? "lines" : "") +
            (haveit[2] ? "triangles" : "") + (haveit[3] ? "n-polygons" : "");
+}
+
+// -----------------------------------------------------------------------------------
+/** Print typed Gaussian splat side-channel summary (aiGetGaussianSplat). */
+void PrintGaussianSplatInfo(const aiScene *scene, bool verbose) {
+    if (!scene || !aiSceneHasGaussianSplat(scene)) {
+        return;
+    }
+
+    bool metaFlag = false;
+    int32_t metaRest = -1;
+    if (scene->mMetaData) {
+        scene->mMetaData->Get(AI_METADATA_GAUSSIAN_SPLAT, metaFlag);
+        scene->mMetaData->Get(AI_METADATA_GAUSSIAN_SH_REST_COUNT, metaRest);
+    }
+
+    printf("\nGaussian Splats:       yes");
+    if (scene->mMetaData) {
+        printf(" (meta IsGaussianSplat=%s", metaFlag ? "true" : "false");
+        if (metaRest >= 0) {
+            printf(", SHRestCount=%d", static_cast<int>(metaRest));
+        }
+        printf(")");
+    }
+    printf("\n");
+
+    unsigned totalPoints = 0;
+    unsigned meshesWithSplat = 0;
+    for (unsigned int i = 0; i < scene->mNumMeshes; ++i) {
+        const aiGaussianSplat *gs = aiGetGaussianSplat(scene, i);
+        if (!gs || gs->mNumPoints == 0) {
+            continue;
+        }
+        ++meshesWithSplat;
+        totalPoints += gs->mNumPoints;
+
+        printf("    mesh %u (%s): points=%u restCoeffs=%u",
+                i,
+                scene->mMeshes[i] && scene->mMeshes[i]->mName.length ?
+                        scene->mMeshes[i]->mName.C_Str() :
+                        "-",
+                gs->mNumPoints,
+                gs->mNumRestCoeffs);
+        printf(" attrs=[");
+        bool sep = false;
+        auto emit = [&](const char *name, bool present) {
+            if (!present) {
+                return;
+            }
+            if (sep) {
+                printf(",");
+            }
+            printf("%s", name);
+            sep = true;
+        };
+        emit("DC", gs->mDC != nullptr);
+        emit("scale", gs->mScale != nullptr);
+        emit("rotation", gs->mRotation != nullptr);
+        emit("opacity", gs->mOpacity != nullptr);
+        emit("rest", gs->mRest != nullptr);
+        printf("]");
+
+        if (gs->mKernel.length > 0) {
+            printf(" kernel=%s", gs->mKernel.C_Str());
+        }
+        if (gs->mColorSpace.length > 0) {
+            printf(" colorSpace=%s", gs->mColorSpace.C_Str());
+        }
+        if (gs->mProjection.length > 0) {
+            printf(" projection=%s", gs->mProjection.C_Str());
+        }
+        if (gs->mSortingMethod.length > 0) {
+            printf(" sorting=%s", gs->mSortingMethod.C_Str());
+        }
+        printf("\n");
+
+        if (verbose && gs->mOpacity && gs->mScale && gs->mNumPoints > 0) {
+            float opMin = gs->mOpacity[0], opMax = gs->mOpacity[0];
+            float sMin = gs->mScale[0].x, sMax = gs->mScale[0].x;
+            for (unsigned int p = 0; p < gs->mNumPoints; ++p) {
+                const float op = static_cast<float>(gs->mOpacity[p]);
+                opMin = std::min(opMin, op);
+                opMax = std::max(opMax, op);
+                sMin = std::min(sMin, std::min(gs->mScale[p].x, std::min(gs->mScale[p].y, gs->mScale[p].z)));
+                sMax = std::max(sMax, std::max(gs->mScale[p].x, std::max(gs->mScale[p].y, gs->mScale[p].z)));
+            }
+            printf("      opacity[min,max]=(%f,%f) scale[min,max]=(%f,%f)\n",
+                    opMin, opMax, sMin, sMax);
+        }
+    }
+    printf("    meshes_with_splat=%u total_points=%u\n", meshesWithSplat, totalPoints);
 }
 
 // -----------------------------------------------------------------------------------
@@ -396,6 +491,15 @@ int Assimp_Info(const char *const *params, unsigned int num) {
             special_points[0][0], special_points[0][1], special_points[0][2],
             special_points[1][0], special_points[1][1], special_points[1][2],
             special_points[2][0], special_points[2][1], special_points[2][2]);
+
+    // Always surface splat presence (even in -s); detail lines below unless silent.
+    if (aiSceneHasGaussianSplat(scene)) {
+        if (silent) {
+            printf("Gaussian Splats:       yes\n");
+        } else {
+            PrintGaussianSplatInfo(scene, verbose);
+        }
+    }
 
     if (silent) {
         printf("\n");

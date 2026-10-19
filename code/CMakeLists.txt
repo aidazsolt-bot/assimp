@@ -554,6 +554,49 @@ ADD_ASSIMP_IMPORTER( PLY
   AssetLib/Ply/PlyParser.h
 )
 
+# Niantic Labs .spz (contrib/spz) needs libzstd for NGSP v4.
+find_path(ASSIMP_ZSTD_INCLUDE_DIR zstd.h)
+find_library(ASSIMP_ZSTD_LIBRARY NAMES zstd libzstd)
+if(ASSIMP_ZSTD_INCLUDE_DIR AND ASSIMP_ZSTD_LIBRARY)
+  set(ASSIMP_HAS_ZSTD TRUE)
+else()
+  set(ASSIMP_HAS_ZSTD FALSE)
+endif()
+if(NOT ASSIMP_HAS_ZSTD)
+  if(NOT DEFINED ASSIMP_BUILD_SPZ_IMPORTER OR ASSIMP_BUILD_SPZ_IMPORTER)
+    message(STATUS "libzstd not found - SPZ importer disabled")
+    set(ASSIMP_BUILD_SPZ_IMPORTER OFF CACHE BOOL "SPZ importer requires libzstd" FORCE)
+  endif()
+endif()
+
+ADD_ASSIMP_IMPORTER( SPZ
+  AssetLib/SPZ/SPZLoader.cpp
+  AssetLib/SPZ/SPZLoader.h
+)
+
+# Vendored nianticlabs/spz decode sources (MIT) when SPZ importer is on.
+string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SPZ" ASSIMP_SPZ_ENABLED_POS)
+if(NOT ASSIMP_SPZ_ENABLED_POS EQUAL -1)
+  list(APPEND ASSIMP_LOADER_SRCS
+    ../contrib/spz/src/cc/load-spz.cc
+    ../contrib/spz/src/cc/splat-types.cc
+    ../contrib/spz/src/cc/splat-c-types.cc
+  )
+  source_group(contrib\\spz FILES
+    ../contrib/spz/src/cc/load-spz.cc
+    ../contrib/spz/src/cc/load-spz.h
+    ../contrib/spz/src/cc/splat-types.cc
+    ../contrib/spz/src/cc/splat-types.h
+    ../contrib/spz/src/cc/splat-c-types.cc
+    ../contrib/spz/src/cc/splat-c-types.h
+    ../contrib/spz/src/cc/splat-utils.h
+  )
+  include_directories(
+    ../contrib/spz/src/cc
+    ${ASSIMP_ZSTD_INCLUDE_DIR}
+  )
+endif()
+
 ADD_ASSIMP_IMPORTER( MS3D
   AssetLib/MS3D/MS3DLoader.cpp
   AssetLib/MS3D/MS3DLoader.h
@@ -1519,6 +1562,21 @@ ELSE()
     target_link_libraries(assimp pugixml::pugixml)
   endif()
 ENDIF()
+
+# SPZ importer: link libzstd (+ pthread for std::async in load-spz).
+string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SPZ" ASSIMP_SPZ_LINK_POS)
+if(NOT ASSIMP_SPZ_LINK_POS EQUAL -1)
+  if(ASSIMP_ZSTD_LIBRARY)
+    target_link_libraries(assimp ${ASSIMP_ZSTD_LIBRARY})
+  endif()
+  find_package(Threads)
+  if(Threads_FOUND)
+    target_link_libraries(assimp Threads::Threads)
+  endif()
+  if(ANDROID)
+    target_link_libraries(assimp log)
+  endif()
+endif()
 
 if(ASSIMP_ANDROID_JNIIOSYSTEM)
   set(ASSIMP_ANDROID_JNIIOSYSTEM_PATH port/AndroidJNI)
