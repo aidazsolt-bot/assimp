@@ -555,10 +555,17 @@ ADD_ASSIMP_IMPORTER( PLY
 )
 
 # Niantic Labs .spz (contrib/spz) needs libzstd for NGSP v4.
+# Prefer system zstd; otherwise build vendored contrib/zstd (Android / offline).
 find_path(ASSIMP_ZSTD_INCLUDE_DIR zstd.h)
 find_library(ASSIMP_ZSTD_LIBRARY NAMES zstd libzstd)
-if(ASSIMP_ZSTD_INCLUDE_DIR AND ASSIMP_ZSTD_LIBRARY)
+set(ASSIMP_USE_BUNDLED_ZSTD FALSE)
+if(ASSIMP_ZSTD_INCLUDE_DIR AND ASSIMP_ZSTD_LIBRARY AND NOT ANDROID)
   set(ASSIMP_HAS_ZSTD TRUE)
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/zstd/lib/zstd.h")
+  message(STATUS "Using bundled contrib/zstd for SPZ importer")
+  set(ASSIMP_HAS_ZSTD TRUE)
+  set(ASSIMP_USE_BUNDLED_ZSTD TRUE)
+  set(ASSIMP_ZSTD_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/zstd/lib")
 else()
   set(ASSIMP_HAS_ZSTD FALSE)
 endif()
@@ -582,6 +589,18 @@ if(NOT ASSIMP_SPZ_ENABLED_POS EQUAL -1)
     ../contrib/spz/src/cc/splat-types.cc
     ../contrib/spz/src/cc/splat-c-types.cc
   )
+  # Compile bundled zstd into assimp (avoids install(EXPORT) of a separate target).
+  if(ASSIMP_USE_BUNDLED_ZSTD)
+    file(GLOB ASSIMP_ZSTD_SRCS
+      ../contrib/zstd/lib/common/*.c
+      ../contrib/zstd/lib/compress/*.c
+      ../contrib/zstd/lib/decompress/*.c
+      ../contrib/zstd/lib/dictBuilder/*.c
+    )
+    list(APPEND ASSIMP_LOADER_SRCS ${ASSIMP_ZSTD_SRCS})
+    source_group(contrib\\zstd FILES ${ASSIMP_ZSTD_SRCS})
+    add_definitions(-DZSTD_DISABLE_ASM -DZSTD_MULTITHREAD=0 -DXXH_NAMESPACE=ZSTD_)
+  endif()
   source_group(contrib\\spz FILES
     ../contrib/spz/src/cc/load-spz.cc
     ../contrib/spz/src/cc/load-spz.h
@@ -595,6 +614,9 @@ if(NOT ASSIMP_SPZ_ENABLED_POS EQUAL -1)
     ../contrib/spz/src/cc
     ${ASSIMP_ZSTD_INCLUDE_DIR}
   )
+  if(ASSIMP_USE_BUNDLED_ZSTD)
+    include_directories(../contrib/zstd/lib/common)
+  endif()
 endif()
 
 ADD_ASSIMP_IMPORTER( MS3D
@@ -1563,10 +1585,10 @@ ELSE()
   endif()
 ENDIF()
 
-# SPZ importer: link libzstd (+ pthread for std::async in load-spz).
+# SPZ importer: link system libzstd when not bundled (+ pthread for std::async).
 string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SPZ" ASSIMP_SPZ_LINK_POS)
 if(NOT ASSIMP_SPZ_LINK_POS EQUAL -1)
-  if(ASSIMP_ZSTD_LIBRARY)
+  if(NOT ASSIMP_USE_BUNDLED_ZSTD AND ASSIMP_ZSTD_LIBRARY)
     target_link_libraries(assimp ${ASSIMP_ZSTD_LIBRARY})
   endif()
   find_package(Threads)
