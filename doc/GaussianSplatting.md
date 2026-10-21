@@ -47,6 +47,19 @@ Fixture: `test/models/glTF2/KHR_gaussian_splatting/`.
 Fixtures: `test/models/SPZ/tiny_dc.spz`; upstream samples under
 `test/models-nonbsd/SPZ/` (hornedlizard, racoonfamily).
 
+### SPLAT — antimatter15 `.splat`
+
+- Standalone importer (`code/AssetLib/SPLAT/`).
+- Headerless little-endian 32-byte records (`count = filesize / 32`).
+- Layout: `pos` 3×f32, `scale` 3×f32 (linear), `RGBA` 4×u8, `rot` 4×u8
+  (PLY `rot_0..3` / wxyz packed as `(v*128+128)`).
+- Converts on import: opacity = `a/255`, scale as authored (non-negative),
+  quat wxyz → glTF xyzw + normalize, SH DC recovered from baked RGB via
+  `f_dc = (rgb - 0.5) / Y_0,0` (inverse of convert.py). No `mRest`.
+- Does not invent `mKernel` / `mColorSpace`.
+
+Fixture: `test/models/SPLAT/tiny_dc.splat`.
+
 ### PLY — graphdeco / INRIA convention
 
 - Detects `f_dc_*`, `opacity`, `scale_*`, `rot_*` (+ optional contiguous `f_rest_*`).

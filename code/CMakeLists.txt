@@ -581,6 +581,11 @@ ADD_ASSIMP_IMPORTER( SPZ
   AssetLib/SPZ/SPZLoader.h
 )
 
+ADD_ASSIMP_IMPORTER( SPLAT
+  AssetLib/SPLAT/SPLATLoader.cpp
+  AssetLib/SPLAT/SPLATLoader.h
+)
+
 # Vendored nianticlabs/spz decode sources (MIT) when SPZ importer is on.
 string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SPZ" ASSIMP_SPZ_ENABLED_POS)
 if(NOT ASSIMP_SPZ_ENABLED_POS EQUAL -1)

@@ -143,6 +143,7 @@ SET( IMPORTERS
   unit/utPMXImporter.cpp
   unit/utPLYImportExport.cpp
   unit/utSPZImportExport.cpp
+  unit/utSPLATImportExport.cpp
   unit/utObjImportExport.cpp
   unit/utObjTools.cpp
   unit/utOpenGEXImportExport.cpp

@@ -59,6 +59,7 @@ __Importers__:
 - [OGEX](https://en.wikipedia.org/wiki/Open_Game_Engine_Exchange)
 - [PLY](https://en.wikipedia.org/wiki/PLY_(file_format)) — see also [PLY.md](PLY.md) (mesh vs. 3DGS `f_dc_*` / `f_rest_*`)
 - SPZ (Niantic Labs compressed 3DGS) — see [GaussianSplatting.md](GaussianSplatting.md)
+- SPLAT (antimatter15 binary 3DGS) — see [GaussianSplatting.md](GaussianSplatting.md)
 - PMX
 - PRJ
 - Q3O
