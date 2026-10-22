@@ -644,6 +644,139 @@ namespace {
                 " (", numPoints, " points, restCoeffs=", restScalars, ")");
         return true;
     }
+
+    static Ref<Accessor> FindTargetCustomAttribute(Mesh::Primitive::Target &target, const char *semantic) {
+        for (const std::pair<std::string, Ref<Accessor>> &entry : target.custom) {
+            if (entry.first == semantic) {
+                return entry.second;
+            }
+        }
+        return Ref<Accessor>();
+    }
+
+    /**
+     * Promote morph-target KHR_gaussian_splatting:* attrs into aiGaussianAnimSplat[].
+     * Index-aligned with aiMesh::mAnimMeshes. POSITION morph stays on aiAnimMesh.
+     * Requires bind-pose aiGaussianSplat already attached.
+     */
+    static void TryAttachGaussianAnimSplatsForPrimitive(aiScene *scene, unsigned int meshIndex,
+            Mesh &mesh, Mesh::Primitive &prim, const std::vector<unsigned int> *vertexRemappingTable) {
+        // ImportMeshes attaches before CopyVector -> mNumMeshes is still 0; do not use
+        // aiGetGaussianSplat (it gates on mNumMeshes). Read private storage directly.
+        const ScenePrivateData *priv = ScenePriv(scene);
+        const aiGaussianSplat *bind = nullptr;
+        if (priv != nullptr && meshIndex < priv->mGaussianSplats.size()) {
+            bind = priv->mGaussianSplats[meshIndex];
+        }
+        if (bind == nullptr || bind->mNumPoints == 0 || prim.targets.empty()) {
+            return;
+        }
+
+        bool anyGsMorph = false;
+        for (Mesh::Primitive::Target &t : prim.targets) {
+            for (const std::pair<std::string, Ref<Accessor>> &e : t.custom) {
+                if (e.first.rfind("KHR_gaussian_splatting:", 0) == 0) {
+                    anyGsMorph = true;
+                    break;
+                }
+            }
+            if (anyGsMorph) {
+                break;
+            }
+        }
+        if (!anyGsMorph) {
+            return;
+        }
+
+        const unsigned int numPoints = bind->mNumPoints;
+        const unsigned int nTargets = static_cast<unsigned int>(prim.targets.size());
+        std::vector<aiGaussianAnimSplat *> anims(nTargets, nullptr);
+
+        for (unsigned int ti = 0; ti < nTargets; ++ti) {
+            Mesh::Primitive::Target &target = prim.targets[ti];
+            std::unique_ptr<aiGaussianAnimSplat> anim(new aiGaussianAnimSplat());
+            anim->mNumPoints = numPoints;
+            if (mesh.weights.size() > ti) {
+                anim->mWeight = mesh.weights[ti];
+            }
+            if (mesh.targetNames.size() > ti && !mesh.targetNames[ti].empty()) {
+                anim->mName.Set(mesh.targetNames[ti]);
+            }
+
+            Ref<Accessor> scaleAcc = FindTargetCustomAttribute(target, "KHR_gaussian_splatting:SCALE");
+            if (scaleAcc) {
+                std::vector<float> scaleF;
+                unsigned int n = 0, c = 0;
+                if (ExtractAccessorFloatsRemapped(*scaleAcc, vertexRemappingTable, scaleF, n, c) &&
+                        c == 3 && n == numPoints) {
+                    anim->mScale = new aiVector3D[numPoints];
+                    for (unsigned int i = 0; i < numPoints; ++i) {
+                        anim->mScale[i].x = scaleF[i * 3 + 0];
+                        anim->mScale[i].y = scaleF[i * 3 + 1];
+                        anim->mScale[i].z = scaleF[i * 3 + 2];
+                    }
+                } else {
+                    ASSIMP_LOG_WARN("GLTF: morph KHR_gaussian_splatting:SCALE extract failed for target ", ti);
+                }
+            }
+
+            Ref<Accessor> rotAcc = FindTargetCustomAttribute(target, "KHR_gaussian_splatting:ROTATION");
+            if (rotAcc) {
+                std::vector<float> rotF;
+                unsigned int n = 0, c = 0;
+                if (ExtractAccessorFloatsRemapped(*rotAcc, vertexRemappingTable, rotF, n, c) &&
+                        c == 4 && n == numPoints) {
+                    anim->mRotation = new aiColor4D[numPoints];
+                    for (unsigned int i = 0; i < numPoints; ++i) {
+                        anim->mRotation[i].r = rotF[i * 4 + 0];
+                        anim->mRotation[i].g = rotF[i * 4 + 1];
+                        anim->mRotation[i].b = rotF[i * 4 + 2];
+                        anim->mRotation[i].a = rotF[i * 4 + 3];
+                    }
+                } else {
+                    ASSIMP_LOG_WARN("GLTF: morph KHR_gaussian_splatting:ROTATION extract failed for target ", ti);
+                }
+            }
+
+            Ref<Accessor> opacityAcc = FindTargetCustomAttribute(target, "KHR_gaussian_splatting:OPACITY");
+            if (opacityAcc) {
+                std::vector<float> opacityF;
+                unsigned int n = 0, c = 0;
+                if (ExtractAccessorFloatsRemapped(*opacityAcc, vertexRemappingTable, opacityF, n, c) &&
+                        c == 1 && n == numPoints) {
+                    anim->mOpacity = new ai_real[numPoints];
+                    for (unsigned int i = 0; i < numPoints; ++i) {
+                        anim->mOpacity[i] = opacityF[i];
+                    }
+                } else {
+                    ASSIMP_LOG_WARN("GLTF: morph KHR_gaussian_splatting:OPACITY extract failed for target ", ti);
+                }
+            }
+
+            Ref<Accessor> sh0Acc = FindTargetCustomAttribute(target, "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0");
+            if (sh0Acc) {
+                std::vector<float> sh0F;
+                unsigned int n = 0, c = 0;
+                if (ExtractAccessorFloatsRemapped(*sh0Acc, vertexRemappingTable, sh0F, n, c) &&
+                        c == 3 && n == numPoints) {
+                    anim->mDC = new aiVector3D[numPoints];
+                    for (unsigned int i = 0; i < numPoints; ++i) {
+                        anim->mDC[i].x = sh0F[i * 3 + 0];
+                        anim->mDC[i].y = sh0F[i * 3 + 1];
+                        anim->mDC[i].z = sh0F[i * 3 + 2];
+                    }
+                } else {
+                    ASSIMP_LOG_WARN("GLTF: morph KHR_gaussian_splatting:SH_DEGREE_0_COEF_0 extract failed for target ", ti);
+                }
+            }
+
+            anims[ti] = anim.release();
+        }
+
+        AttachGaussianAnimSplats(scene, meshIndex, anims.data(), nTargets);
+        ASSIMP_LOG_DEBUG("GLTF: Attached ", nTargets, " KHR_gaussian_splatting morph target(s) for mesh ",
+                meshIndex);
+    }
 } // namespace
 
 //
@@ -1714,6 +1847,7 @@ void glTF2Importer::ImportMeshes(glTF2::Asset &r) {
 
             const unsigned int meshIndex = static_cast<unsigned int>(meshes.size() - 1u);
             TryAttachGaussianSplatForPrimitive(mScene, meshIndex, prim, vertexRemappingTable);
+            TryAttachGaussianAnimSplatsForPrimitive(mScene, meshIndex, mesh, prim, vertexRemappingTable);
             SidecarTryAttachForPrimitive(mScene, meshIndex, mesh, prim, vertexRemappingTable);
         }
     }

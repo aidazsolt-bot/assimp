@@ -80,6 +80,10 @@ struct ScenePrivateData {
     // Does not change public aiMesh / aiScene ABI.
     std::vector<aiGaussianSplat *> mGaussianSplats;
 
+    // Optional 3DGS morph targets per mesh (parallel to aiMesh::mAnimMeshes).
+    // Outer index = meshIndex; inner = targetIndex. Empty = no GS morph.
+    std::vector<std::vector<aiGaussianAnimSplat *>> mGaussianAnimSplats;
+
     // Optional generic mesh sidecar data, indexed by mesh index (nullptr = none).
     // Does not change public aiMesh / aiScene ABI.
     std::vector<aiMeshSidecar *> mMeshSidecars;
@@ -99,6 +103,7 @@ inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
           mPPStepsApplied(0),
           mIsCopy(false),
           mGaussianSplats(),
+          mGaussianAnimSplats(),
           mMeshSidecars(),
           mMaterialSidecars(),
           mAnimationSidecars(),
@@ -111,6 +116,13 @@ inline ScenePrivateData::~ScenePrivateData() {
         delete g;
     }
     mGaussianSplats.clear();
+    for (std::vector<aiGaussianAnimSplat *> &targets : mGaussianAnimSplats) {
+        for (aiGaussianAnimSplat *a : targets) {
+            delete a;
+        }
+        targets.clear();
+    }
+    mGaussianAnimSplats.clear();
     for (aiMeshSidecar *s : mMeshSidecars) {
         delete s;
     }

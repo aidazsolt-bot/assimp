@@ -33,6 +33,16 @@ the host, not in Assimp invents.
   decoded in-place; use decoded accessors, or load a standalone `.spz`
   with the SPZ importer.
 
+#### Morph targets (`targets[]`)
+
+- **POSITION** → `#aiAnimMesh` (same as mesh blendshapes).
+- **`KHR_gaussian_splatting:SCALE` / `ROTATION` / `OPACITY` / `SH_DEGREE_0_COEF_0`**
+  → `#aiGaussianAnimSplat` via `aiGetGaussianAnimSplat(scene, mesh, targetIndex)`.
+  Values are **glTF morph deltas** (relative), index-aligned with `aiMesh::mAnimMeshes`.
+- Weight keys over time → `#aiMeshMorphAnim` (`aiAnimation::mMorphMeshChannels`).
+- Host: `attr = bind + sum_i w_i * target_i` (POSITION from `aiAnimMesh`,
+  splat attrs from `aiGaussianAnimSplat`).
+
 Fixture: `test/models/glTF2/KHR_gaussian_splatting/`.
 
 ### SPZ — Niantic Labs `.spz`
@@ -76,6 +86,12 @@ See `doc/PLY.md`.
 
 const aiGaussianSplat *gs = aiGetGaussianSplat(scene, meshIndex);
 // Positions: scene->mMeshes[meshIndex]->mVertices
+
+const unsigned nMorph = aiGetGaussianAnimSplatCount(scene, meshIndex);
+for (unsigned t = 0; t < nMorph; ++t) {
+    const aiGaussianAnimSplat *gMorph = aiGetGaussianAnimSplat(scene, meshIndex, t);
+    // gMorph->mScale / mRotation / ... are deltas; weights from aiMeshMorphAnim
+}
 ```
 
 Lifetime = scene. Not copied by `aiCopyScene`.

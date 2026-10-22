@@ -150,6 +150,70 @@ private:
 };
 
 /**
+ * Morph-target patch for Gaussian attributes (parallel to #aiAnimMesh).
+ *
+ * Indexing matches #aiMesh::mAnimMeshes / glTF `targets[i]`. POSITION morph
+ * stays on #aiAnimMesh; this channel carries splat-only attrs (SCALE, …).
+ *
+ * Arrays are **glTF morph deltas** (relative), not absolute replacements.
+ * nullptr array = that attribute is absent on this target.
+ * Weights over time: #aiAnimation::mMorphMeshChannels (#aiMeshMorphAnim).
+ */
+struct aiGaussianAnimSplat {
+    /** Must equal owning #aiGaussianSplat::mNumPoints / mesh vertex count. */
+    unsigned int mNumPoints;
+
+    /** Optional name (glTF targetNames / extras). */
+    C_STRUCT aiString mName;
+
+    /** Default weight when no morph animation samples (glTF mesh.weights[i]). */
+    ai_real mWeight;
+
+    /** Linear scale deltas. Size: mNumPoints. */
+    C_STRUCT aiVector3D *mScale;
+
+    /** Quaternion deltas as (r,g,b,a)==(x,y,z,w). Size: mNumPoints. */
+    C_STRUCT aiColor4D *mRotation;
+
+    /** Opacity deltas. Size: mNumPoints. */
+    ai_real *mOpacity;
+
+    /** SH degree-0 RGB deltas. Size: mNumPoints. */
+    C_STRUCT aiVector3D *mDC;
+
+    /** Higher-order SH deltas. Size: mNumPoints * mNumRestCoeffs. */
+    ai_real *mRest;
+
+    /** Rest coeff count per point (0 if mRest is nullptr). */
+    unsigned int mNumRestCoeffs;
+
+#ifdef __cplusplus
+    aiGaussianAnimSplat() AI_NO_EXCEPT
+            : mNumPoints(0),
+              mName(),
+              mWeight(0.f),
+              mScale(nullptr),
+              mRotation(nullptr),
+              mOpacity(nullptr),
+              mDC(nullptr),
+              mRest(nullptr),
+              mNumRestCoeffs(0) {}
+
+    ~aiGaussianAnimSplat() {
+        delete[] mScale;
+        delete[] mRotation;
+        delete[] mOpacity;
+        delete[] mDC;
+        delete[] mRest;
+    }
+
+private:
+    aiGaussianAnimSplat(const aiGaussianAnimSplat &) = delete;
+    aiGaussianAnimSplat &operator=(const aiGaussianAnimSplat &) = delete;
+#endif
+};
+
+/**
  * @brief Non-zero if the scene carries any Gaussian splat side data.
  */
 ASSIMP_API int aiSceneHasGaussianSplat(const C_STRUCT aiScene *pScene);
@@ -164,6 +228,23 @@ ASSIMP_API const C_STRUCT aiGaussianSplat *aiGetGaussianSplat(
         const C_STRUCT aiScene *pScene,
         unsigned int meshIndex);
 
+/**
+ * @brief Number of Gaussian morph targets for a mesh (0 if none).
+ *
+ * Aligned with #aiMesh::mNumAnimMeshes when both are present.
+ */
+ASSIMP_API unsigned int aiGetGaussianAnimSplatCount(
+        const C_STRUCT aiScene *pScene,
+        unsigned int meshIndex);
+
+/**
+ * @brief Get one Gaussian morph target, or nullptr if absent / OOB.
+ */
+ASSIMP_API const C_STRUCT aiGaussianAnimSplat *aiGetGaussianAnimSplat(
+        const C_STRUCT aiScene *pScene,
+        unsigned int meshIndex,
+        unsigned int targetIndex);
+
 #ifdef __cplusplus
 } // extern "C"
 
@@ -171,6 +252,13 @@ namespace Assimp {
 
 /** Attach ownership of @p splat for @p meshIndex (importer use). Takes ownership. */
 void AttachGaussianSplat(aiScene *scene, unsigned int meshIndex, aiGaussianSplat *splat);
+
+/**
+ * Attach ownership of @p count morph targets for @p meshIndex.
+ * Takes ownership of each non-null pointer in @p splats[0..count).
+ */
+void AttachGaussianAnimSplats(aiScene *scene, unsigned int meshIndex,
+        aiGaussianAnimSplat **splats, unsigned int count);
 
 } // namespace Assimp
 #endif
