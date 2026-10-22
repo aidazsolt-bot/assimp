@@ -1790,7 +1790,7 @@ inline void Mesh::Read(Value &pJSON_Object, Asset &pAsset_Root) {
                             continue;
                         }
                         const char *attr = it->name.GetString();
-                        // Valid attribute semantics include POSITION, NORMAL, TANGENT
+                        // Core morph: POSITION, NORMAL, TANGENT. Extension attrs -> custom.
                         int undPos = 0;
                         Mesh::AccessorList *vec = nullptr;
                         if (GetAttribTargetVector(prim, j, attr, vec, undPos)) {
@@ -1799,6 +1799,9 @@ inline void Mesh::Read(Value &pJSON_Object, Asset &pAsset_Root) {
                                 (*vec).resize(idx + 1);
                             }
                             (*vec)[idx] = pAsset_Root.accessors.Retrieve(it->value.GetUint());
+                        } else {
+                            prim.targets[j].custom.emplace_back(
+                                    attr, pAsset_Root.accessors.Retrieve(it->value.GetUint()));
                         }
                     }
                 }

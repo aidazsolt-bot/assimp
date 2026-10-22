@@ -92,3 +92,66 @@ void Assimp::AttachGaussianSplat(aiScene *scene, unsigned int meshIndex, aiGauss
     delete priv->mGaussianSplats[meshIndex];
     priv->mGaussianSplats[meshIndex] = splat;
 }
+
+// ------------------------------------------------------------------------------------------------
+ASSIMP_API unsigned int aiGetGaussianAnimSplatCount(const aiScene *pScene, unsigned int meshIndex) {
+    if (pScene == nullptr || pScene->mPrivate == nullptr) {
+        return 0;
+    }
+    if (meshIndex >= pScene->mNumMeshes) {
+        return 0;
+    }
+    const ScenePrivateData *priv = ScenePriv(pScene);
+    if (meshIndex >= priv->mGaussianAnimSplats.size()) {
+        return 0;
+    }
+    return static_cast<unsigned int>(priv->mGaussianAnimSplats[meshIndex].size());
+}
+
+// ------------------------------------------------------------------------------------------------
+ASSIMP_API const aiGaussianAnimSplat *aiGetGaussianAnimSplat(
+        const aiScene *pScene, unsigned int meshIndex, unsigned int targetIndex) {
+    if (pScene == nullptr || pScene->mPrivate == nullptr) {
+        return nullptr;
+    }
+    if (meshIndex >= pScene->mNumMeshes) {
+        return nullptr;
+    }
+    const ScenePrivateData *priv = ScenePriv(pScene);
+    if (meshIndex >= priv->mGaussianAnimSplats.size()) {
+        return nullptr;
+    }
+    const std::vector<aiGaussianAnimSplat *> &targets = priv->mGaussianAnimSplats[meshIndex];
+    if (targetIndex >= targets.size()) {
+        return nullptr;
+    }
+    return targets[targetIndex];
+}
+
+// ------------------------------------------------------------------------------------------------
+void Assimp::AttachGaussianAnimSplats(aiScene *scene, unsigned int meshIndex,
+        aiGaussianAnimSplat **splats, unsigned int count) {
+    if (scene == nullptr || scene->mPrivate == nullptr) {
+        if (splats != nullptr) {
+            for (unsigned int i = 0; i < count; ++i) {
+                delete splats[i];
+            }
+        }
+        return;
+    }
+    ScenePrivateData *priv = ScenePriv(scene);
+    if (meshIndex >= priv->mGaussianAnimSplats.size()) {
+        priv->mGaussianAnimSplats.resize(static_cast<size_t>(meshIndex) + 1u);
+    }
+    std::vector<aiGaussianAnimSplat *> &slot = priv->mGaussianAnimSplats[meshIndex];
+    for (aiGaussianAnimSplat *a : slot) {
+        delete a;
+    }
+    slot.clear();
+    slot.reserve(count);
+    if (splats != nullptr) {
+        for (unsigned int i = 0; i < count; ++i) {
+            slot.push_back(splats[i]);
+        }
+    }
+}

@@ -945,6 +945,8 @@ struct Mesh : public Object {
 
         struct Target {
             AccessorList position, normal, tangent;
+            /** Extension morph attrs (e.g. KHR_gaussian_splatting:SCALE). */
+            std::vector<std::pair<std::string, Ref<Accessor>>> custom;
         };
         std::vector<Target> targets;
 
