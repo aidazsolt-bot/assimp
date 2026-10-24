@@ -85,6 +85,9 @@ corresponding preprocessor flag to selectively disable formats.
 #ifndef ASSIMP_BUILD_NO_SPLAT_IMPORTER
 #include "AssetLib/SPLAT/SPLATLoader.h"
 #endif
+#ifndef ASSIMP_BUILD_NO_SOG_IMPORTER
+#include "AssetLib/SOG/SOGLoader.h"
+#endif
 #ifndef ASSIMP_BUILD_NO_ASE_IMPORTER
 #include "AssetLib/ASE/ASELoader.h"
 #endif
@@ -277,6 +280,9 @@ void GetImporterInstanceList(std::vector<BaseImporter *> &out) {
 #endif
 #if (!defined ASSIMP_BUILD_NO_SPLAT_IMPORTER)
     out.push_back(new SPLATImporter());
+#endif
+#if (!defined ASSIMP_BUILD_NO_SOG_IMPORTER)
+    out.push_back(new SOGImporter());
 #endif
 #if (!defined ASSIMP_BUILD_NO_MDL_IMPORTER)
     out.push_back(new MDLImporter());

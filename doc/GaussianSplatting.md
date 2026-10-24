@@ -70,6 +70,28 @@ Fixtures: `test/models/SPZ/tiny_dc.spz`; upstream samples under
 
 Fixture: `test/models/SPLAT/tiny_dc.splat`.
 
+### SOG — PlayCanvas Spatially Ordered Gaussians (`.sog` / `.ssog`)
+
+- Standalone importer (`code/AssetLib/SOG/`).
+- Bundled ZIP: `meta.json` (version 2) + lossless WebP property textures
+  (`means_l/u`, `scales`, `quats`, `sh0`, optional `shN_*`).
+- Spec: [PlayCanvas SOG format](https://developer.playcanvas.com/user-manual/gaussian-splatting/formats/sog/).
+- Converts on import: positions via 16-bit unlog, `scale = exp(codebook[i])`,
+  opacity = `a/255`, quat smallest-three → glTF xyzw, SH DC from `sh0` codebook
+  (+ optional `shN` palette rest).
+- `.ssog` is registered as an alias of `.sog` (no separate container).
+  Streamed SOG (`lod-meta.json`) is **not** supported yet.
+- Requires system `libwebp` / `libwebpdecoder` (`ASSIMP_BUILD_SOG_IMPORTER`).
+- Does not invent `mKernel` / `mColorSpace`.
+
+Fixture: `test/models/SOG/env.sog` (XGRIDS LCC2 demo env chunk).
+
+### XGRIDS note
+
+XGRIDS LCC2 scenes store many `.sog` chunks under `data/3dgs/`. Loading a
+single chunk works with this importer; full LCC2 octree / LOD streaming is a
+separate format (`.lcc2`) and not covered here.
+
 ### PLY — graphdeco / INRIA convention
 
 - Detects `f_dc_*`, `opacity`, `scale_*`, `rot_*` (+ optional contiguous `f_rest_*`).

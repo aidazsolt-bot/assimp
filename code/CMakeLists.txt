@@ -586,6 +586,60 @@ ADD_ASSIMP_IMPORTER( SPLAT
   AssetLib/SPLAT/SPLATLoader.h
 )
 
+# SOG (PlayCanvas Spatially Ordered Gaussians) needs libwebp for WebP textures.
+# Android NDK: never pick host /usr libwebp; use Filament vendored sources.
+set(ASSIMP_FILAMENT_WEBP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../filament/third_party/libwebp")
+set(ASSIMP_HAS_WEBP FALSE)
+set(ASSIMP_USE_BUNDLED_WEBP FALSE)
+if(NOT ANDROID)
+  find_path(ASSIMP_WEBP_INCLUDE_DIR webp/decode.h
+    PATHS /usr/include /usr/local/include
+  )
+  find_library(ASSIMP_WEBP_LIBRARY NAMES webpdecoder webp
+    PATHS /usr/lib /usr/lib64 /usr/local/lib
+  )
+  if(ASSIMP_WEBP_INCLUDE_DIR AND ASSIMP_WEBP_LIBRARY)
+    set(ASSIMP_HAS_WEBP TRUE)
+  endif()
+endif()
+if(NOT ASSIMP_HAS_WEBP AND EXISTS "${ASSIMP_FILAMENT_WEBP_ROOT}/CMakeLists.txt")
+  message(STATUS "Using Filament vendored libwebp for SOG importer")
+  set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_GIF2WEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_IMG2WEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_VWEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_WEBPINFO OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+  add_subdirectory(${ASSIMP_FILAMENT_WEBP_ROOT} ${CMAKE_BINARY_DIR}/assimp_webp EXCLUDE_FROM_ALL)
+  set(ASSIMP_WEBP_INCLUDE_DIR "${ASSIMP_FILAMENT_WEBP_ROOT}/src")
+  set(ASSIMP_WEBP_LIBRARY webpdecoder)
+  set(ASSIMP_HAS_WEBP TRUE)
+  set(ASSIMP_USE_BUNDLED_WEBP TRUE)
+endif()
+if(NOT ASSIMP_HAS_WEBP)
+  if(NOT DEFINED ASSIMP_BUILD_SOG_IMPORTER OR ASSIMP_BUILD_SOG_IMPORTER)
+    message(STATUS "libwebp not found - SOG importer disabled")
+    set(ASSIMP_BUILD_SOG_IMPORTER OFF CACHE BOOL "SOG importer requires libwebp" FORCE)
+  endif()
+endif()
+
+ADD_ASSIMP_IMPORTER( SOG
+  AssetLib/SOG/SOGLoader.cpp
+  AssetLib/SOG/SOGLoader.h
+)
+
+string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SOG" ASSIMP_SOG_ENABLED_POS)
+if(NOT ASSIMP_SOG_ENABLED_POS EQUAL -1)
+  include_directories(${ASSIMP_WEBP_INCLUDE_DIR})
+  if(ASSIMP_WEBP_LIBRARY)
+    set(ASSIMP_SOG_WEBP_LIBRARY ${ASSIMP_WEBP_LIBRARY} CACHE INTERNAL "libwebp for SOG")
+  endif()
+endif()
+
 # Vendored nianticlabs/spz decode sources (MIT) when SPZ importer is on.
 string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SPZ" ASSIMP_SPZ_ENABLED_POS)
 if(NOT ASSIMP_SPZ_ENABLED_POS EQUAL -1)
@@ -1603,6 +1657,11 @@ if(NOT ASSIMP_SPZ_LINK_POS EQUAL -1)
   if(ANDROID)
     target_link_libraries(assimp log)
   endif()
+endif()
+
+# SOG importer: link libwebp / libwebpdecoder when available.
+if(ASSIMP_SOG_WEBP_LIBRARY)
+  target_link_libraries(assimp ${ASSIMP_SOG_WEBP_LIBRARY})
 endif()
 
 if(ASSIMP_ANDROID_JNIIOSYSTEM)
