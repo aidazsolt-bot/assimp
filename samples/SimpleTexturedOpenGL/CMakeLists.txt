@@ -16,6 +16,11 @@ if ( MSVC )
   ADD_DEFINITIONS( -D_CRT_SECURE_NO_WARNINGS )
 endif ()
 
+# Sample uses wchar MessageBox/CreateWindow; MinGW defaults to ANSI APIs without this.
+if ( MINGW )
+  ADD_DEFINITIONS( -DUNICODE -D_UNICODE )
+endif ()
+
 INCLUDE_DIRECTORIES(
   ${Assimp_SOURCE_DIR}/code
   ${OPENGL_INCLUDE_DIR}
