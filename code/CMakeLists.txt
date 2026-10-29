@@ -648,6 +648,20 @@ if(NOT ASSIMP_SPZ_ENABLED_POS EQUAL -1)
     ../contrib/spz/src/cc/splat-types.cc
     ../contrib/spz/src/cc/splat-c-types.cc
   )
+  # Vendored third-party: keep out of warnings-as-errors (MSVC /W4 /WX and GCC/Clang -Werror).
+  if(MSVC)
+    set_source_files_properties(
+      ../contrib/spz/src/cc/load-spz.cc
+      ../contrib/spz/src/cc/splat-types.cc
+      ../contrib/spz/src/cc/splat-c-types.cc
+      PROPERTIES COMPILE_FLAGS "/W0 /WX-")
+  else()
+    set_source_files_properties(
+      ../contrib/spz/src/cc/load-spz.cc
+      ../contrib/spz/src/cc/splat-types.cc
+      ../contrib/spz/src/cc/splat-c-types.cc
+      PROPERTIES COMPILE_FLAGS "-w")
+  endif()
   # Compile bundled zstd into assimp (avoids install(EXPORT) of a separate target).
   if(ASSIMP_USE_BUNDLED_ZSTD)
     file(GLOB ASSIMP_ZSTD_SRCS
