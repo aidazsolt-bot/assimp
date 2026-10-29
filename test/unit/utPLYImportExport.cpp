@@ -47,6 +47,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/gaussian.h>
 #include <assimp/Exporter.hpp>
 #include <assimp/Importer.hpp>
+#include <cmath>
 
 using namespace ::Assimp;
 
@@ -377,6 +378,50 @@ TEST_F(utPLYImportExport, importMeshPlyHasNoGaussian) {
     ASSERT_NE(nullptr, scene);
     EXPECT_FALSE(aiSceneHasGaussianSplat(scene));
     EXPECT_EQ(nullptr, aiGetGaussianSplat(scene, 0));
+}
+
+// PlayCanvas / SuperSplat compressed PLY (element chunk + packed_* uints).
+TEST_F(utPLYImportExport, importPlayCanvasCompressedGaussianPly) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/PLY/gaussian_playcanvas_compressed.ply",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_EQ(1u, scene->mNumMeshes);
+    ASSERT_NE(nullptr, scene->mMeshes[0]);
+    EXPECT_EQ(2u, scene->mMeshes[0]->mNumVertices);
+    EXPECT_EQ(aiPrimitiveType_POINT, scene->mMeshes[0]->mPrimitiveTypes);
+
+    EXPECT_TRUE(aiSceneHasGaussianSplat(scene));
+    const aiGaussianSplat *gs = aiGetGaussianSplat(scene, 0);
+    ASSERT_NE(nullptr, gs);
+    EXPECT_EQ(2u, gs->mNumPoints);
+    EXPECT_EQ(0u, gs->mNumRestCoeffs);
+    ASSERT_NE(nullptr, gs->mDC);
+    ASSERT_NE(nullptr, gs->mScale);
+    ASSERT_NE(nullptr, gs->mRotation);
+    ASSERT_NE(nullptr, gs->mOpacity);
+
+    // Vert0 packed at AABB center -> ~origin; red opaque -> SH DC for (1,0,0).
+    EXPECT_NEAR(0.0f, scene->mMeshes[0]->mVertices[0].x, 1e-3f);
+    EXPECT_NEAR(0.0f, scene->mMeshes[0]->mVertices[0].y, 1e-3f);
+    EXPECT_NEAR(0.0f, scene->mMeshes[0]->mVertices[0].z, 1e-3f);
+    constexpr float kShC0 = 0.28209479177387814f;
+    EXPECT_NEAR((1.0f - 0.5f) / kShC0, gs->mDC[0].x, 1e-3f);
+    EXPECT_NEAR((0.0f - 0.5f) / kShC0, gs->mDC[0].y, 1e-3f);
+    EXPECT_NEAR((0.0f - 0.5f) / kShC0, gs->mDC[0].z, 1e-3f);
+    EXPECT_NEAR(1.0f, gs->mOpacity[0], 1e-3f);
+
+    // Vert1 at +X edge of AABB; green.
+    EXPECT_NEAR(1.0f, scene->mMeshes[0]->mVertices[1].x, 1e-3f);
+    EXPECT_NEAR((0.0f - 0.5f) / kShC0, gs->mDC[1].x, 1e-3f);
+    EXPECT_NEAR((1.0f - 0.5f) / kShC0, gs->mDC[1].y, 1e-3f);
+    EXPECT_NEAR(1.0f, gs->mOpacity[1], 1e-3f);
+
+    // Linear scale = exp(lerp(minLog,maxLog,0.5)) with bounds (-5,-1).
+    const float expectScale = std::exp(-3.0f);
+    EXPECT_NEAR(expectScale, gs->mScale[0].x, 1e-3f);
+    EXPECT_NEAR(expectScale, gs->mScale[1].y, 1e-3f);
 }
 
 #endif // ASSIMP_BUILD_NO_PLY_IMPORTER

@@ -65,6 +65,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <memory>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
+#include <algorithm>
+#include <cstdint>
 
 namespace Assimp {
 
@@ -212,6 +215,28 @@ namespace Assimp {
         for (int i = 0; i < 4; ++i) {
             mGsRot[i] = -1;
         }
+        mPcCompressedChecked = false;
+        mPcCompressedActive = false;
+        mPcPackedPos = mPcPackedRot = mPcPackedScale = mPcPackedColor = -1;
+        mPcMinX.clear();
+        mPcMaxX.clear();
+        mPcMinY.clear();
+        mPcMaxY.clear();
+        mPcMinZ.clear();
+        mPcMaxZ.clear();
+        mPcMinSX.clear();
+        mPcMaxSX.clear();
+        mPcMinSY.clear();
+        mPcMaxSY.clear();
+        mPcMinSZ.clear();
+        mPcMaxSZ.clear();
+        mPcMinR.clear();
+        mPcMaxR.clear();
+        mPcMinG.clear();
+        mPcMaxG.clear();
+        mPcMinB.clear();
+        mPcMaxB.clear();
+        mPcHasColorBounds = false;
 
         const std::string mode = "rb";
         std::unique_ptr<IOStream> fileStream(pIOHandler->Open(pFile, mode));
@@ -530,9 +555,281 @@ namespace Assimp {
         }
     }
 
+    // ------------------------------------------------------------------------------------------------
+    void PLYImporter::PreparePlayCanvasCompressedIfNeeded(const Element *pcElement) {
+        if (mPcCompressedChecked || pcElement == nullptr || pcDOM == nullptr) {
+            return;
+        }
+        mPcCompressedChecked = true;
+
+        auto findProp = [](const Element &el, const char *name) -> int {
+            for (unsigned int i = 0; i < el.alProperties.size(); ++i) {
+                if (!el.alProperties[i].bIsList && el.alProperties[i].szName == name) {
+                    return static_cast<int>(i);
+                }
+            }
+            return -1;
+        };
+        mPcPackedPos = findProp(*pcElement, "packed_position");
+        mPcPackedRot = findProp(*pcElement, "packed_rotation");
+        mPcPackedScale = findProp(*pcElement, "packed_scale");
+        mPcPackedColor = findProp(*pcElement, "packed_color");
+        if (mPcPackedPos < 0 || mPcPackedRot < 0 || mPcPackedScale < 0 || mPcPackedColor < 0) {
+            return;
+        }
+
+        // Chunk element is stored as EEST_INVALID with szName "chunk" (parsed before vertex).
+        const ElementInstanceList *chunkList = nullptr;
+        const Element *chunkEl = nullptr;
+        for (size_t ei = 0; ei < pcDOM->alElements.size(); ++ei) {
+            const Element &el = pcDOM->alElements[ei];
+            if (el.eSemantic == EEST_INVALID && el.szName == "chunk") {
+                if (ei < pcDOM->alElementData.size()) {
+                    chunkEl = &el;
+                    chunkList = &pcDOM->alElementData[ei];
+                }
+                break;
+            }
+        }
+        if (chunkEl == nullptr || chunkList == nullptr || chunkList->alInstances.empty()) {
+            ASSIMP_LOG_WARN("PLY: packed_* layout without chunk element; skipping PlayCanvas compressed decode");
+            return;
+        }
+
+        const int iMinX = findProp(*chunkEl, "min_x");
+        const int iMaxX = findProp(*chunkEl, "max_x");
+        const int iMinY = findProp(*chunkEl, "min_y");
+        const int iMaxY = findProp(*chunkEl, "max_y");
+        const int iMinZ = findProp(*chunkEl, "min_z");
+        const int iMaxZ = findProp(*chunkEl, "max_z");
+        const int iMinSX = findProp(*chunkEl, "min_scale_x");
+        const int iMaxSX = findProp(*chunkEl, "max_scale_x");
+        const int iMinSY = findProp(*chunkEl, "min_scale_y");
+        const int iMaxSY = findProp(*chunkEl, "max_scale_y");
+        const int iMinSZ = findProp(*chunkEl, "min_scale_z");
+        const int iMaxSZ = findProp(*chunkEl, "max_scale_z");
+        if (iMinX < 0 || iMaxX < 0 || iMinY < 0 || iMaxY < 0 || iMinZ < 0 || iMaxZ < 0 ||
+                iMinSX < 0 || iMaxSX < 0 || iMinSY < 0 || iMaxSY < 0 || iMinSZ < 0 || iMaxSZ < 0) {
+            ASSIMP_LOG_WARN("PLY: PlayCanvas chunk missing position/scale bounds");
+            return;
+        }
+
+        const int iMinR = findProp(*chunkEl, "min_r");
+        const int iMaxR = findProp(*chunkEl, "max_r");
+        const int iMinG = findProp(*chunkEl, "min_g");
+        const int iMaxG = findProp(*chunkEl, "max_g");
+        const int iMinB = findProp(*chunkEl, "min_b");
+        const int iMaxB = findProp(*chunkEl, "max_b");
+        mPcHasColorBounds = (iMinR >= 0 && iMaxR >= 0 && iMinG >= 0 && iMaxG >= 0 && iMinB >= 0 && iMaxB >= 0);
+
+        const size_t nChunks = chunkList->alInstances.size();
+        auto loadF = [&](int propIdx, std::vector<float> &out) {
+            out.resize(nChunks);
+            for (size_t c = 0; c < nChunks; ++c) {
+                const PropertyInstance &pi = GetProperty(chunkList->alInstances[c].alProperties, propIdx);
+                out[c] = PropertyInstance::ConvertTo<float>(pi.avList.front(), chunkEl->alProperties[static_cast<size_t>(propIdx)].eType);
+            }
+        };
+        loadF(iMinX, mPcMinX);
+        loadF(iMaxX, mPcMaxX);
+        loadF(iMinY, mPcMinY);
+        loadF(iMaxY, mPcMaxY);
+        loadF(iMinZ, mPcMinZ);
+        loadF(iMaxZ, mPcMaxZ);
+        loadF(iMinSX, mPcMinSX);
+        loadF(iMaxSX, mPcMaxSX);
+        loadF(iMinSY, mPcMinSY);
+        loadF(iMaxSY, mPcMaxSY);
+        loadF(iMinSZ, mPcMinSZ);
+        loadF(iMaxSZ, mPcMaxSZ);
+        if (mPcHasColorBounds) {
+            loadF(iMinR, mPcMinR);
+            loadF(iMaxR, mPcMaxR);
+            loadF(iMinG, mPcMinG);
+            loadF(iMaxG, mPcMaxG);
+            loadF(iMinB, mPcMinB);
+            loadF(iMaxB, mPcMaxB);
+        }
+
+        mGaussianSplat = new aiGaussianSplat();
+        mGaussianSplat->mNumPoints = pcElement->NumOccur;
+        mGaussianSplat->mNumRestCoeffs = 0;
+        mGaussianSplat->mDC = new aiVector3D[pcElement->NumOccur];
+        mGaussianSplat->mScale = new aiVector3D[pcElement->NumOccur];
+        mGaussianSplat->mRotation = new aiColor4D[pcElement->NumOccur];
+        mGaussianSplat->mOpacity = new ai_real[pcElement->NumOccur];
+
+        mPcCompressedActive = true;
+        mGaussianActive = true;
+        ASSIMP_LOG_INFO("PLY: detected PlayCanvas / SuperSplat compressed Gaussian layout (",
+                nChunks, " chunks, ", pcElement->NumOccur, " vertices)");
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    void PLYImporter::LoadPlayCanvasCompressedVertex(const ElementInstance *instElement, unsigned int pos) {
+        if (!mPcCompressedActive || mGaussianSplat == nullptr || instElement == nullptr) {
+            return;
+        }
+        if (pos >= mGaussianSplat->mNumPoints) {
+            throw DeadlyImportError("Invalid .ply file: Too many PlayCanvas compressed vertices");
+        }
+        if (mPcMinX.empty()) {
+            throw DeadlyImportError("Invalid .ply file: PlayCanvas chunk bounds missing");
+        }
+
+        auto readU32 = [&](int propIndex) -> uint32_t {
+            const PropertyInstance &pi = GetProperty(instElement->alProperties, propIndex);
+            // packed_* are authored as uint; ValueUnion already stores iUInt.
+            return pi.avList.front().iUInt;
+        };
+
+        const uint32_t packedPos = readU32(mPcPackedPos);
+        const uint32_t packedRot = readU32(mPcPackedRot);
+        const uint32_t packedScale = readU32(mPcPackedScale);
+        const uint32_t packedColor = readU32(mPcPackedColor);
+
+        const size_t chunkIndex = static_cast<size_t>(pos / 256u);
+        if (chunkIndex >= mPcMinX.size()) {
+            throw DeadlyImportError("Invalid .ply file: PlayCanvas vertex chunk index out of range");
+        }
+
+        auto unpackUnorm = [](uint32_t value, unsigned bits) -> float {
+            const uint32_t t = (1u << bits) - 1u;
+            return float(value & t) / float(t);
+        };
+        auto lerp = [](float a, float b, float t) -> float {
+            return a * (1.f - t) + b * t;
+        };
+
+        // Position: 11-10-11 unorm -> lerp chunk AABB
+        const float px = unpackUnorm(packedPos >> 21, 11);
+        const float py = unpackUnorm(packedPos >> 11, 10);
+        const float pz = unpackUnorm(packedPos, 11);
+        aiVector3D vOut;
+        vOut.x = lerp(mPcMinX[chunkIndex], mPcMaxX[chunkIndex], px);
+        vOut.y = lerp(mPcMinY[chunkIndex], mPcMaxY[chunkIndex], py);
+        vOut.z = lerp(mPcMinZ[chunkIndex], mPcMaxZ[chunkIndex], pz);
+
+        // Scale: 11-10-11 unorm in log space, then exp (linear for KHR)
+        const float sxu = unpackUnorm(packedScale >> 21, 11);
+        const float syu = unpackUnorm(packedScale >> 11, 10);
+        const float szu = unpackUnorm(packedScale, 11);
+        float sx = std::exp(lerp(mPcMinSX[chunkIndex], mPcMaxSX[chunkIndex], sxu));
+        float sy = std::exp(lerp(mPcMinSY[chunkIndex], mPcMaxSY[chunkIndex], syu));
+        float sz = std::exp(lerp(mPcMinSZ[chunkIndex], mPcMaxSZ[chunkIndex], szu));
+        if (sx < 0.f) {
+            sx = 0.f;
+        }
+        if (sy < 0.f) {
+            sy = 0.f;
+        }
+        if (sz < 0.f) {
+            sz = 0.f;
+        }
+        mGaussianSplat->mScale[pos].x = sx;
+        mGaussianSplat->mScale[pos].y = sy;
+        mGaussianSplat->mScale[pos].z = sz;
+
+        // Rotation: 2+10+10+10 largest-component quaternion -> glTF xyzw
+        {
+            const float norm = 1.f / (std::sqrt(2.f) * 0.5f);
+            const float a = (unpackUnorm(packedRot >> 20, 10) - 0.5f) * norm;
+            const float b = (unpackUnorm(packedRot >> 10, 10) - 0.5f) * norm;
+            const float c = (unpackUnorm(packedRot, 10) - 0.5f) * norm;
+            float m = 1.f - (a * a + b * b + c * c);
+            m = (m > 0.f) ? std::sqrt(m) : 0.f;
+            float qx = 0.f, qy = 0.f, qz = 0.f, qw = 1.f;
+            switch (packedRot >> 30) {
+            case 0:
+                qx = m;
+                qy = a;
+                qz = b;
+                qw = c;
+                break;
+            case 1:
+                qx = a;
+                qy = m;
+                qz = b;
+                qw = c;
+                break;
+            case 2:
+                qx = a;
+                qy = b;
+                qz = m;
+                qw = c;
+                break;
+            default:
+                qx = a;
+                qy = b;
+                qz = c;
+                qw = m;
+                break;
+            }
+            const double qlen = std::sqrt(double(qx) * qx + double(qy) * qy + double(qz) * qz + double(qw) * qw);
+            if (qlen > 0.0) {
+                const float inv = static_cast<float>(1.0 / qlen);
+                qx *= inv;
+                qy *= inv;
+                qz *= inv;
+                qw *= inv;
+            } else {
+                qx = qy = qz = 0.f;
+                qw = 1.f;
+            }
+            mGaussianSplat->mRotation[pos].r = qx;
+            mGaussianSplat->mRotation[pos].g = qy;
+            mGaussianSplat->mRotation[pos].b = qz;
+            mGaussianSplat->mRotation[pos].a = qw;
+        }
+
+        // Color: 8-8-8-8 unorm; optional chunk RGB extremes. Recover SH DC from display RGB.
+        float cr = unpackUnorm(packedColor >> 24, 8);
+        float cg = unpackUnorm(packedColor >> 16, 8);
+        float cb = unpackUnorm(packedColor >> 8, 8);
+        float ca = unpackUnorm(packedColor, 8);
+        if (mPcHasColorBounds) {
+            cr = lerp(mPcMinR[chunkIndex], mPcMaxR[chunkIndex], cr);
+            cg = lerp(mPcMinG[chunkIndex], mPcMaxG[chunkIndex], cg);
+            cb = lerp(mPcMinB[chunkIndex], mPcMaxB[chunkIndex], cb);
+        }
+        cr = std::max(0.f, std::min(1.f, cr));
+        cg = std::max(0.f, std::min(1.f, cg));
+        cb = std::max(0.f, std::min(1.f, cb));
+        ca = std::max(0.f, std::min(1.f, ca));
+        constexpr float kShC0 = 0.28209479177387814f;
+        mGaussianSplat->mDC[pos].x = (cr - 0.5f) / kShC0;
+        mGaussianSplat->mDC[pos].y = (cg - 0.5f) / kShC0;
+        mGaussianSplat->mDC[pos].z = (cb - 0.5f) / kShC0;
+        mGaussianSplat->mOpacity[pos] = ca;
+
+        if (mGeneratedMesh == nullptr) {
+            mGeneratedMesh = new aiMesh();
+            mGeneratedMesh->mMaterialIndex = 0;
+            mGeneratedMesh->mName.Set("PLY_PlayCanvas_Gaussians");
+        }
+        if (mGeneratedMesh->mVertices == nullptr) {
+            mGeneratedMesh->mNumVertices = mGaussianSplat->mNumPoints;
+            mGeneratedMesh->mVertices = new aiVector3D[mGeneratedMesh->mNumVertices];
+        }
+        if (pos >= mGeneratedMesh->mNumVertices) {
+            throw DeadlyImportError("Invalid .ply file: Too many vertices");
+        }
+        mGeneratedMesh->mVertices[pos] = vOut;
+        if (mGeneratedMesh->mColors[0] == nullptr) {
+            mGeneratedMesh->mColors[0] = new aiColor4D[mGeneratedMesh->mNumVertices];
+        }
+        mGeneratedMesh->mColors[0][pos] = aiColor4D(cr, cg, cb, ca);
+    }
+
     void PLYImporter::LoadVertex(const Element *pcElement, const ElementInstance *instElement, unsigned int pos) {
         ai_assert(nullptr != pcElement);
         ai_assert(nullptr != instElement);
+
+        PreparePlayCanvasCompressedIfNeeded(pcElement);
+        if (mPcCompressedActive) {
+            LoadPlayCanvasCompressedVertex(instElement, pos);
+            return;
+        }
 
         PrepareGaussianIfNeeded(pcElement);
 

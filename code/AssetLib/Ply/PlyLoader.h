@@ -103,6 +103,12 @@ private:
     /// Fill one Gaussian from the current vertex instance (if active).
     void LoadGaussianVertex(const PLY::ElementInstance *instElement, unsigned int pos);
 
+    /// Detect PlayCanvas / SuperSplat compressed PLY (element chunk + packed_*).
+    void PreparePlayCanvasCompressedIfNeeded(const PLY::Element *pcElement);
+
+    /// Unpack one compressed vertex into mesh + aiGaussianSplat.
+    void LoadPlayCanvasCompressedVertex(const PLY::ElementInstance *instElement, unsigned int pos);
+
     unsigned char *mBuffer{ nullptr };
     PLY::DOM *pcDOM{ nullptr };
     aiMesh *mGeneratedMesh{ nullptr };
@@ -117,6 +123,18 @@ private:
     int mGsRot[4]{ -1, -1, -1, -1 };
     int mGsOpacity{ -1 };
     std::vector<int> mGsRest; // index per f_rest_i, -1 if missing
+
+    // PlayCanvas compressed PLY (chunk AABB + packed uints per vertex).
+    bool mPcCompressedChecked{ false };
+    bool mPcCompressedActive{ false };
+    int mPcPackedPos{ -1 };
+    int mPcPackedRot{ -1 };
+    int mPcPackedScale{ -1 };
+    int mPcPackedColor{ -1 };
+    std::vector<float> mPcMinX, mPcMaxX, mPcMinY, mPcMaxY, mPcMinZ, mPcMaxZ;
+    std::vector<float> mPcMinSX, mPcMaxSX, mPcMinSY, mPcMaxSY, mPcMinSZ, mPcMaxSZ;
+    std::vector<float> mPcMinR, mPcMaxR, mPcMinG, mPcMaxG, mPcMinB, mPcMaxB;
+    bool mPcHasColorBounds{ false };
 };
 
 } // end of namespace Assimp
