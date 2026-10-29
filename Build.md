@@ -37,6 +37,41 @@ cmake CMakeLists.txt
 ```
 This will generate the project files for the visual studio. All dependencies used to build Asset-Importer-Lib shall be part of the repo. If you want to use you own zlib installation this is possible as well. Check the options for it.
 
+### Build instructions for Windows with VS2022 Build Tools (Ninja)
+The library, the command line tool and the unit tests build with the Visual Studio 2022
+Build Tools (MSVC 19.4x) and the bundled CMake/Ninja without any extra dependencies.
+From a *x64 Native Tools Command Prompt*:
+```bash
+cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DASSIMP_BUILD_TESTS=ON -S . -B build-msvc
+cmake --build build-msvc
+```
+
+The OpenGL samples (`ASSIMP_BUILD_SAMPLES`) need GLUT. Build [freeglut](https://github.com/freeglut/freeglut)
+with the same toolchain, install it to a folder of your choice (e.g. `%TEMP%\freeglut`)
+and point CMake's `FindGLUT` at it. Note that modern CMake expects the library in
+`GLUT_glut_LIBRARY_RELEASE`, not `GLUT_glut_LIBRARY`:
+```bash
+cmake -DASSIMP_BUILD_ASSIMP_TOOLS=ON -DASSIMP_BUILD_SAMPLES=ON ^
+      -DGLUT_INCLUDE_DIR=%TEMP%\freeglut\include ^
+      -DGLUT_glut_LIBRARY_RELEASE:FILEPATH=%TEMP%\freeglut\lib\freeglut.lib ^
+      -B build-msvc
+```
+Copy `freeglut.dll` next to the sample executables for runtime.
+
+The assimp viewer (`ASSIMP_BUILD_ASSIMP_VIEW`) needs the legacy D3DX9 utility library,
+which is not part of modern Windows SDKs. Instead of installing the DirectX SDK
+(June 2010), you can use Microsoft's official
+[Microsoft.DXSDK.D3DX](https://www.nuget.org/packages/Microsoft.DXSDK.D3DX) NuGet
+package (a plain zip). Extract it (e.g. to `%TEMP%\dxsdk-d3dx`) and configure:
+```bash
+cmake -DASSIMP_BUILD_ASSIMP_VIEW=ON ^
+      -DDirectX_D3DX9_LIBRARY:FILEPATH=%TEMP%/dxsdk-d3dx/build/native/release/lib/x64/d3dx9.lib ^
+      -DDirectX_INCLUDE_DIR:STRING="C:/Program Files (x86)/Windows Kits/10/Include/<sdk-version>/shared/;%TEMP%/dxsdk-d3dx/build/native/include" ^
+      -B build-msvc
+```
+Copy `D3DX9_43.dll` from the package's `build/native/release/bin/x64/` next to
+`assimp_viewer.exe` for runtime.
+
 ### Build instructions for Windows on ARM64
 Install the *MSVC ARM64 build tools* component of Visual Studio. On an ARM64 machine you can build natively from an *ARM64 Native Tools Command Prompt*:
 ```bash
