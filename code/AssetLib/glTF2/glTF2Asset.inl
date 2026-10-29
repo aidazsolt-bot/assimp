@@ -2248,9 +2248,10 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
         // Walk glTF nodes[]; collect every physics body generically (no author-specific names).
         rapidjson::Value nodesArr(rapidjson::kArrayType);
         rapidjson::Value nodeNamesArr(rapidjson::kArrayType);
-        if (Value *nodes = FindArray(doc, "nodes")) {
-            for (rapidjson::SizeType i = 0; i < nodes->Size(); ++i) {
-                Value &node = (*nodes)[i];
+        // Local name must not shadow Asset::nodes (MSVC C4458 under /W4 /WX).
+        if (Value *docNodes = FindArray(doc, "nodes")) {
+            for (rapidjson::SizeType i = 0; i < docNodes->Size(); ++i) {
+                Value &node = (*docNodes)[i];
                 if (!node.IsObject()) {
                     continue;
                 }
