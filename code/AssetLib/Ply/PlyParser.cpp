@@ -307,12 +307,18 @@ bool PLY::Element::ParseElement(IOStreamBuffer<char> &streamBuffer, std::vector<
     // parse the semantic of the element
     pOut->eSemantic = PLY::Element::ParseSemantic(buffer);
     if (PLY::EEST_INVALID == pOut->eSemantic) {
-        // if the exact semantic can't be determined, just store
-        // the original string identifier
-        pOut->szName = std::string(&buffer[0], &buffer[0] + strlen(&buffer[0]));
-        auto pos = pOut->szName.find_last_of(' ');
-        if (pos != std::string::npos) {
-            pOut->szName.erase(pos, pOut->szName.size());
+        // Unknown element name (e.g. "chunk"): store and consume the identifier so
+        // NumOccur is parsed from the following integer. Previously the name stayed
+        // in the buffer and strtoul10 returned 0, dropping all instances.
+        if (!buffer.empty()) {
+            const char *start = &buffer[0];
+            const char *end = start + buffer.size();
+            const char *pCur = start;
+            while (pCur < end && *pCur != '\0' && !IsSpaceOrNewLine(*pCur)) {
+                ++pCur;
+            }
+            pOut->szName.assign(start, pCur);
+            buffer.erase(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(pCur - start));
         }
     }
 
@@ -596,7 +602,9 @@ bool PLY::ElementInstanceList::ParseInstanceList(
     ai_assert(nullptr != pcElement);
 
     // parse all elements
-    if (EEST_INVALID == pcElement->eSemantic || pcElement->alProperties.empty()) {
+    // Unknown semantics: skip only when the caller does not want instances stored
+    // (no p_pcOut). When p_pcOut is set (e.g. PlayCanvas "chunk"), parse properties.
+    if ((EEST_INVALID == pcElement->eSemantic && p_pcOut == nullptr) || pcElement->alProperties.empty()) {
         // if the element has an unknown semantic we can skip all lines
         // However, there could be comments
         for (unsigned int i = 0; i < pcElement->NumOccur; ++i) {
@@ -630,6 +638,7 @@ bool PLY::ElementInstanceList::ParseInstanceList(
 
             streamBuffer.getNextLine(buffer);
             pCur = (buffer.empty()) ? nullptr : (const char *)&buffer[0];
+            end = (buffer.empty()) ? pCur : pCur + buffer.size();
         }
     }
     return true;

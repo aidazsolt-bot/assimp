@@ -111,6 +111,22 @@ Paper: Kerbl et al., *3D Gaussian Splatting for Real-Time Radiance Field Renderi
 
 These describe **ecosystem practice**, not an ISO/Khronos “PLY 2.0” standard.
 
+### PlayCanvas / SuperSplat compressed PLY
+
+A second ecosystem layout (still `.ply`) used by PlayCanvas Engine and SuperSplat
+exports named like `*.compressed.ply`:
+
+| Element | Role |
+|---|---|
+| `element chunk N` | Per-chunk AABB / log-scale / optional RGB extremes (`min_x`…`max_b`) |
+| `element vertex M` | Packed `uint` fields: `packed_position`, `packed_rotation`, `packed_scale`, `packed_color` |
+| `element sh` (optional) | Higher-order SH (not required for DC-only clouds) |
+
+Vertices map to chunks as `chunkIndex = floor(vertexIndex / 256)`. Assimp detects
+this layout in `PlyLoader`, unpacks into mesh positions + `aiGaussianSplat`
+(display RGB recovered to SH DC; opacity/scale linear; quat as glTF xyzw).
+See fixture `test/models/PLY/gaussian_playcanvas_compressed.ply`.
+
 ---
 
 ## 3. Implications for Assimp
