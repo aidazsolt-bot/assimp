@@ -248,25 +248,33 @@ namespace {
         std::unique_ptr<aiMeshSidecar> sidecar(new aiMeshSidecar());
 
         if (hasCustomAttrs) {
-            sidecar->mNumBuffers = static_cast<unsigned int>(prim.attributes.custom.size());
-            sidecar->mBuffers = new aiSidecarBuffer[sidecar->mNumBuffers];
-            for (unsigned int i = 0; i < sidecar->mNumBuffers; ++i) {
-                const std::pair<std::string, Ref<Accessor>> &entry = prim.attributes.custom[i];
-                Ref<Accessor> accessor = entry.second;
-                if (!accessor) {
-                    ASSIMP_LOG_WARN("GLTF: Skipping null sidecar attribute \"", entry.first, "\"");
-                    continue;
+            unsigned int validCount = 0;
+            for (const std::pair<std::string, Ref<Accessor>> &entry : prim.attributes.custom) {
+                if (entry.second) {
+                    ++validCount;
                 }
-                size_t numElements = 0;
-                size_t byteLength = 0;
-                uint8_t *bytes = SidecarExtractAccessorBytes(*accessor, vertexRemappingTable, numElements, byteLength);
-                aiSidecarBuffer &buf = sidecar->mBuffers[i];
-                buf.mName.Set(entry.first);
-                buf.mNumElements = static_cast<unsigned int>(numElements);
-                buf.mNumComponents = accessor->GetNumComponents();
-                buf.mComponentType = static_cast<unsigned int>(accessor->componentType);
-                buf.mData = bytes;
-                buf.mByteLength = byteLength;
+            }
+            if (validCount > 0) {
+                sidecar->mNumBuffers = validCount;
+                sidecar->mBuffers = new aiSidecarBuffer[validCount];
+                unsigned int out = 0;
+                for (const std::pair<std::string, Ref<Accessor>> &entry : prim.attributes.custom) {
+                    Ref<Accessor> accessor = entry.second;
+                    if (!accessor) {
+                        ASSIMP_LOG_WARN("GLTF: Skipping null sidecar attribute \"", entry.first, "\"");
+                        continue;
+                    }
+                    size_t numElements = 0;
+                    size_t byteLength = 0;
+                    uint8_t *bytes = SidecarExtractAccessorBytes(*accessor, vertexRemappingTable, numElements, byteLength);
+                    aiSidecarBuffer &buf = sidecar->mBuffers[out++];
+                    buf.mName.Set(entry.first);
+                    buf.mNumElements = static_cast<unsigned int>(numElements);
+                    buf.mNumComponents = accessor->GetNumComponents();
+                    buf.mComponentType = static_cast<unsigned int>(accessor->componentType);
+                    buf.mData = bytes;
+                    buf.mByteLength = byteLength;
+                }
             }
         }
 
