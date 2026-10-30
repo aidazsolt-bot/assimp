@@ -304,6 +304,8 @@ TEST_F(utPLYImportExport, parseInvalidDoubleCustomProperty) {
 
 // 3DGS PLY: side-channel aiGaussianSplat (no aiMesh ABI change).
 // Point faces are synthesized (1 index each) so Validate works, like other importers.
+// File uses graphdeco/INRIA training encoding; Assimp exposes KHR_gaussian_splatting
+// space (doc/GaussianSplatting.md): opacity=sigmoid(logit), scale=exp(log), rot wxyz->xyzw.
 TEST_F(utPLYImportExport, importGaussianPlyDcOnly) {
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(
@@ -326,18 +328,32 @@ TEST_F(utPLYImportExport, importGaussianPlyDcOnly) {
     ASSERT_NE(nullptr, gs->mOpacity);
     EXPECT_EQ(nullptr, gs->mRest);
 
+    // Vert0 file: f_dc=(1,0,0), opacity logit=0, scale logs=(0,0,0), rot wxyz=(1,0,0,0)
     EXPECT_NEAR(1.0f, gs->mDC[0].x, 1e-5f);
     EXPECT_NEAR(0.0f, gs->mDC[0].y, 1e-5f);
     EXPECT_NEAR(0.0f, gs->mDC[0].z, 1e-5f);
-    EXPECT_NEAR(0.0f, gs->mOpacity[0], 1e-5f);
-    EXPECT_NEAR(1.0f, gs->mRotation[0].r, 1e-5f);
+    EXPECT_NEAR(0.5f, gs->mOpacity[0], 1e-5f); // sigmoid(0)
+    EXPECT_NEAR(1.0f, gs->mScale[0].x, 1e-5f); // exp(0)
+    EXPECT_NEAR(1.0f, gs->mScale[0].y, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mScale[0].z, 1e-5f);
+    // glTF xyzw stored as (r,g,b,a)
+    EXPECT_NEAR(0.0f, gs->mRotation[0].r, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mRotation[0].g, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mRotation[0].b, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mRotation[0].a, 1e-5f);
 
+    // Vert1 file: f_dc=(0,1,0), opacity logit=1, scale logs=(0.1,0.2,0.3), rot wxyz all 0.5
     EXPECT_NEAR(0.0f, gs->mDC[1].x, 1e-5f);
     EXPECT_NEAR(1.0f, gs->mDC[1].y, 1e-5f);
-    EXPECT_NEAR(1.0f, gs->mOpacity[1], 1e-5f);
-    EXPECT_NEAR(0.1f, gs->mScale[1].x, 1e-5f);
-    EXPECT_NEAR(0.2f, gs->mScale[1].y, 1e-5f);
-    EXPECT_NEAR(0.3f, gs->mScale[1].z, 1e-5f);
+    const float expectOp1 = static_cast<float>(1.0 / (1.0 + std::exp(-1.0)));
+    EXPECT_NEAR(expectOp1, gs->mOpacity[1], 1e-5f);
+    EXPECT_NEAR(static_cast<float>(std::exp(0.1)), gs->mScale[1].x, 1e-5f);
+    EXPECT_NEAR(static_cast<float>(std::exp(0.2)), gs->mScale[1].y, 1e-5f);
+    EXPECT_NEAR(static_cast<float>(std::exp(0.3)), gs->mScale[1].z, 1e-5f);
+    EXPECT_NEAR(0.5f, gs->mRotation[1].r, 1e-5f);
+    EXPECT_NEAR(0.5f, gs->mRotation[1].g, 1e-5f);
+    EXPECT_NEAR(0.5f, gs->mRotation[1].b, 1e-5f);
+    EXPECT_NEAR(0.5f, gs->mRotation[1].a, 1e-5f);
 
     EXPECT_NEAR(1.0f, scene->mMeshes[0]->mVertices[1].x, 1e-5f);
     EXPECT_NEAR(2.0f, scene->mMeshes[0]->mVertices[1].y, 1e-5f);
@@ -360,10 +376,15 @@ TEST_F(utPLYImportExport, importGaussianPlyWithRest) {
     EXPECT_EQ(1u, gs->mNumPoints);
     EXPECT_EQ(2u, gs->mNumRestCoeffs);
     ASSERT_NE(nullptr, gs->mRest);
+    // SH rest + DC stay as authored; opacity logit -0.5 -> sigmoid
     EXPECT_NEAR(7.0f, gs->mRest[0], 1e-5f);
     EXPECT_NEAR(8.0f, gs->mRest[1], 1e-5f);
     EXPECT_NEAR(0.1f, gs->mDC[0].x, 1e-5f);
-    EXPECT_NEAR(-0.5f, gs->mOpacity[0], 1e-5f);
+    const float expectOp = static_cast<float>(1.0 / (1.0 + std::exp(0.5)));
+    EXPECT_NEAR(expectOp, gs->mOpacity[0], 1e-5f);
+    EXPECT_NEAR(static_cast<float>(std::exp(1.0)), gs->mScale[0].x, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mRotation[0].r, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mRotation[0].a, 1e-5f);
 
     int32_t restMeta = -1;
     ASSERT_NE(nullptr, scene->mMetaData);
