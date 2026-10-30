@@ -690,7 +690,8 @@ namespace {
 
         const unsigned int numPoints = bind->mNumPoints;
         const unsigned int nTargets = static_cast<unsigned int>(prim.targets.size());
-        std::vector<aiGaussianAnimSplat *> anims(nTargets, nullptr);
+        // Keep ownership until AttachGaussianAnimSplats succeeds (then release).
+        std::vector<std::unique_ptr<aiGaussianAnimSplat>> animOwned(nTargets);
 
         for (unsigned int ti = 0; ti < nTargets; ++ti) {
             Mesh::Primitive::Target &target = prim.targets[ti];
@@ -770,10 +771,17 @@ namespace {
                 }
             }
 
-            anims[ti] = anim.release();
+            animOwned[ti] = std::move(anim);
         }
 
+        std::vector<aiGaussianAnimSplat *> anims(nTargets, nullptr);
+        for (unsigned int ti = 0; ti < nTargets; ++ti) {
+            anims[ti] = animOwned[ti].get();
+        }
         AttachGaussianAnimSplats(scene, meshIndex, anims.data(), nTargets);
+        for (unsigned int ti = 0; ti < nTargets; ++ti) {
+            animOwned[ti].release();
+        }
         ASSIMP_LOG_DEBUG("GLTF: Attached ", nTargets, " KHR_gaussian_splatting morph target(s) for mesh ",
                 meshIndex);
     }
