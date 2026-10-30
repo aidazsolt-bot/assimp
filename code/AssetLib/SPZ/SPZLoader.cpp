@@ -118,7 +118,9 @@ void BuildSceneFromCloud(const spz::GaussianCloud &cloud, aiScene *pScene) {
     }
     // Do not invent mKernel / mColorSpace - SPZ has no authored KHR meta strings.
 
-    aiMesh *mesh = new aiMesh();
+    // Own mesh until transferred to the scene (exception mid-build must not leak).
+    std::unique_ptr<aiMesh> meshOwned(new aiMesh());
+    aiMesh *mesh = meshOwned.get();
     mesh->mName.Set("SPZ_Gaussians");
     mesh->mPrimitiveTypes = aiPrimitiveType_POINT;
     mesh->mNumVertices = numPoints;
@@ -185,17 +187,17 @@ void BuildSceneFromCloud(const spz::GaussianCloud &cloud, aiScene *pScene) {
         }
     }
 
-    aiMaterial *mat = new aiMaterial();
+    std::unique_ptr<aiMaterial> matOwned(new aiMaterial());
     aiString matName("SPZ_Default");
-    mat->AddProperty(&matName, AI_MATKEY_NAME);
+    matOwned->AddProperty(&matName, AI_MATKEY_NAME);
 
     pScene->mNumMaterials = 1;
     pScene->mMaterials = new aiMaterial *[1];
-    pScene->mMaterials[0] = mat;
+    pScene->mMaterials[0] = matOwned.release();
 
     pScene->mNumMeshes = 1;
     pScene->mMeshes = new aiMesh *[1];
-    pScene->mMeshes[0] = mesh;
+    pScene->mMeshes[0] = meshOwned.release();
 
     pScene->mRootNode = new aiNode();
     pScene->mRootNode->mName.Set("SPZ_Root");

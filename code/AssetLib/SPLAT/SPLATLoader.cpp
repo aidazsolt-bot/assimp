@@ -154,7 +154,9 @@ void SPLATImporter::InternReadFile(const std::string &pFile, aiScene *pScene, IO
     splat->mOpacity = new ai_real[numPoints];
     // Do not invent mKernel / mColorSpace.
 
-    aiMesh *mesh = new aiMesh();
+    // Own mesh until transferred to the scene (exception mid-build must not leak).
+    std::unique_ptr<aiMesh> meshOwned(new aiMesh());
+    aiMesh *mesh = meshOwned.get();
     mesh->mName.Set("SPLAT_Gaussians");
     mesh->mPrimitiveTypes = aiPrimitiveType_POINT;
     mesh->mNumVertices = numPoints;
@@ -233,17 +235,17 @@ void SPLATImporter::InternReadFile(const std::string &pFile, aiScene *pScene, IO
         splat->mRotation[i].a = qw;
     }
 
-    aiMaterial *mat = new aiMaterial();
+    std::unique_ptr<aiMaterial> matOwned(new aiMaterial());
     aiString matName("SPLAT_Default");
-    mat->AddProperty(&matName, AI_MATKEY_NAME);
+    matOwned->AddProperty(&matName, AI_MATKEY_NAME);
 
     pScene->mNumMaterials = 1;
     pScene->mMaterials = new aiMaterial *[1];
-    pScene->mMaterials[0] = mat;
+    pScene->mMaterials[0] = matOwned.release();
 
     pScene->mNumMeshes = 1;
     pScene->mMeshes = new aiMesh *[1];
-    pScene->mMeshes[0] = mesh;
+    pScene->mMeshes[0] = meshOwned.release();
 
     pScene->mRootNode = new aiNode();
     pScene->mRootNode->mName.Set("SPLAT_Root");

@@ -528,6 +528,9 @@ namespace Assimp {
 
         auto readFloat = [&](int propIndex) -> ai_real {
             const PropertyInstance &pi = GetProperty(instElement->alProperties, propIndex);
+            if (pi.avList.empty()) {
+                throw DeadlyImportError("Invalid .ply file: Empty Gaussian property value");
+            }
             return PropertyInstance::ConvertTo<ai_real>(pi.avList.front(), EDT_Float);
         };
 
@@ -655,6 +658,9 @@ namespace Assimp {
             out.resize(nChunks);
             for (size_t c = 0; c < nChunks; ++c) {
                 const PropertyInstance &pi = GetProperty(chunkList->alInstances[c].alProperties, propIdx);
+                if (pi.avList.empty()) {
+                    throw DeadlyImportError("Invalid .ply file: Empty PlayCanvas chunk property value");
+                }
                 out[c] = PropertyInstance::ConvertTo<float>(pi.avList.front(), chunkEl->alProperties[static_cast<size_t>(propIdx)].eType);
             }
         };
@@ -707,6 +713,9 @@ namespace Assimp {
 
         auto readU32 = [&](int propIndex) -> uint32_t {
             const PropertyInstance &pi = GetProperty(instElement->alProperties, propIndex);
+            if (pi.avList.empty()) {
+                throw DeadlyImportError("Invalid .ply file: Empty PlayCanvas packed_* property value");
+            }
             // packed_* are authored as uint; ValueUnion already stores iUInt.
             return pi.avList.front().iUInt;
         };
@@ -1159,7 +1168,11 @@ namespace Assimp {
                             GetProperty(instElement->alProperties, iProperty).avList.begin();
 
                     for (unsigned int a = 0; a < iNum; ++a, ++p) {
-                        mGeneratedMesh->mFaces[pos].mIndices[a] = PropertyInstance::ConvertTo<unsigned int>(*p, eType);
+                        const unsigned int vi = PropertyInstance::ConvertTo<unsigned int>(*p, eType);
+                        if (vi >= mGeneratedMesh->mNumVertices) {
+                            throw DeadlyImportError("Invalid .ply file: Face vertex index out of range");
+                        }
+                        mGeneratedMesh->mFaces[pos].mIndices[a] = vi;
                     }
                 }
 
@@ -1230,12 +1243,18 @@ namespace Assimp {
                 aiTable[1] = p;
                 continue;
             }
+            if (aiTable[0] < 0 || aiTable[1] < 0 || p < 0 ||
+                    static_cast<unsigned int>(aiTable[0]) >= mGeneratedMesh->mNumVertices ||
+                    static_cast<unsigned int>(aiTable[1]) >= mGeneratedMesh->mNumVertices ||
+                    static_cast<unsigned int>(p) >= mGeneratedMesh->mNumVertices) {
+                throw DeadlyImportError("Invalid .ply file: Triangle-strip vertex index out of range");
+            }
             aiFace face;
             face.mNumIndices = 3;
             face.mIndices = new unsigned int[3];
-            face.mIndices[0] = aiTable[0];
-            face.mIndices[1] = aiTable[1];
-            face.mIndices[2] = p;
+            face.mIndices[0] = static_cast<unsigned int>(aiTable[0]);
+            face.mIndices[1] = static_cast<unsigned int>(aiTable[1]);
+            face.mIndices[2] = static_cast<unsigned int>(p);
             if (flip) {
                 std::swap(face.mIndices[0], face.mIndices[1]);
             }
