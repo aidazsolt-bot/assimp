@@ -528,23 +528,54 @@ namespace Assimp {
 
         auto readFloat = [&](int propIndex) -> ai_real {
             const PropertyInstance &pi = GetProperty(instElement->alProperties, propIndex);
+            if (pi.avList.empty()) {
+                throw DeadlyImportError("Invalid .ply file: Empty Gaussian property value");
+            }
             return PropertyInstance::ConvertTo<ai_real>(pi.avList.front(), EDT_Float);
         };
 
+        // Convert graphdeco / INRIA PLY training logits into KHR_gaussian_splatting
+        // value space (linear opacity/scale, glTF xyzw unit quat). SH coeffs stay as authored.
         mGaussianSplat->mDC[pos].x = readFloat(mGsDc[0]);
         mGaussianSplat->mDC[pos].y = readFloat(mGsDc[1]);
         mGaussianSplat->mDC[pos].z = readFloat(mGsDc[2]);
 
-        mGaussianSplat->mScale[pos].x = readFloat(mGsScale[0]);
-        mGaussianSplat->mScale[pos].y = readFloat(mGsScale[1]);
-        mGaussianSplat->mScale[pos].z = readFloat(mGsScale[2]);
+        const ai_real sx = readFloat(mGsScale[0]);
+        const ai_real sy = readFloat(mGsScale[1]);
+        const ai_real sz = readFloat(mGsScale[2]);
+        mGaussianSplat->mScale[pos].x = static_cast<ai_real>(std::exp(static_cast<double>(sx)));
+        mGaussianSplat->mScale[pos].y = static_cast<ai_real>(std::exp(static_cast<double>(sy)));
+        mGaussianSplat->mScale[pos].z = static_cast<ai_real>(std::exp(static_cast<double>(sz)));
 
-        mGaussianSplat->mRotation[pos].r = readFloat(mGsRot[0]);
-        mGaussianSplat->mRotation[pos].g = readFloat(mGsRot[1]);
-        mGaussianSplat->mRotation[pos].b = readFloat(mGsRot[2]);
-        mGaussianSplat->mRotation[pos].a = readFloat(mGsRot[3]);
+        // PLY rot_0..3 is graphdeco wxyz -> store KHR/glTF xyzw as (r,g,b,a).
+        const ai_real qw = readFloat(mGsRot[0]);
+        const ai_real qx = readFloat(mGsRot[1]);
+        const ai_real qy = readFloat(mGsRot[2]);
+        const ai_real qz = readFloat(mGsRot[3]);
+        const double qlen = std::sqrt(static_cast<double>(qx) * qx + static_cast<double>(qy) * qy +
+                                      static_cast<double>(qz) * qz + static_cast<double>(qw) * qw);
+        if (qlen > 0.0) {
+            const ai_real inv = static_cast<ai_real>(1.0 / qlen);
+            mGaussianSplat->mRotation[pos].r = qx * inv;
+            mGaussianSplat->mRotation[pos].g = qy * inv;
+            mGaussianSplat->mRotation[pos].b = qz * inv;
+            mGaussianSplat->mRotation[pos].a = qw * inv;
+        } else {
+            mGaussianSplat->mRotation[pos].r = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].g = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].b = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].a = static_cast<ai_real>(1);
+        }
 
-        mGaussianSplat->mOpacity[pos] = readFloat(mGsOpacity);
+        const ai_real opacityLogit = readFloat(mGsOpacity);
+        const double sig = 1.0 / (1.0 + std::exp(-static_cast<double>(opacityLogit)));
+        ai_real opacity = static_cast<ai_real>(sig);
+        if (opacity < static_cast<ai_real>(0)) {
+            opacity = static_cast<ai_real>(0);
+        } else if (opacity > static_cast<ai_real>(1)) {
+            opacity = static_cast<ai_real>(1);
+        }
+        mGaussianSplat->mOpacity[pos] = opacity;
 
         if (mGaussianSplat->mNumRestCoeffs > 0 && mGaussianSplat->mRest != nullptr) {
             ai_real *dst = mGaussianSplat->mRest +
@@ -627,6 +658,9 @@ namespace Assimp {
             out.resize(nChunks);
             for (size_t c = 0; c < nChunks; ++c) {
                 const PropertyInstance &pi = GetProperty(chunkList->alInstances[c].alProperties, propIdx);
+                if (pi.avList.empty()) {
+                    throw DeadlyImportError("Invalid .ply file: Empty PlayCanvas chunk property value");
+                }
                 out[c] = PropertyInstance::ConvertTo<float>(pi.avList.front(), chunkEl->alProperties[static_cast<size_t>(propIdx)].eType);
             }
         };
@@ -679,6 +713,9 @@ namespace Assimp {
 
         auto readU32 = [&](int propIndex) -> uint32_t {
             const PropertyInstance &pi = GetProperty(instElement->alProperties, propIndex);
+            if (pi.avList.empty()) {
+                throw DeadlyImportError("Invalid .ply file: Empty PlayCanvas packed_* property value");
+            }
             // packed_* are authored as uint; ValueUnion already stores iUInt.
             return pi.avList.front().iUInt;
         };
@@ -1131,7 +1168,11 @@ namespace Assimp {
                             GetProperty(instElement->alProperties, iProperty).avList.begin();
 
                     for (unsigned int a = 0; a < iNum; ++a, ++p) {
-                        mGeneratedMesh->mFaces[pos].mIndices[a] = PropertyInstance::ConvertTo<unsigned int>(*p, eType);
+                        const unsigned int vi = PropertyInstance::ConvertTo<unsigned int>(*p, eType);
+                        if (vi >= mGeneratedMesh->mNumVertices) {
+                            throw DeadlyImportError("Invalid .ply file: Face vertex index out of range");
+                        }
+                        mGeneratedMesh->mFaces[pos].mIndices[a] = vi;
                     }
                 }
 
@@ -1202,12 +1243,18 @@ namespace Assimp {
                 aiTable[1] = p;
                 continue;
             }
+            if (aiTable[0] < 0 || aiTable[1] < 0 || p < 0 ||
+                    static_cast<unsigned int>(aiTable[0]) >= mGeneratedMesh->mNumVertices ||
+                    static_cast<unsigned int>(aiTable[1]) >= mGeneratedMesh->mNumVertices ||
+                    static_cast<unsigned int>(p) >= mGeneratedMesh->mNumVertices) {
+                throw DeadlyImportError("Invalid .ply file: Triangle-strip vertex index out of range");
+            }
             aiFace face;
             face.mNumIndices = 3;
             face.mIndices = new unsigned int[3];
-            face.mIndices[0] = aiTable[0];
-            face.mIndices[1] = aiTable[1];
-            face.mIndices[2] = p;
+            face.mIndices[0] = static_cast<unsigned int>(aiTable[0]);
+            face.mIndices[1] = static_cast<unsigned int>(aiTable[1]);
+            face.mIndices[2] = static_cast<unsigned int>(p);
             if (flip) {
                 std::swap(face.mIndices[0], face.mIndices[1]);
             }
