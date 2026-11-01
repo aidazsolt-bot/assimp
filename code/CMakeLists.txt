@@ -619,6 +619,11 @@ if(NOT ASSIMP_HAS_WEBP AND EXISTS "${ASSIMP_FILAMENT_WEBP_ROOT}/CMakeLists.txt")
   set(ASSIMP_WEBP_LIBRARY webpdecoder)
   set(ASSIMP_HAS_WEBP TRUE)
   set(ASSIMP_USE_BUNDLED_WEBP TRUE)
+  if(TARGET webpdecoder)
+    # Filament libwebp follows BUILD_SHARED_LIBS, so this is a DLL. Its default
+    # output dir is the webp build tree, which is not next to assimp.dll.
+    TARGET_USE_COMMON_OUTPUT_DIRECTORY(webpdecoder)
+  endif()
 endif()
 if(NOT ASSIMP_HAS_WEBP)
   if(NOT DEFINED ASSIMP_BUILD_SOG_IMPORTER OR ASSIMP_BUILD_SOG_IMPORTER)
