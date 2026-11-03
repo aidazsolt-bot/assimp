@@ -645,6 +645,11 @@ if(NOT ASSIMP_SOG_ENABLED_POS EQUAL -1)
   endif()
 endif()
 
+ADD_ASSIMP_IMPORTER( KSPLAT
+  AssetLib/KSPLAT/KSplatLoader.cpp
+  AssetLib/KSPLAT/KSplatLoader.h
+)
+
 # Vendored nianticlabs/spz decode sources (MIT) when SPZ importer is on.
 string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SPZ" ASSIMP_SPZ_ENABLED_POS)
 if(NOT ASSIMP_SPZ_ENABLED_POS EQUAL -1)

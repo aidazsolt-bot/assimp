@@ -145,6 +145,7 @@ SET( IMPORTERS
   unit/utSPZImportExport.cpp
   unit/utSPLATImportExport.cpp
   unit/utSOGImportExport.cpp
+  unit/utKSPLATImportExport.cpp
   unit/utObjImportExport.cpp
   unit/utObjTools.cpp
   unit/utOpenGEXImportExport.cpp
