@@ -62,6 +62,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "Common/ScenePrivate.h"
 
 // other headers
+#include <cmath>
 #include <memory>
 #include <cstdlib>
 #include <cstring>
@@ -201,6 +202,7 @@ namespace Assimp {
         // Reset per-import Gaussian state (importer instances are reused).
         mGaussianChecked = false;
         mGaussianActive = false;
+        mGaussianIs2dgs = false;
         delete mGaussianSplat;
         mGaussianSplat = nullptr;
         mGsRest.clear();
@@ -367,6 +369,7 @@ namespace Assimp {
         // Do not bake f_dc_/opacity/… into aiMaterial Kd/Ks/opacity — see doc/PLY.md.
         if (mGaussianActive && mGaussianSplat != nullptr) {
             const int32_t restCount = static_cast<int32_t>(mGaussianSplat->mNumRestCoeffs);
+            const aiString layout(mGaussianIs2dgs ? AI_GAUSSIAN_LAYOUT_2DGS : AI_GAUSSIAN_LAYOUT_3DGS);
             AttachGaussianSplat(pScene, 0, mGaussianSplat);
             mGaussianSplat = nullptr; // ownership moved
 
@@ -375,11 +378,13 @@ namespace Assimp {
             }
             pScene->mMetaData->Add(AI_METADATA_GAUSSIAN_SPLAT, true);
             pScene->mMetaData->Add(AI_METADATA_GAUSSIAN_SH_REST_COUNT, restCount);
+            pScene->mMetaData->Add(AI_METADATA_GAUSSIAN_LAYOUT, layout);
 
             if (pScene->mRootNode->mMetaData == nullptr) {
                 pScene->mRootNode->mMetaData = new aiMetadata();
             }
             pScene->mRootNode->mMetaData->Add(AI_METADATA_GAUSSIAN_SPLAT, true);
+            pScene->mRootNode->mMetaData->Add(AI_METADATA_GAUSSIAN_LAYOUT, layout);
         }
     }
 
@@ -444,13 +449,16 @@ namespace Assimp {
             ++propIndex;
         }
 
-        const bool haveCore =
+        const bool haveCommon =
                 dc[0] >= 0 && dc[1] >= 0 && dc[2] >= 0 &&
-                scale[0] >= 0 && scale[1] >= 0 && scale[2] >= 0 &&
+                scale[0] >= 0 && scale[1] >= 0 &&
                 rot[0] >= 0 && rot[1] >= 0 && rot[2] >= 0 && rot[3] >= 0 &&
                 opacity >= 0;
+        const bool have3d = haveCommon && scale[2] >= 0;
+        // Huang / hbb1 2DGS PLY: same core attrs but only scale_0 / scale_1 (no scale_2).
+        const bool have2d = haveCommon && scale[2] < 0;
 
-        if (!haveCore) {
+        if (!have3d && !have2d) {
             return;
         }
 
@@ -468,7 +476,7 @@ namespace Assimp {
         mGsDc[2] = dc[2];
         mGsScale[0] = scale[0];
         mGsScale[1] = scale[1];
-        mGsScale[2] = scale[2];
+        mGsScale[2] = scale[2]; // -1 when 2DGS
         mGsRot[0] = rot[0];
         mGsRot[1] = rot[1];
         mGsRot[2] = rot[2];
@@ -489,7 +497,13 @@ namespace Assimp {
         }
 
         mGaussianActive = true;
-        ASSIMP_LOG_INFO("PLY: detected 3D Gaussian Splatting vertex layout");
+        mGaussianIs2dgs = have2d;
+        if (have2d) {
+            // Do not invent scale_2; renderer selects 2DGS pipe from layout meta.
+            ASSIMP_LOG_INFO("PLY: 2DGS detected (planar surfel layout; scale_0/1 only)");
+        } else {
+            ASSIMP_LOG_INFO("PLY: detected 3D Gaussian Splatting vertex layout");
+        }
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -503,23 +517,59 @@ namespace Assimp {
 
         auto readFloat = [&](int propIndex) -> ai_real {
             const PropertyInstance &pi = GetProperty(instElement->alProperties, propIndex);
+            if (pi.avList.empty()) {
+                throw DeadlyImportError("Invalid .ply file: Empty Gaussian property value");
+            }
             return PropertyInstance::ConvertTo<ai_real>(pi.avList.front(), EDT_Float);
         };
 
+        // Convert graphdeco / INRIA PLY training logits into KHR_gaussian_splatting
+        // value space (linear opacity/scale, glTF xyzw unit quat). SH coeffs stay as authored.
         mGaussianSplat->mDC[pos].x = readFloat(mGsDc[0]);
         mGaussianSplat->mDC[pos].y = readFloat(mGsDc[1]);
         mGaussianSplat->mDC[pos].z = readFloat(mGsDc[2]);
 
-        mGaussianSplat->mScale[pos].x = readFloat(mGsScale[0]);
-        mGaussianSplat->mScale[pos].y = readFloat(mGsScale[1]);
-        mGaussianSplat->mScale[pos].z = readFloat(mGsScale[2]);
+        const ai_real sx = readFloat(mGsScale[0]);
+        const ai_real sy = readFloat(mGsScale[1]);
+        mGaussianSplat->mScale[pos].x = static_cast<ai_real>(std::exp(static_cast<double>(sx)));
+        mGaussianSplat->mScale[pos].y = static_cast<ai_real>(std::exp(static_cast<double>(sy)));
+        if (mGaussianIs2dgs || mGsScale[2] < 0) {
+            // Paper S = diag(su, sv, 0). Do not invent a third authored scale.
+            mGaussianSplat->mScale[pos].z = static_cast<ai_real>(0);
+        } else {
+            const ai_real sz = readFloat(mGsScale[2]);
+            mGaussianSplat->mScale[pos].z = static_cast<ai_real>(std::exp(static_cast<double>(sz)));
+        }
 
-        mGaussianSplat->mRotation[pos].r = readFloat(mGsRot[0]);
-        mGaussianSplat->mRotation[pos].g = readFloat(mGsRot[1]);
-        mGaussianSplat->mRotation[pos].b = readFloat(mGsRot[2]);
-        mGaussianSplat->mRotation[pos].a = readFloat(mGsRot[3]);
+        // PLY rot_0..3 is graphdeco wxyz -> store KHR/glTF xyzw as (r,g,b,a).
+        const ai_real qw = readFloat(mGsRot[0]);
+        const ai_real qx = readFloat(mGsRot[1]);
+        const ai_real qy = readFloat(mGsRot[2]);
+        const ai_real qz = readFloat(mGsRot[3]);
+        const double qlen = std::sqrt(static_cast<double>(qx) * qx + static_cast<double>(qy) * qy +
+                                      static_cast<double>(qz) * qz + static_cast<double>(qw) * qw);
+        if (qlen > 0.0) {
+            const ai_real inv = static_cast<ai_real>(1.0 / qlen);
+            mGaussianSplat->mRotation[pos].r = qx * inv;
+            mGaussianSplat->mRotation[pos].g = qy * inv;
+            mGaussianSplat->mRotation[pos].b = qz * inv;
+            mGaussianSplat->mRotation[pos].a = qw * inv;
+        } else {
+            mGaussianSplat->mRotation[pos].r = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].g = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].b = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].a = static_cast<ai_real>(1);
+        }
 
-        mGaussianSplat->mOpacity[pos] = readFloat(mGsOpacity);
+        const ai_real opacityLogit = readFloat(mGsOpacity);
+        const double sig = 1.0 / (1.0 + std::exp(-static_cast<double>(opacityLogit)));
+        ai_real opacity = static_cast<ai_real>(sig);
+        if (opacity < static_cast<ai_real>(0)) {
+            opacity = static_cast<ai_real>(0);
+        } else if (opacity > static_cast<ai_real>(1)) {
+            opacity = static_cast<ai_real>(1);
+        }
+        mGaussianSplat->mOpacity[pos] = opacity;
 
         if (mGaussianSplat->mNumRestCoeffs > 0 && mGaussianSplat->mRest != nullptr) {
             ai_real *dst = mGaussianSplat->mRest +

@@ -47,6 +47,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/gaussian.h>
 #include <assimp/Exporter.hpp>
 #include <assimp/Importer.hpp>
+#include <cmath>
 
 using namespace ::Assimp;
 
@@ -362,6 +363,9 @@ TEST_F(utPLYImportExport, importGaussianPlyDcOnly) {
     bool isGs = false;
     EXPECT_TRUE(scene->mMetaData->Get(AI_METADATA_GAUSSIAN_SPLAT, isGs));
     EXPECT_TRUE(isGs);
+    aiString layout3d;
+    EXPECT_TRUE(scene->mMetaData->Get(AI_METADATA_GAUSSIAN_LAYOUT, layout3d));
+    EXPECT_STREQ(AI_GAUSSIAN_LAYOUT_3DGS, layout3d.C_Str());
     EXPECT_EQ(nullptr, aiGetGaussianSplat(scene, 1));
 }
 
@@ -389,6 +393,39 @@ TEST_F(utPLYImportExport, importGaussianPlyWithRest) {
     ASSERT_NE(nullptr, scene->mMetaData);
     EXPECT_TRUE(scene->mMetaData->Get(AI_METADATA_GAUSSIAN_SH_REST_COUNT, restMeta));
     EXPECT_EQ(2, restMeta);
+}
+
+TEST_F(utPLYImportExport, importGaussian2dgsPlyDcOnly) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/PLY/gaussian_2dgs_dc_only.ply", aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_TRUE(aiSceneHasGaussianSplat(scene));
+    const aiGaussianSplat *gs = aiGetGaussianSplat(scene, 0);
+    ASSERT_NE(nullptr, gs);
+    EXPECT_EQ(2u, gs->mNumPoints);
+    EXPECT_EQ(0u, gs->mNumRestCoeffs);
+
+    // Vert0: opacity logit 0 -> 0.5; scale logs (0,0) -> (1,1); z forced 0 (no scale_2).
+    EXPECT_NEAR(0.5f, gs->mOpacity[0], 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mScale[0].x, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mScale[0].y, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mScale[0].z, 1e-5f);
+
+    // Vert1: opacity logit 1; scale logs (0.1,0.2); z = 0 (2DGS, not invented).
+    const float expectOp1 = static_cast<float>(1.0 / (1.0 + std::exp(-1.0)));
+    EXPECT_NEAR(expectOp1, gs->mOpacity[1], 1e-5f);
+    EXPECT_NEAR(static_cast<float>(std::exp(0.1)), gs->mScale[1].x, 1e-5f);
+    EXPECT_NEAR(static_cast<float>(std::exp(0.2)), gs->mScale[1].y, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mScale[1].z, 1e-5f);
+
+    ASSERT_NE(nullptr, scene->mMetaData);
+    bool isGs = false;
+    EXPECT_TRUE(scene->mMetaData->Get(AI_METADATA_GAUSSIAN_SPLAT, isGs));
+    EXPECT_TRUE(isGs);
+    aiString layout;
+    EXPECT_TRUE(scene->mMetaData->Get(AI_METADATA_GAUSSIAN_LAYOUT, layout));
+    EXPECT_STREQ(AI_GAUSSIAN_LAYOUT_2DGS, layout.C_Str());
 }
 
 TEST_F(utPLYImportExport, importMeshPlyHasNoGaussian) {

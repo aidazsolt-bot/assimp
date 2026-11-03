@@ -125,7 +125,14 @@ These describe **ecosystem practice**, not an ISO/Khronos “PLY 2.0” standard
 
 **Does not** add fields to `aiMesh` / `aiScene` (avoids the ABI break of [PR #6593](https://github.com/assimp/assimp/pull/6593)).
 
-Detection (vertex properties): `f_dc_0..2`, `opacity`, `scale_0..2`, `rot_0..3` required; contiguous `f_rest_0..N-1` optional.
+Detection (vertex properties):
+
+| Layout | Required props | Notes |
+|---|---|---|
+| **3DGS** | `f_dc_0..2`, `opacity`, `scale_0..2`, `rot_0..3` | graphdeco / KHR ellipse |
+| **2DGS** | `f_dc_0..2`, `opacity`, `scale_0..1`, `rot_0..3` (**no** `scale_2`) | Huang / hbb1 planar surfel |
+
+Contiguous `f_rest_0..N-1` optional for both. Assimp **does not invent** a missing `scale_2`; `mScale.z = 0` and metadata `GaussianLayout = "2dgs"`. Renderer selects the pipe.
 
 ```cpp
 #include <assimp/gaussian.h>
@@ -138,12 +145,14 @@ if (aiSceneHasGaussianSplat(scene)) {
 }
 ```
 
-Metadata keys (also on root node):
+Metadata keys (also on root node where noted):
 
 - `AI_METADATA_GAUSSIAN_SPLAT` (`bool`)
 - `AI_METADATA_GAUSSIAN_SH_REST_COUNT` (`int32`)
+- `AI_METADATA_GAUSSIAN_LAYOUT` (`aiString`: `"3dgs"` or `"2dgs"`)
 
-Test fixtures: `test/models/PLY/gaussian_dc_only.ply`, `gaussian_with_rest.ply`.
+Test fixtures: `test/models/PLY/gaussian_dc_only.ply`, `gaussian_with_rest.ply`,
+`gaussian_2dgs_dc_only.ply`.
 
 **Notes for renderers:** Assimp does not draw Gaussians. Feed `aiGaussianSplat` into your splat path (same field semantics as graphdeco / VVE `GaussianAssetLoader`). Lifetime = scene. Not copied by `aiCopyScene`.
 

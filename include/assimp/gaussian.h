@@ -76,6 +76,18 @@ struct aiScene;
 #define AI_METADATA_GAUSSIAN_SH_REST_COUNT "GaussianSHRestCount"
 
 /**
+ * Scene / node metadata (aiString): Gaussian layout detected at import.
+ * - "3dgs" — three log-scales (graphdeco / KHR ellipse ellipsoid)
+ * - "2dgs" — two log-scales only (Huang / hbb1 planar surfel PLY; no scale_2)
+ * Renderer chooses the raster path; Assimp does not invent a missing scale_2.
+ */
+#define AI_METADATA_GAUSSIAN_LAYOUT "GaussianLayout"
+
+/** Canonical layout string values for #AI_METADATA_GAUSSIAN_LAYOUT. */
+#define AI_GAUSSIAN_LAYOUT_3DGS "3dgs"
+#define AI_GAUSSIAN_LAYOUT_2DGS "2dgs"
+
+/**
  * Per-mesh 3DGS attributes (graphdeco / INRIA PLY layout).
  *
  * Positions: use the corresponding aiMesh::mVertices (mNumPoints == mNumVertices).

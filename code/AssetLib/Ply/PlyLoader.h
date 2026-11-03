@@ -97,7 +97,7 @@ protected:
     void LoadMaterial(std::vector<aiMaterial *> *pvOut, std::string &defaultTexture, const bool pointsOnly);
 
 private:
-    /// Detect 3DGS vertex layout and allocate side-channel storage once.
+    /// Detect 3DGS / 2DGS vertex layout and allocate side-channel storage once.
     void PrepareGaussianIfNeeded(const PLY::Element *pcElement);
 
     /// Fill one Gaussian from the current vertex instance (if active).
@@ -109,6 +109,8 @@ private:
 
     bool mGaussianChecked{ false };
     bool mGaussianActive{ false };
+    /** True when layout is 2DGS (scale_0/1 only; scale_2 absent). */
+    bool mGaussianIs2dgs{ false };
     aiGaussianSplat *mGaussianSplat{ nullptr };
 
     // Property indices into Element::alProperties / ElementInstance::alProperties
