@@ -144,6 +144,7 @@ SET( IMPORTERS
   unit/utPLYImportExport.cpp
   unit/utSPZImportExport.cpp
   unit/utSPLATImportExport.cpp
+  unit/utKSPLATImportExport.cpp
   unit/utObjImportExport.cpp
   unit/utObjTools.cpp
   unit/utOpenGEXImportExport.cpp
@@ -275,6 +276,8 @@ ENDIF()
 
 IF (ASSIMP_BUILD_DRACO)
   ADD_DEFINITIONS( -DASSIMP_ENABLE_DRACO )
+  # unit sources include glTF2AssetWriter.h -> glTF2Asset.inl which needs Draco headers.
+  INCLUDE_DIRECTORIES(${draco_INCLUDE_DIRS})
 ENDIF()
 
 TARGET_USE_COMMON_OUTPUT_DIRECTORY(unit)
