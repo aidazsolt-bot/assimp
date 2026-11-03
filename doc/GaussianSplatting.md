@@ -47,6 +47,15 @@ Fixture: `test/models/glTF2/KHR_gaussian_splatting/`.
 Fixtures: `test/models/SPZ/tiny_dc.spz`; upstream samples under
 `test/models-nonbsd/SPZ/` (hornedlizard, racoonfamily).
 
+
+### KSPLAT — mkkellogg / GaussianSplats3D `.ksplat`
+
+- Standalone importer (`code/AssetLib/KSPLAT/`).
+- Sectioned + bucketed binary; compression modes 0 (float32), 1 (half), 2 (quantized).
+- Converts on import: linear scale as stored, opacity = `a/255`, quat **wxyz → glTF xyzw**,
+  SH DC recovered from baked RGB via `(rgb - 0.5) / Y_0,0`; optional higher SH bands.
+- Fixture: `test/models/KSPLAT/tiny_dc.ksplat`.
+
 ### SPLAT — antimatter15 `.splat`
 
 - Standalone importer (`code/AssetLib/SPLAT/`).
