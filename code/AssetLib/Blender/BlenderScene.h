@@ -386,6 +386,83 @@ struct Material final : ElemBase {
     short spec_shader WARN;
 
     std::shared_ptr<MTex> mtex[18];
+
+    // Cycles/EEVEE node materials (C6). use_nodes is deprecated in modern DNA but
+    // present in older .blend files; nodetree is the authoritative pointer.
+    char use_nodes;
+    float metallic;
+    std::shared_ptr<struct bNodeTree> nodetree;
+};
+
+// -------------------------------------------------------------------------------
+/** Subset of DNA bNodeStack (legacy socket values; still written in old files). */
+struct bNodeStack final : ElemBase {
+    float vec[4];
+    float min, max;
+};
+
+/** Subset of DNA bNodeSocketValueFloat / RGBA (default_value pointee). */
+struct bNodeSocketValueFloat final : ElemBase {
+    int subtype;
+    float value;
+};
+
+struct bNodeSocketValueRGBA final : ElemBase {
+    float value[4];
+};
+
+/** Subset of DNA bNodeSocket. */
+struct bNodeSocket final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    char name[64];
+    char identifier[64];
+    char idname[64];
+    short type;
+    std::shared_ptr<ElemBase> default_value; // runtime-typed (Float/RGBA/...)
+    bNodeStack ns;
+
+    bNodeSocket() :
+            type(0),
+            ns() {
+        memset(name, 0, sizeof name);
+        memset(identifier, 0, sizeof identifier);
+        memset(idname, 0, sizeof idname);
+        ns.vec[0] = ns.vec[1] = ns.vec[2] = ns.vec[3] = 0.f;
+        ns.min = ns.max = 0.f;
+    }
+};
+
+/** Subset of DNA bNode (shader nodes for C6 Principled/Glass/Glossy flatten). */
+struct bNode final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    ListBase inputs;
+    ListBase outputs;
+    char name[64];
+    char idname[64];
+    short type; // DNA "type" / "type_legacy"
+    std::shared_ptr<ElemBase> id; // e.g. Image* for ShaderNodeTexImage
+
+    bNode() {
+        memset(name, 0, sizeof name);
+        memset(idname, 0, sizeof idname);
+        type = 0;
+    }
+};
+
+/** Subset of DNA bNodeLink. */
+struct bNodeLink final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<ElemBase> fromnode;
+    std::shared_ptr<ElemBase> tonode;
+    std::shared_ptr<ElemBase> fromsock;
+    std::shared_ptr<ElemBase> tosock;
+};
+
+/** Subset of DNA bNodeTree (Material.nodetree). */
+struct bNodeTree final : ElemBase {
+    ID id;
+    ListBase nodes;
+    ListBase links;
 };
 
 /*

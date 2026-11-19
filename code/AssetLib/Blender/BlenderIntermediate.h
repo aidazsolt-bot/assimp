@@ -177,6 +177,9 @@ namespace Blender {
         // Parallel to meshes[]: CustomData/primvar JSON for aiMeshSidecar (S1).
         std::vector<std::string> meshSidecarJson;
 
+        // Parallel to materials[]: S3 BLEND_shader (+ optional principled) JSON bodies.
+        std::vector<std::string> materialSidecarJson;
+
         // Physics modifier inventory (S5/S6) - filled while walking objects.
         std::ostringstream physicsSoftNodes;
         std::ostringstream physicsClothNodes;
