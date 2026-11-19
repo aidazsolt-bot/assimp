@@ -1219,10 +1219,9 @@ IF (ASSIMP_BUILD_USD_IMPORTER)
     endif () # if (ASSIMP_USD_BETA)
 
     # Patches: (1) arm32 android stb stub (2) ignore unknown metas + UsdPhysics tokens.
-    # Use git apply via PATCH_COMMAND list (works on Windows MSVC hosts without bash).
-    # Do NOT rely on apply-tinyusdz-patches.sh here - FetchContent on Win often leaves an
-    # unpatched _deps tree when UPDATES_DISCONNECTED skips re-patch after a script change.
+    # Idempotent cmake -P apply (safe on reconfigure / already-patched _deps; works on MSVC).
     set(TINYUSDZ_PATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/tinyusdz/patches")
+    set(TINYUSDZ_PATCH_CMAKE "${TINYUSDZ_PATCH_DIR}/apply-tinyusdz-patches.cmake")
     find_package(Git REQUIRED)
     # Note: CMake's "FetchContent" (which executes at configure time) is much better for this use case
     #       than "ExternalProject" (which executes at build time); we just want to clone a repo and
@@ -1236,8 +1235,10 @@ IF (ASSIMP_BUILD_USD_IMPORTER)
             EXCLUDE_FROM_ALL TRUE
             GIT_REPOSITORY "https://github.com/lighttransport/tinyusdz"
             GIT_TAG        ${TINYUSDZ_GIT_TAG}
-            PATCH_COMMAND  ${GIT_EXECUTABLE} apply "${TINYUSDZ_PATCH_DIR}/tinyusdz.patch"
-            COMMAND        ${GIT_EXECUTABLE} apply "${TINYUSDZ_PATCH_DIR}/tinyusdz-unknown-metas.patch"
+            PATCH_COMMAND  ${CMAKE_COMMAND}
+                -DTINYUSDZ_SRC=<SOURCE_DIR>
+                -DTINYUSDZ_PATCH_DIR=${TINYUSDZ_PATCH_DIR}
+                -P ${TINYUSDZ_PATCH_CMAKE}
     )
     FetchContent_MakeAvailable(tinyusdz_repo)
     # Fail loud if patches did not land (common when an old disconnected _deps tree is reused).
