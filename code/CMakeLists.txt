@@ -1218,8 +1218,12 @@ IF (ASSIMP_BUILD_USD_IMPORTER)
         message("\n\n**** Cloning legacy tinyusdz repo, git tag ${TINYUSDZ_GIT_TAG}\n\n")
     endif () # if (ASSIMP_USD_BETA)
 
-    # Patches: (1) arm32 android stb stub (2) ignore unknown metas + UsdPhysics tokens
-    set(TINYUSDZ_PATCH_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/tinyusdz/patches/apply-tinyusdz-patches.sh")
+    # Patches: (1) arm32 android stb stub (2) ignore unknown metas + UsdPhysics tokens.
+    # Use git apply via PATCH_COMMAND list (works on Windows MSVC hosts without bash).
+    # Do NOT rely on apply-tinyusdz-patches.sh here - FetchContent on Win often leaves an
+    # unpatched _deps tree when UPDATES_DISCONNECTED skips re-patch after a script change.
+    set(TINYUSDZ_PATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/tinyusdz/patches")
+    find_package(Git REQUIRED)
     # Note: CMake's "FetchContent" (which executes at configure time) is much better for this use case
     #       than "ExternalProject" (which executes at build time); we just want to clone a repo and
     #       block (wait) as long as necessary until cloning is complete, so we immediately have full
@@ -1232,9 +1236,19 @@ IF (ASSIMP_BUILD_USD_IMPORTER)
             EXCLUDE_FROM_ALL TRUE
             GIT_REPOSITORY "https://github.com/lighttransport/tinyusdz"
             GIT_TAG        ${TINYUSDZ_GIT_TAG}
-            PATCH_COMMAND  ${TINYUSDZ_PATCH_SCRIPT}
+            PATCH_COMMAND  ${GIT_EXECUTABLE} apply "${TINYUSDZ_PATCH_DIR}/tinyusdz.patch"
+            COMMAND        ${GIT_EXECUTABLE} apply "${TINYUSDZ_PATCH_DIR}/tinyusdz-unknown-metas.patch"
     )
     FetchContent_MakeAvailable(tinyusdz_repo)
+    # Fail loud if patches did not land (common when an old disconnected _deps tree is reused).
+    file(READ "${CMAKE_BINARY_DIR}/_deps/tinyusdz_repo-src/src/prim-types.hh" TINYUSDZ_PRIM_TYPES_HH)
+    string(FIND "${TINYUSDZ_PRIM_TYPES_HH}" "kilogramsPerUnit" TINYUSDZ_KG_POS)
+    if (TINYUSDZ_KG_POS EQUAL -1)
+        message(FATAL_ERROR
+            "TinyUSDZ patches not applied (missing kilogramsPerUnit / Physics*API). "
+            "Delete \"${CMAKE_BINARY_DIR}/_deps/tinyusdz_repo-src\" and "
+            "\"${CMAKE_BINARY_DIR}/_deps/tinyusdz_repo-subbuild\", then reconfigure.")
+    endif ()
     message("**** Finished cloning tinyusdz repo")
     message("****")
 
