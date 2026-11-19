@@ -44,7 +44,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 //#define ASSIMP_BUILD_NO_COMPRESSED_BLEND
-// Uncomment this to disable support for (gzip)compressed .BLEND files
+// Uncomment this to disable support for (gzip/zstd)compressed .BLEND files
 
 #ifndef ASSIMP_BUILD_NO_BLEND_IMPORTER
 
@@ -68,6 +68,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <memory>
 #include <sstream>
 #include <utility>
+#include <vector>
+
+#if !defined(ASSIMP_BUILD_NO_COMPRESSED_BLEND) && defined(ASSIMP_BLEND_SUPPORT_ZSTD)
+#include <zstd.h>
+#endif
 
 namespace {
 char *BlendDupJson(const std::string &s, size_t &outLen) {
@@ -855,6 +860,10 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
     BuildDefaultMaterial(conv_data);
 
     for (const std::shared_ptr<Material> &mat : conv_data.materials_raw) {
+        // Sparse mesh->mat slots can push empty shared_ptrs; skip them.
+        if (!mat) {
+            continue;
+        }
 
         // reset per material global counters
         for (size_t i = 0; i < sizeof(conv_data.next_texture) / sizeof(conv_data.next_texture[0]); ++i) {
@@ -1009,15 +1018,19 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
             }
 
             std::shared_ptr<Material> mat = mesh->mat[it.first];
-            const std::deque<std::shared_ptr<Material>>::iterator has = std::find(
-                    conv_data.materials_raw.begin(),
-                    conv_data.materials_raw.end(), mat);
-
-            if (has != conv_data.materials_raw.end()) {
-                out->mMaterialIndex = static_cast<unsigned int>(std::distance(conv_data.materials_raw.begin(), has));
+            if (!mat) {
+                out->mMaterialIndex = static_cast<unsigned int>(-1);
             } else {
-                out->mMaterialIndex = static_cast<unsigned int>(conv_data.materials_raw.size());
-                conv_data.materials_raw.push_back(mat);
+                const std::deque<std::shared_ptr<Material>>::iterator has = std::find(
+                        conv_data.materials_raw.begin(),
+                        conv_data.materials_raw.end(), mat);
+
+                if (has != conv_data.materials_raw.end()) {
+                    out->mMaterialIndex = static_cast<unsigned int>(std::distance(conv_data.materials_raw.begin(), has));
+                } else {
+                    out->mMaterialIndex = static_cast<unsigned int>(conv_data.materials_raw.size());
+                    conv_data.materials_raw.push_back(mat);
+                }
             }
         } else
             out->mMaterialIndex = static_cast<unsigned int>(-1);
@@ -1164,6 +1177,11 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
     for (uint32_t m = 0; m < maxMat; ++m) {
         // get material by index
         const std::shared_ptr<Material> pMat = mesh->mat[m];
+        // DNA may leave empty mat slots; dereferencing an empty shared_ptr crashes
+        // (seen on large fluid demos such as lava_fluid-viscosity-demo.blend).
+        if (!pMat) {
+            continue;
+        }
         TextureUVMapping texuv;
         const uint32_t maxTex = sizeof(pMat->mtex) / sizeof(pMat->mtex[0]);
         for (uint32_t t = 0; t < maxTex; ++t) {
@@ -1535,31 +1553,77 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
         return {stream, {}, {}};
     }
 
-    // Check for presence of the gzip header. If yes, assume it is a
-    // compressed blend file and try uncompressing it, else fail. This is to
-    // avoid uncompressing random files which our loader might end up with.
+    // Check for gzip (legacy) or zstd (Blender 3+ default) compressed blend files.
 #ifdef ASSIMP_BUILD_NO_COMPRESSED_BLEND
     return {{}, {}, "BLENDER magic bytes are missing, is this file compressed (Assimp was built without decompression support)?"};
 #else
-    if (magic[0] != 0x1f || static_cast<uint8_t>(magic[1]) != 0x8b) {
-        return {{}, {}, "BLENDER magic bytes are missing, couldn't find GZIP header either"};
+    const bool isGzip = (magic[0] == 0x1f && static_cast<uint8_t>(magic[1]) == 0x8b);
+    // Zstandard magic: 0x28 0xB5 0x2F 0xFD (little-endian frame header)
+    const bool isZstd = (static_cast<uint8_t>(magic[0]) == 0x28 &&
+            static_cast<uint8_t>(magic[1]) == 0xb5 &&
+            static_cast<uint8_t>(magic[2]) == 0x2f &&
+            static_cast<uint8_t>(magic[3]) == 0xfd);
+
+    if (!isGzip && !isZstd) {
+        return {{}, {}, "BLENDER magic bytes are missing, couldn't find GZIP or Zstandard header either"};
     }
 
-    LogDebug("Found no BLENDER magic word but a GZIP header, might be a compressed file");
-    if (magic[2] != 8) {
-        return {{}, {}, "Unsupported GZIP compression method"};
-    }
-
-    // http://www.gzip.org/zlib/rfc-gzip.html#header-trailer
     stream->Seek(0L, aiOrigin_SET);
-    std::shared_ptr<StreamReaderLE> reader = std::shared_ptr<StreamReaderLE>(new StreamReaderLE(stream));
-
-    size_t total = 0;
-    Compression compression;
     auto uncompressed = std::make_shared<std::vector<char>>();
-    if (compression.open(Compression::Format::Binary, Compression::FlushMode::NoFlush, 16 + Compression::MaxWBits)) {
-        total = compression.decompress((unsigned char *)reader->GetPtr(), reader->GetRemainingSize(), *uncompressed);
-        compression.close();
+    size_t total = 0;
+
+    if (isGzip) {
+        LogDebug("Found no BLENDER magic word but a GZIP header, might be a compressed file");
+        if (magic[2] != 8) {
+            return {{}, {}, "Unsupported GZIP compression method"};
+        }
+
+        // http://www.gzip.org/zlib/rfc-gzip.html#header-trailer
+        std::shared_ptr<StreamReaderLE> reader = std::shared_ptr<StreamReaderLE>(new StreamReaderLE(stream));
+        Compression compression;
+        if (compression.open(Compression::Format::Binary, Compression::FlushMode::NoFlush, 16 + Compression::MaxWBits)) {
+            total = compression.decompress((unsigned char *)reader->GetPtr(), reader->GetRemainingSize(), *uncompressed);
+            compression.close();
+        }
+    } else {
+#if defined(ASSIMP_BLEND_SUPPORT_ZSTD)
+        // Blender often writes multi-frame ZSTD (not a single frame). Always stream
+        // the whole input; ZSTD_getFrameContentSize only describes the first frame.
+        LogDebug("Found no BLENDER magic word but a Zstandard header, might be a compressed file");
+        std::shared_ptr<StreamReaderLE> reader = std::shared_ptr<StreamReaderLE>(new StreamReaderLE(stream));
+        const void *src = reader->GetPtr();
+        const size_t srcSize = reader->GetRemainingSize();
+        ZSTD_DCtx *dctx = ZSTD_createDCtx();
+        if (dctx == nullptr) {
+            return {{}, {}, "Failed to allocate Zstandard decompression context"};
+        }
+        uncompressed->resize(srcSize * 8 + 256 * 1024);
+        ZSTD_inBuffer input{ src, srcSize, 0 };
+        ZSTD_outBuffer output{ uncompressed->data(), uncompressed->size(), 0 };
+        while (input.pos < input.size) {
+            if (output.pos == output.size) {
+                const size_t newSize = uncompressed->size() * 2;
+                if (newSize > (1ull << 31)) {
+                    ZSTD_freeDCtx(dctx);
+                    return {{}, {}, "Zstandard BLEND payload is unreasonably large"};
+                }
+                uncompressed->resize(newSize);
+                output.dst = uncompressed->data();
+                output.size = uncompressed->size();
+            }
+            const size_t ret = ZSTD_decompressStream(dctx, &output, &input);
+            if (ZSTD_isError(ret)) {
+                ZSTD_freeDCtx(dctx);
+                return {{}, {}, std::string("Zstandard decompress failed: ") + ZSTD_getErrorName(ret)};
+            }
+            // ret==0 means a frame finished; continue for further frames / skippable frames.
+        }
+        ZSTD_freeDCtx(dctx);
+        total = output.pos;
+        uncompressed->resize(total);
+#else
+        return {{}, {}, "BLENDER file appears Zstandard-compressed, but Assimp was built without ZSTD support"};
+#endif
     }
 
     // replace the input stream with a memory stream
@@ -1570,7 +1634,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
     if (strcmp(magic, Token) == 0) {
         return {stream, uncompressed, {}};
     }
-    return {{}, {}, "Found no BLENDER magic word in decompressed GZIP file"};
+    return {{}, {}, isGzip ? "Found no BLENDER magic word in decompressed GZIP file" : "Found no BLENDER magic word in decompressed Zstandard file"};
 #endif
 }
 

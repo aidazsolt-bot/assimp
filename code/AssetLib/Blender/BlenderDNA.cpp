@@ -64,6 +64,17 @@ static bool match4(StreamReaderAny &stream, const char *string) {
     return (tmp[0] == string[0] && tmp[1] == string[1] && tmp[2] == string[2] && tmp[3] == string[3]);
 }
 
+// Blender dna_genfile pad_up_4: align relative to the SDNA buffer base, NOT the
+// absolute file offset. DNA1 bodies can start at file_off%4 != 0 while markers
+// remain 4-aligned within the SDNA blob (see Blender dna_genfile.cc).
+static void padDnaSection(StreamReaderAny &stream, size_t dnaBase) {
+    const size_t rel = stream.GetCurrentPos() - dnaBase;
+    const size_t pad = (4u - (rel & 3u)) & 3u;
+    for (size_t i = 0; i < pad; ++i) {
+        stream.GetI1();
+    }
+}
+
 struct Type {
     size_t size;
     std::string name;
@@ -74,6 +85,7 @@ void DNAParser::Parse() {
     StreamReaderAny &stream = *db.reader;
     DNA &dna = db.dna;
 
+    const size_t dnaBase = stream.GetCurrentPos();
     if (!match4(stream, "SDNA")) {
         throw DeadlyImportError("BlenderDNA: Expected SDNA chunk");
     }
@@ -91,8 +103,7 @@ void DNAParser::Parse() {
     }
 
     // type dictionary
-    for (; stream.GetCurrentPos() & 0x3; stream.GetI1())
-        ;
+    padDnaSection(stream, dnaBase);
     if (!match4(stream, "TYPE")) {
         throw DeadlyImportError("BlenderDNA: Expected TYPE field");
     }
@@ -105,8 +116,7 @@ void DNAParser::Parse() {
     }
 
     // type length dictionary
-    for (; stream.GetCurrentPos() & 0x3; stream.GetI1())
-        ;
+    padDnaSection(stream, dnaBase);
     if (!match4(stream, "TLEN")) {
         throw DeadlyImportError("BlenderDNA: Expected TLEN field");
     }
@@ -116,8 +126,7 @@ void DNAParser::Parse() {
     }
 
     // structures dictionary
-    for (; stream.GetCurrentPos() & 0x3; stream.GetI1())
-        ;
+    padDnaSection(stream, dnaBase);
     if (!match4(stream, "STRC")) {
         throw DeadlyImportError("BlenderDNA: Expected STRC field");
     }
