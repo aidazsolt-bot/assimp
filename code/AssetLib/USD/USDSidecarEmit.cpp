@@ -20,6 +20,7 @@ All rights reserved.
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <map>
 #include <vector>
 
 namespace Assimp {
@@ -106,15 +107,10 @@ std::string ExtractOpenVdbFilePath(const lightusd::Prim &prim) {
     if (it != props.end() && TryAssetPathFromProp(it->second, path)) {
         return path;
     }
-    if (const auto *v = prim.as<lightusd::Volume>()) {
-        if (!v->vdb.filePath.empty()) {
-            return v->vdb.filePath;
-        }
-    }
     return path;
 }
 
-bool TryFloatProp(const lightusd::PropertyMap &props, const char *key, double &out) {
+bool TryFloatProp(const std::map<std::string, lightusd::Property> &props, const char *key, double &out) {
     auto it = props.find(key);
     if (it == props.end() || !it->second.is_attribute()) {
         return false;
