@@ -48,6 +48,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "USDLoaderImplTinyusdz.h"
 #include "USDLoaderImplTinyusdzHelper.h"
 #include "USDLoaderUtil.h"
+#include "USDGprimMesh.h"
 #include "USDPreprocessor.h"
 #include "USDSidecarEmit.h"
 #include "io-util.hh" // namespace lightusd::io
@@ -55,9 +56,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "tydra/shader-network.hh"
 
 #include <cmath>
+#include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <sstream>
+#include <string>
+#include <vector>
 
 // internal headers
 #include "assimp/MemoryIOWrapper.h"
@@ -183,6 +188,7 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
     lightusd::Stage stage;
     std::string warn, err;
     bool is_usdz{ false };
+    std::vector<std::string> honestyNotes;
     if (isUsdc(pFile)) {
         ret = is_load_from_mem ? LoadUSDCFromMemory(in_mem_data.data(), in_mem_data.size(), pFile, &stage, &warn, &err, options) :
                                  LoadUSDCFromFile(pFile, &stage, &warn, &err, options);
@@ -190,6 +196,8 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
         ss << "InternReadFile(): LoadUSDCFromFile() result: " << ret;
         TINYUSDZLOGD(TAG, "%s", ss.str().c_str());
     } else if (isUsda(pFile)) {
+        // TinyUSDZ (Assimp patch) ignores unknown stage/prim metas and accepts
+        // UsdPhysics kilogramsPerUnit + Physics*API tokens - no Assimp ASCII strip.
         ret = is_load_from_mem ? LoadUSDAFromMemory(in_mem_data.data(), in_mem_data.size(), pFile, &stage, &warn, &err, options) :
                                  LoadUSDAFromFile(pFile, &stage, &warn, &err, options);
         ss.str("");
@@ -279,22 +287,79 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
     ret = converter.ConvertToRenderScene(env, &render_scene);
     if (!ret) {
         ss.str("");
-        ss << "InternReadFile(): ConvertToRenderScene() failed!";
-        TINYUSDZLOGE(TAG, "%s", ss.str().c_str());
-        return;
+        ss << "InternReadFile(): ConvertToRenderScene() failed - falling back to Stage gprim tessellation";
+        TINYUSDZLOGW(TAG, "%s", ss.str().c_str());
+    } else {
+        // sanityCheckNodesRecursive(pScene->mRootNode);
+        animations(render_scene, pScene);
+        meshes(render_scene, pScene, nameWExt);
+        bones(render_scene, pScene, nameWExt);
+        materials(render_scene, pScene, nameWExt);
+        textures(render_scene, pScene, nameWExt);
+        textureImages(render_scene, pScene, nameWExt);
+        buffers(render_scene, pScene, nameWExt);
+        if (!render_scene.nodes.empty()) {
+            pScene->mRootNode = nodesRecursive(nullptr, render_scene.nodes[0], render_scene.skeletons);
+        }
+        setupBlendShapes(render_scene, pScene, nameWExt);
     }
 
-    // sanityCheckNodesRecursive(pScene->mRootNode);
-    animations(render_scene, pScene);
-    meshes(render_scene, pScene, nameWExt);
-    bones(render_scene, pScene, nameWExt);
-    materials(render_scene, pScene, nameWExt);
-    textures(render_scene, pScene, nameWExt);
-    textureImages(render_scene, pScene, nameWExt);
-    buffers(render_scene, pScene, nameWExt);
-    pScene->mRootNode = nodesRecursive(nullptr, render_scene.nodes[0], render_scene.skeletons);
+    if (pScene->mRootNode == nullptr) {
+        // Convert failed or empty RenderScene: rebuild a minimal hierarchy from Stage
+        // so Gprim tessellation can bind meshes by prim leaf name.
+        const auto &roots = stage.root_prims();
+        if (!roots.empty()) {
+            std::function<aiNode *(const lightusd::Prim &)> build = [&](const lightusd::Prim &prim) -> aiNode * {
+                aiNode *node = new aiNode(prim.element_name().c_str());
+                const auto &kids = prim.children();
+                if (!kids.empty()) {
+                    node->mNumChildren = static_cast<unsigned int>(kids.size());
+                    node->mChildren = new aiNode *[node->mNumChildren]();
+                    for (unsigned int ci = 0; ci < node->mNumChildren; ++ci) {
+                        node->mChildren[ci] = build(kids[ci]);
+                        if (node->mChildren[ci] != nullptr) {
+                            node->mChildren[ci]->mParent = node;
+                        }
+                    }
+                }
+                return node;
+            };
+            if (roots.size() == 1) {
+                pScene->mRootNode = build(roots[0]);
+            } else {
+                pScene->mRootNode = new aiNode("<USDRoot>");
+                pScene->mRootNode->mNumChildren = static_cast<unsigned int>(roots.size());
+                pScene->mRootNode->mChildren = new aiNode *[pScene->mRootNode->mNumChildren]();
+                for (unsigned int ri = 0; ri < pScene->mRootNode->mNumChildren; ++ri) {
+                    pScene->mRootNode->mChildren[ri] = build(roots[ri]);
+                    if (pScene->mRootNode->mChildren[ri] != nullptr) {
+                        pScene->mRootNode->mChildren[ri]->mParent = pScene->mRootNode;
+                    }
+                }
+            }
+        } else {
+            pScene->mRootNode = new aiNode("<USDRoot>");
+        }
+    }
 
-    setupBlendShapes(render_scene, pScene, nameWExt);
+    // TinyUSDZ leaves GeomCube/Sphere/... as Xform nodes without meshes.
+    // Tessellate them so Physics USDA fixtures yield a usable aiScene.
+    std::vector<std::string> gprimSkipped;
+    AppendTessellatedUsdGprimMeshes(pScene, stage, &gprimSkipped);
+    for (const auto &note : gprimSkipped) {
+        honestyNotes.push_back(note);
+    }
+
+    // meshes() may allocate a zero-length mMeshes pointer; ValidateDS rejects that.
+    if (pScene->mNumMeshes == 0 && pScene->mMeshes != nullptr) {
+        delete[] pScene->mMeshes;
+        pScene->mMeshes = nullptr;
+    }
+
+    // Volume-only / schema-only / payload-only stages: allow ValidateDS without hard-failing.
+    if (pScene->mNumMeshes == 0) {
+        pScene->mFlags |= AI_SCENE_FLAGS_INCOMPLETE;
+    }
 
     // Prefer authored Stage metas when present; fall back to RenderScene meta.
     lightusd::tydra::SceneMetadata sceneMeta = render_scene.meta;
@@ -319,7 +384,7 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
     }
     AttachUsdSceneTimingMetadata(pScene, pFile, sceneMeta);
     // S1-S8 category sidecars (mesh/material/anim/physics + scene bags).
-    EmitUsdCategorySidecars(pScene, pFile, stage, render_scene, sceneMeta);
+    EmitUsdCategorySidecars(pScene, pFile, stage, render_scene, sceneMeta, &honestyNotes);
 }
 
 void USDImporterImplTinyusdz::animations(const lightusd::tydra::RenderScene &render_scene, aiScene *pScene) {
@@ -1198,7 +1263,7 @@ aiNode *USDImporterImplTinyusdz::nodesRecursive(aiNode *pNodeParent, const light
         return cNode;
     }
 
-    cNode->mChildren = new aiNode *[cNode->mNumChildren];
+    cNode->mChildren = new aiNode *[cNode->mNumChildren]();
 
     size_t i{ 0 };
     for (const auto &childNode : node.children) {
@@ -1228,7 +1293,7 @@ aiNode *USDImporterImplTinyusdz::skeletonNodesRecursive(
     }
 
     cNode->mNumChildren = static_cast<unsigned int>(joint.children.size());
-    cNode->mChildren = new aiNode *[cNode->mNumChildren];
+    cNode->mChildren = new aiNode *[cNode->mNumChildren]();
 
     for (unsigned i = 0; i < cNode->mNumChildren; ++i) {
         const SkelNode &childJoint = joint.children[i];

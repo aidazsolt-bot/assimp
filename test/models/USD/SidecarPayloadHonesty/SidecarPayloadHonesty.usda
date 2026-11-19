@@ -1,0 +1,40 @@
+#usda 1.0
+(
+    endTimeCode = 200
+    startTimeCode = 0
+)
+
+# Host probe analogue of openusd_examples/dancingCubes.usda:
+# unknown plugin dict meta + payload/reference. After sanitize, import must
+# succeed as incomplete (no mesh) with skipped[] honesty - not nullptr crash.
+def "Root" (
+    references = </Params>
+    payload = @anon:dummy:cubes.usddancingcubesexample@
+)
+{
+}
+
+def "Params" (
+    Usd_DCE_Params = {
+        int perSide = 15
+        int framesPerCycle = 36
+        int numFrames = 200
+        double distance = 6.0
+        double moveScale = 1.5
+    }
+
+    variants = {
+        string geomTypeVariant = "cube"
+    }
+    prepend variantSets = "geomTypeVariant"
+)
+{
+    variantSet "geomTypeVariant" = {
+    "cube" {
+      token geomType = "Cube"
+    }
+    "sphere" {
+      token geomType = "Sphere"
+    }
+    }
+}

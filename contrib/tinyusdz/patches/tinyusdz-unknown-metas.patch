@@ -1,0 +1,314 @@
+diff --git a/src/ascii-parser.cc b/src/ascii-parser.cc
+index 1188495ad..e41c39ec9 100644
+--- a/src/ascii-parser.cc
++++ b/src/ascii-parser.cc
+@@ -330,6 +330,9 @@ static void RegisterStageMetas(
+   // TODO: both support float and double?
+   metas["metersPerUnit"] =
+       AsciiParser::VariableDef(value::kDouble, "metersPerUnit");
++  // Official UsdPhysics stage mass metric (OpenUSD). Must not hard-fail parse.
++  metas["kilogramsPerUnit"] =
++      AsciiParser::VariableDef(value::kDouble, "kilogramsPerUnit");
+   metas["timeCodesPerSecond"] =
+       AsciiParser::VariableDef(value::kDouble, "timeCodesPerSecond");
+   metas["framesPerSecond"] =
+@@ -576,9 +579,10 @@ static void RegisterAPISchemas(std::set<std::string> &d) {
+   d.insert("MaterialBindingAPI");
+   d.insert("SkelBindingAPI");
+ 
+-  // TODO:
+-  // d.insert("PhysicsCollisionAPI");
+-  // d.insert("PhysicsRigidBodyAPI");
++  // Official OpenUSD UsdPhysics applied APIs (distinct from Preliminary_*).
++  d.insert("PhysicsCollisionAPI");
++  d.insert("PhysicsRigidBodyAPI");
++  d.insert("PhysicsMaterialAPI");
+ 
+   // TODO: Support Multi-apply API(`CollectionAPI`)
+   // d.insert("PhysicsLimitAPI");
+@@ -1679,6 +1683,66 @@ bool AsciiParser::ReadPathIdentifier(std::string *path_identifier) {
+   return true;
+ }
+ 
++bool AsciiParser::SkipMetaValueLiteral() {
++  if (!SkipWhitespace()) {
++    return false;
++  }
++  if (Eof()) {
++    return false;
++  }
++
++  char c0 = '\0';
++  if (!Char1(&c0)) {
++    return false;
++  }
++
++  // Dictionary or array: skip balanced braces/brackets (string-aware).
++  if (c0 == '{' || c0 == '[') {
++    const char open = c0;
++    const char close = (c0 == '{') ? '}' : ']';
++    int depth = 1;
++    bool in_string = false;
++    char string_quote = '\0';
++    while (!Eof() && depth > 0) {
++      char c;
++      if (!Char1(&c)) {
++        return false;
++      }
++      if (in_string) {
++        if (c == '\\') {
++          char ignored;
++          if (!Char1(&ignored)) {
++            return false;
++          }
++          continue;
++        }
++        if (c == string_quote) {
++          in_string = false;
++        }
++        continue;
++      }
++      if (c == '"' || c == '\'') {
++        in_string = true;
++        string_quote = c;
++        continue;
++      }
++      if (c == open) {
++        ++depth;
++      } else if (c == close) {
++        --depth;
++      }
++    }
++    return depth == 0;
++  }
++
++  // Unwind first char and consume until end of line (scalar / @asset@ / path).
++  if (!_sr->seek_from_current(-1)) {
++    return false;
++  }
++  std::string ignored;
++  return ReadUntilNewline(&ignored);
++}
++
+ bool AsciiParser::ReadUntilNewline(std::string *str) {
+   std::stringstream ss;
+ 
+@@ -1792,9 +1856,18 @@ bool AsciiParser::ParseStageMetaOpt() {
+   DCOUT("varname = " << varname);
+ 
+   if (!IsStageMeta(varname)) {
+-    std::string msg = "'" + varname + "' is not a Stage Metadata variable.\n";
+-    PUSH_ERROR_AND_RETURN(msg);
+-    return false;
++    // OpenUSD may author extension stage metas (or future core metas) that this
++    // TinyUSDZ build does not list. Skip the value instead of failing the file.
++    PUSH_WARN("Ignoring unknown Stage Metadata variable: " + varname + "\n");
++    if (!Expect('=')) {
++      PUSH_ERROR_AND_RETURN("'=' expected in Stage Metadata opt.");
++      return false;
++    }
++    if (!SkipMetaValueLiteral()) {
++      PUSH_ERROR_AND_RETURN("Failed to skip unknown Stage Metadata value.\n");
++      return false;
++    }
++    return true;
+   }
+ 
+   if (!Expect('=')) {
+@@ -1884,6 +1957,14 @@ bool AsciiParser::ParseStageMetaOpt() {
+     } else {
+       PUSH_ERROR_AND_RETURN("`metersPerUnit` isn't a floating-point value.");
+     }
++  } else if (varname == "kilogramsPerUnit") {
++    if (auto pv = var.get_value<float>()) {
++      _stage_metas.kilogramsPerUnit = double(pv.value());
++    } else if (auto pvd = var.get_value<double>()) {
++      _stage_metas.kilogramsPerUnit = pvd.value();
++    } else {
++      PUSH_ERROR_AND_RETURN("`kilogramsPerUnit` isn't a floating-point value.");
++    }
+   } else if (varname == "timeCodesPerSecond") {
+     DCOUT("ty = " << var.type_name());
+     if (auto pv = var.get_value<float>()) {
+@@ -3016,8 +3097,19 @@ bool AsciiParser::ParseStageMeta(std::pair<ListEditQual, MetaVariable> *out) {
+   // std::cout << "varname = `" << varname << "`\n";
+ 
+   if (!IsStageMeta(varname)) {
+-    PUSH_ERROR_AND_RETURN("Unsupported or invalid/empty variable name `" +
+-                          varname + "` for Stage metadatum");
++    PUSH_WARN("Ignoring unknown Stage Metadata variable: " + varname + "\n");
++    if (!SkipWhitespaceAndNewline()) {
++      return false;
++    }
++    if (!Expect('=')) {
++      PUSH_ERROR_AND_RETURN("`=` expected.");
++      return false;
++    }
++    if (!SkipMetaValueLiteral()) {
++      PUSH_ERROR_AND_RETURN("Failed to skip unknown Stage Metadata value.");
++      return false;
++    }
++    return true;
+   }
+ 
+   if (!SkipWhitespaceAndNewline()) {
+@@ -3108,17 +3200,15 @@ AsciiParser::ParsePrimMeta() {
+   SkipWhitespace();
+ 
+   if (!registered_meta) {
+-    // parse as string until newline
+-
+-    std::string content;
+-    if (!ReadUntilNewline(&content)) {
+-      PUSH_ERROR("Failed to parse unregistered Prim metadata.");
++    // Unknown prim meta (e.g. plugin dict `Usd_DCE_Params = { ... }`).
++    // Skip the full literal so multi-line dictionaries do not break the parse.
++    PUSH_WARN("Ignoring unknown Prim Metadata variable: " + varname + "\n");
++    if (!SkipMetaValueLiteral()) {
++      PUSH_ERROR("Failed to skip unregistered Prim metadata value.");
+       return nonstd::nullopt;
+     }
+-
+     MetaVariable var;
+-    var.set_value(varname, content);
+-
++    var.set_value(varname, std::string(""));
+     return std::make_pair(qual, var);
+   } else {
+     if (auto pv = GetPrimMetaDefinition(varname)) {
+diff --git a/src/ascii-parser.hh b/src/ascii-parser.hh
+index 1daa07203..fd6dc23b6 100644
+--- a/src/ascii-parser.hh
++++ b/src/ascii-parser.hh
+@@ -88,6 +88,7 @@ class AsciiParser {
+     value::StringData doc;                    // 'doc' or 'documentation'
+     nonstd::optional<Axis> upAxis;            // not specified = nullopt
+     nonstd::optional<double> metersPerUnit;
++    nonstd::optional<double> kilogramsPerUnit;  // UsdPhysics stage mass metric
+     nonstd::optional<double> timeCodesPerSecond;
+     nonstd::optional<double> startTimeCode;
+     nonstd::optional<double> endTimeCode;
+@@ -695,6 +696,10 @@ class AsciiParser {
+   // read until newline
+   bool ReadUntilNewline(std::string *str);
+ 
++  /// Skip a USDA literal after `=` (scalar / string / @asset@ / {dict} / [array]).
++  /// Used to ignore unknown stage/prim metadata without failing the whole parse.
++  bool SkipMetaValueLiteral();
++
+ 
+   /// Parse magic
+   /// #usda FLOAT
+diff --git a/src/pprinter.cc b/src/pprinter.cc
+index 3ae0e8b23..f06758894 100644
+--- a/src/pprinter.cc
++++ b/src/pprinter.cc
+@@ -2162,6 +2162,18 @@ std::string to_string(const APISchemas::APIName &name) {
+       s = "Preliminary_PhysicsMaterialAPI";
+       break;
+     }
++    case APISchemas::APIName::PhysicsCollisionAPI: {
++      s = "PhysicsCollisionAPI";
++      break;
++    }
++    case APISchemas::APIName::PhysicsRigidBodyAPI: {
++      s = "PhysicsRigidBodyAPI";
++      break;
++    }
++    case APISchemas::APIName::PhysicsMaterialAPI: {
++      s = "PhysicsMaterialAPI";
++      break;
++    }
+   }
+ 
+   return s;
+diff --git a/src/prim-types.hh b/src/prim-types.hh
+index 632c82bb9..6d159b967 100644
+--- a/src/prim-types.hh
++++ b/src/prim-types.hh
+@@ -919,11 +919,16 @@ struct APISchemas {
+     // usdSkel
+     SkelBindingAPI,      // "SkelBindingAPI"
+     
+-    // USDZ AR extensions
++    // USDZ AR extensions (Apple WWDC20 Preliminary_* schemas)
+     Preliminary_AnchoringAPI,
+     Preliminary_PhysicsColliderAPI,
+     Preliminary_PhysicsMaterialAPI,
+     Preliminary_PhysicsRigidBodyAPI,
++
++    // Official OpenUSD UsdPhysics applied API schemas (distinct from Preliminary_*)
++    PhysicsCollisionAPI,
++    PhysicsRigidBodyAPI,
++    PhysicsMaterialAPI,
+   };
+ 
+   ListEditQual listOpQual{ListEditQual::ResetToExplicit};  // must be 'prepend'
+@@ -4219,6 +4224,8 @@ struct LayerMetas {
+                // https://graphics.pixar.com/usd/dev/api/group___usd_geom_up_axis__group.html#gaf16b05f297f696c58a086dacc1e288b5
+   value::token defaultPrim;                               // prim node name
+   TypedAttributeWithFallback<double> metersPerUnit{1.0};  // default [m]
++  // UsdPhysics stage mass metric (OpenUSD usdPhysics). Optional; default 1.0 kg/unit when unread.
++  nonstd::optional<double> kilogramsPerUnit;
+   TypedAttributeWithFallback<double> timeCodesPerSecond{
+       24.0};  // default 24 fps
+   TypedAttributeWithFallback<double> framesPerSecond{24.0};
+diff --git a/src/usda-reader.cc b/src/usda-reader.cc
+index d7f0676e8..cd375c83f 100644
+--- a/src/usda-reader.cc
++++ b/src/usda-reader.cc
+@@ -656,6 +656,9 @@ class USDAReader::Impl {
+           if (metas.metersPerUnit) {
+             _stage.metas().metersPerUnit = metas.metersPerUnit.value();
+           }
++          if (metas.kilogramsPerUnit) {
++            _stage.metas().kilogramsPerUnit = metas.kilogramsPerUnit.value();
++          }
+ 
+           if (metas.timeCodesPerSecond) {
+             _stage.metas().timeCodesPerSecond =
+@@ -737,6 +740,12 @@ class USDAReader::Impl {
+                          "Preliminary_PhysicsRigidBodyAPI"),
+           std::make_pair(APISchemas::APIName::Preliminary_PhysicsColliderAPI,
+                          "Preliminary_PhysicsColliderAPI"),
++          std::make_pair(APISchemas::APIName::PhysicsMaterialAPI,
++                         "PhysicsMaterialAPI"),
++          std::make_pair(APISchemas::APIName::PhysicsRigidBodyAPI,
++                         "PhysicsRigidBodyAPI"),
++          std::make_pair(APISchemas::APIName::PhysicsCollisionAPI,
++                         "PhysicsCollisionAPI"),
+           std::make_pair(APISchemas::APIName::Preliminary_AnchoringAPI,
+                          "Preliminary_AnchoringAPI"),
+           std::make_pair(APISchemas::APIName::LightAPI,
+diff --git a/src/usdc-reader.cc b/src/usdc-reader.cc
+index a967aa073..4fcf7756a 100644
+--- a/src/usdc-reader.cc
++++ b/src/usdc-reader.cc
+@@ -626,6 +626,12 @@ nonstd::expected<APISchemas, std::string> USDCReader::Impl::ToAPISchemas(
+       return APISchemas::APIName::Preliminary_PhysicsMaterialAPI;
+     } else if (tok.str() == "Preliminary_PhysicsRigidBodyAPI") {
+       return APISchemas::APIName::Preliminary_PhysicsRigidBodyAPI;
++    } else if (tok.str() == "PhysicsCollisionAPI") {
++      return APISchemas::APIName::PhysicsCollisionAPI;
++    } else if (tok.str() == "PhysicsMaterialAPI") {
++      return APISchemas::APIName::PhysicsMaterialAPI;
++    } else if (tok.str() == "PhysicsRigidBodyAPI") {
++      return APISchemas::APIName::PhysicsRigidBodyAPI;
+     } else {
+       return nonstd::nullopt;
+     }
+@@ -1546,6 +1552,14 @@ bool USDCReader::Impl::ReconstrcutStageMeta(
+             fv.second.type_name() + "'");
+       }
+       DCOUT("metersPerUnit = " << metas->metersPerUnit.get_value());
++    } else if (fv.first == "kilogramsPerUnit") {
++      if (auto vf = fv.second.get_value<float>()) {
++        metas->kilogramsPerUnit = double(vf.value());
++      } else if (auto vd = fv.second.get_value<double>()) {
++        metas->kilogramsPerUnit = vd.value();
++      } else {
++        PUSH_WARN("`kilogramsPerUnit` ignored (not float/double)");
++      }
+     } else if (fv.first == "timeCodesPerSecond") {
+       if (auto vf = fv.second.get_value<float>()) {
+         metas->timeCodesPerSecond = double(vf.value());

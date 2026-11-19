@@ -88,9 +88,13 @@ bool IsLightType(const std::string &ty) {
 
 bool IsPhysicsApi(lightusd::APISchemas::APIName n) {
     using N = lightusd::APISchemas::APIName;
+    // Apple USDZ Preliminary_* and OpenUSD UsdPhysics Physics*API are distinct schemas.
     return n == N::Preliminary_PhysicsRigidBodyAPI ||
            n == N::Preliminary_PhysicsColliderAPI ||
-           n == N::Preliminary_PhysicsMaterialAPI;
+           n == N::Preliminary_PhysicsMaterialAPI ||
+           n == N::PhysicsRigidBodyAPI ||
+           n == N::PhysicsCollisionAPI ||
+           n == N::PhysicsMaterialAPI;
 }
 
 const char *PhysicsApiName(lightusd::APISchemas::APIName n) {
@@ -102,6 +106,12 @@ const char *PhysicsApiName(lightusd::APISchemas::APIName n) {
         return "Preliminary_PhysicsColliderAPI";
     case N::Preliminary_PhysicsMaterialAPI:
         return "Preliminary_PhysicsMaterialAPI";
+    case N::PhysicsRigidBodyAPI:
+        return "PhysicsRigidBodyAPI";
+    case N::PhysicsCollisionAPI:
+        return "PhysicsCollisionAPI";
+    case N::PhysicsMaterialAPI:
+        return "PhysicsMaterialAPI";
     default:
         return nullptr;
     }
@@ -140,21 +150,57 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
         acc.skipped.push_back(std::string("curves:") + path);
     }
 
-    if (prim.metas().apiSchemas) {
+    if (prim.metas().references.has_value() || prim.metas().payload.has_value()) {
+        acc.skipped.push_back(std::string("composition:payload_or_reference:") + path);
+    }
+
+    {
         std::ostringstream apis;
         bool firstApi = true;
         bool anyPhys = false;
-        for (const auto &pair : prim.metas().apiSchemas->names) {
-            const char *pn = PhysicsApiName(pair.first);
-            if (pn == nullptr && !IsPhysicsApi(pair.first)) {
-                continue;
+        if (prim.metas().apiSchemas) {
+            for (const auto &pair : prim.metas().apiSchemas->names) {
+                const char *pn = PhysicsApiName(pair.first);
+                if (pn == nullptr && !IsPhysicsApi(pair.first)) {
+                    continue;
+                }
+                anyPhys = true;
+                if (!firstApi) {
+                    apis << ',';
+                }
+                firstApi = false;
+                apis << '"' << (pn ? pn : "PhysicsAPI") << '"';
             }
-            anyPhys = true;
-            if (!firstApi) {
-                apis << ',';
+        }
+        // Fallback: authored physics:* props without apiSchemas recognition.
+        if (!anyPhys) {
+            const lightusd::GPrim *gprim = nullptr;
+            if (const auto *c = prim.as<lightusd::GeomCube>()) {
+                gprim = c;
+            } else if (const auto *s = prim.as<lightusd::GeomSphere>()) {
+                gprim = s;
+            } else if (const auto *y = prim.as<lightusd::GeomCylinder>()) {
+                gprim = y;
+            } else if (const auto *o = prim.as<lightusd::GeomCone>()) {
+                gprim = o;
+            } else if (const auto *a = prim.as<lightusd::GeomCapsule>()) {
+                gprim = a;
+            } else if (const auto *m = prim.as<lightusd::GeomMesh>()) {
+                gprim = m;
             }
-            firstApi = false;
-            apis << '"' << (pn ? pn : "PhysicsAPI") << '"';
+            if (gprim != nullptr) {
+                for (const auto &prop : gprim->props) {
+                    if (prop.first.size() >= 8 && prop.first.compare(0, 8, "physics:") == 0) {
+                        anyPhys = true;
+                        if (!firstApi) {
+                            apis << ',';
+                        }
+                        firstApi = false;
+                        apis << "\"physics:properties\"";
+                        break;
+                    }
+                }
+            }
         }
         if (anyPhys) {
             if (!acc.firstPhys) {
@@ -328,6 +374,9 @@ std::string BuildSceneCategoryJson(
     if (std::isfinite(meta.metersPerUnit)) {
         json << ",\"metersPerUnit\":" << meta.metersPerUnit;
     }
+    if (stage.metas().kilogramsPerUnit.has_value()) {
+        json << ",\"kilogramsPerUnit\":" << stage.metas().kilogramsPerUnit.value();
+    }
     if (std::isfinite(meta.timeCodesPerSecond)) {
         json << ",\"timeCodesPerSecond\":" << meta.timeCodesPerSecond;
     }
@@ -409,7 +458,8 @@ void EmitUsdCategorySidecars(
         const std::string &pFile,
         const lightusd::Stage &stage,
         const lightusd::tydra::RenderScene &render_scene,
-        const lightusd::tydra::SceneMetadata &sceneMeta) {
+        const lightusd::tydra::SceneMetadata &sceneMeta,
+        const std::vector<std::string> *extraSkipped) {
     if (pScene == nullptr) {
         return;
     }
@@ -426,6 +476,11 @@ void EmitUsdCategorySidecars(
     StageWalkAccum acc;
     for (const auto &root : stage.root_prims()) {
         WalkPrim(root, acc);
+    }
+    if (extraSkipped != nullptr) {
+        for (const auto &note : *extraSkipped) {
+            acc.skipped.push_back(note);
+        }
     }
 
     EmitMeshSidecars(pScene, render_scene);

@@ -156,3 +156,45 @@ TEST_F(utUSDImport, categorySidecarsS1toS8Test) {
     EXPECT_NE(nullptr, std::strstr(sj, "\"composition\""));
     EXPECT_NE(nullptr, std::strstr(sj, "\"skipped\""));
 }
+
+// Host probe: UsdGeom Cube physics USDA must tessellate into aiMesh (not empty-mesh fail).
+// Fixture also authors kilogramsPerUnit (stripped for TinyUSDZ) like Pixar usdPhysicsBoxOnBox.
+TEST_F(utUSDImport, gprimPhysicsTessellationTest) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarGprimPhysics/SidecarGprimPhysics.usda",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    EXPECT_GE(scene->mNumMeshes, 2u);
+    EXPECT_NE(nullptr, scene->mRootNode);
+    EXPECT_NE(0, aiSceneHasPhysicsSidecar(scene));
+    const aiPhysicsSidecar *phys = aiGetPhysicsSidecar(scene);
+    ASSERT_NE(nullptr, phys);
+    ASSERT_NE(nullptr, phys->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "USD_physics_rigid"));
+    EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "PhysicsRigidBodyAPI"));
+    ASSERT_NE(nullptr, scene->mMetaData);
+    aiString sceneJson;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
+    // kilogramsPerUnit kept via TinyUSDZ (not Assimp ASCII strip).
+    EXPECT_NE(nullptr, std::strstr(sceneJson.C_Str(), "kilogramsPerUnit"));
+}
+
+// Host probe: payload/reference + unknown plugin dict meta -> incomplete, honest skipped[].
+TEST_F(utUSDImport, payloadCompositionHonestyTest) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarPayloadHonesty/SidecarPayloadHonesty.usda",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    EXPECT_NE(nullptr, scene->mRootNode);
+    EXPECT_EQ(0u, scene->mNumMeshes);
+    EXPECT_NE(0u, scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE);
+    ASSERT_NE(nullptr, scene->mMetaData);
+    aiString sceneJson;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
+    const char *sj = sceneJson.C_Str();
+    EXPECT_NE(nullptr, std::strstr(sj, "composition:payload_or_reference"));
+    // Unknown Usd_DCE_Params is ignored by TinyUSDZ (not Assimp-stripped).
+    EXPECT_EQ(nullptr, std::strstr(sj, "sanitized:stripped"));
+}
