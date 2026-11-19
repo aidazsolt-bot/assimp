@@ -1,0 +1,93 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    timeCodesPerSecond = 24
+    startTimeCode = 0
+    endTimeCode = 10
+    doc = "Assimp USD S1-S8 sidecar category fixture"
+)
+
+def Xform "World" (
+    kind = "component"
+)
+{
+    def Mesh "Proxy"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (0, 1)] (
+            interpolation = "vertex"
+        )
+        color3f[] primvars:displayColor = [(0.8, 0.2, 0.1)] (
+            interpolation = "constant"
+        )
+        rel material:binding = </World/PreviewMat>
+    }
+
+    def Material "PreviewMat"
+    {
+        token outputs:surface.connect = </World/PreviewMat/PreviewSurface.outputs:surface>
+
+        def Shader "PreviewSurface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.8, 0.2, 0.1)
+            float inputs:metallic = 0.1
+            float inputs:roughness = 0.4
+            float inputs:opacity = 1
+            float inputs:ior = 1.5
+            float inputs:clearcoat = 0.2
+            float inputs:clearcoatRoughness = 0.1
+            token outputs:surface
+        }
+    }
+
+    def Camera "MainCam"
+    {
+        float focalLength = 50
+        float2 clippingRange = (0.1, 1000)
+    }
+
+    def DistantLight "KeyLight" (
+        prepend apiSchemas = ["LightAPI"]
+    )
+    {
+        float inputs:intensity = 1
+    }
+
+    def Xform "RigidBody" (
+        prepend apiSchemas = ["Preliminary_PhysicsRigidBodyAPI", "Preliminary_PhysicsColliderAPI"]
+    )
+    {
+        def Cube "Collider"
+        {
+            double size = 1
+        }
+    }
+
+    def PointInstancer "Scatter"
+    {
+        point3f[] positions = [(0, 0, 0), (2, 0, 0)]
+        int[] protoIndices = [0, 0]
+        rel prototypes = </World/Proxy>
+    }
+
+    def Volume "DensityVolume"
+    {
+        def OpenVDBAsset "density"
+        {
+            asset filePath = @./density.vdb@
+        }
+    }
+
+    def BasisCurves "HairGuide"
+    {
+        int[] curveVertexCounts = [2]
+        point3f[] points = [(0, 0, 0), (0, 1, 0)]
+        uniform token type = "linear"
+    }
+}

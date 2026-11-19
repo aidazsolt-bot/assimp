@@ -41,10 +41,14 @@ Copyright (c) 2006-2026, assimp team
 #include "UnitTestPCH.h"
 
 #include "AbstractImportExportBase.h"
+#include <assimp/commonMetaData.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 #include <assimp/Exporter.hpp>
 #include <assimp/Importer.hpp>
+#include <assimp/metadata.h>
+#include <cstring>
 
 using namespace ::Assimp;
 
@@ -88,3 +92,67 @@ TEST_F(utUSDImport, singleAnimationTest) {
 
 // Note: Add multi-animation test once supported by USD
 // See https://github.com/lighttransport/tinyusdz/issues/122 for details.
+
+TEST_F(utUSDImport, sceneTimingSidecarS0Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarSceneTiming/SidecarSceneTiming.usda",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    aiString format;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SOURCE_FORMAT, format));
+    EXPECT_STREQ("usda", format.C_Str());
+
+    aiString json;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, json));
+    const char *j = json.C_Str();
+    EXPECT_NE(nullptr, std::strstr(j, "\"schemaVersion\":1"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"format\":\"usda\""));
+    EXPECT_NE(nullptr, std::strstr(j, "\"upAxis\":\"Z\""));
+    EXPECT_NE(nullptr, std::strstr(j, "\"metersPerUnit\":0.01"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"timeCodesPerSecond\":30"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"startTimeCode\":1"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"endTimeCode\":48"));
+}
+
+TEST_F(utUSDImport, categorySidecarsS1toS8Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarCategories/SidecarCategories.usda",
+            0);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    EXPECT_NE(0, aiSceneHasMeshSidecar(scene));
+    ASSERT_GE(scene->mNumMeshes, 1u);
+    const aiMeshSidecar *meshSc = aiGetMeshSidecar(scene, 0);
+    ASSERT_NE(nullptr, meshSc);
+    ASSERT_NE(nullptr, meshSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(meshSc->mExtensionsJson, "\"primvars\""));
+
+    EXPECT_NE(0, aiSceneHasMaterialSidecar(scene));
+    ASSERT_GE(scene->mNumMaterials, 1u);
+    const aiMaterialSidecar *matSc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, matSc);
+    ASSERT_NE(nullptr, matSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "UsdPreviewSurface"));
+
+    // Physics API schemas on fixture RigidBody
+    EXPECT_NE(0, aiSceneHasPhysicsSidecar(scene));
+    const aiPhysicsSidecar *phys = aiGetPhysicsSidecar(scene);
+    ASSERT_NE(nullptr, phys);
+    ASSERT_NE(nullptr, phys->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "USD_physics_rigid"));
+
+    aiString sceneJson;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
+    const char *sj = sceneJson.C_Str();
+    EXPECT_NE(nullptr, std::strstr(sj, "\"cameras\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"lights\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"pointInstancers\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"volumes\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"composition\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"skipped\""));
+}
