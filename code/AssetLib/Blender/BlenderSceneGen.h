@@ -86,32 +86,8 @@ template <> void Structure :: Convert<SubsurfModifierData> (
     ) const
 ;
 
-template <> void Structure :: Convert<ClothModifierData> (
-    ClothModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
 template <> void Structure :: Convert<GenericModifierData> (
     GenericModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<SoftbodyModifierData> (
-    SoftbodyModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<SmokeModifierData> (
-    SmokeModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<FluidsimModifierData> (
-    FluidsimModifierData& dest,
     const FileDatabase& db
     ) const
 ;

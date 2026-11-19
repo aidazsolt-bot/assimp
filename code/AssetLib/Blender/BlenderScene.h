@@ -603,42 +603,7 @@ struct Lamp final : ElemBase {
 // -------------------------------------------------------------------------------
 struct ModifierData final : ElemBase {
     enum ModifierType {
-        eModifierType_None = 0,
-        eModifierType_Subsurf,
-        eModifierType_Lattice,
-        eModifierType_Curve,
-        eModifierType_Build,
-        eModifierType_Mirror,
-        eModifierType_Decimate,
-        eModifierType_Wave,
-        eModifierType_Armature,
-        eModifierType_Hook,
-        eModifierType_Softbody,
-        eModifierType_Boolean,
-        eModifierType_Array,
-        eModifierType_EdgeSplit,
-        eModifierType_Displace,
-        eModifierType_UVProject,
-        eModifierType_Smooth,
-        eModifierType_Cast,
-        eModifierType_MeshDeform,
-        eModifierType_ParticleSystem,
-        eModifierType_ParticleInstance,
-        eModifierType_Explode,
-        eModifierType_Cloth,
-        eModifierType_Collision,
-        eModifierType_Bevel,
-        eModifierType_Shrinkwrap,
-        eModifierType_Fluidsim,
-        eModifierType_Mask,
-        eModifierType_SimpleDeform,
-        eModifierType_Multires,
-        eModifierType_Surface,
-        eModifierType_Smoke,
-        eModifierType_ShapeKey,
-        // Explicit values from blender.git DNA_modifier_types.h (gaps omitted).
-        eModifierType_Fluid = 56, // Mantaflow Fluid (replaces legacy Smoke/Fluidsim for new files)
-        eModifierType_Nodes = 57 // Geometry Nodes (often owns Cloth/Soft sims in Blender 3+)
+#include "BlenderModifierEnum.inc"
     };
 
     std::shared_ptr<ElemBase> next WARN;
@@ -655,12 +620,7 @@ struct SharedModifierData : ElemBase {
 };
 
 // ------------------------------------------------------------------------------------------------
-/** Presence / inventory hulls for physics modifiers (DNA converters registered). */
-struct ClothModifierData final : SharedModifierData {};
-struct SoftbodyModifierData final : SharedModifierData {};
-struct SmokeModifierData final : SharedModifierData {};
-struct FluidsimModifierData final : SharedModifierData {};
-/** Fallback hull so unknown *ModifierData still chains Object.modifiers ListBase. */
+/** Hull for every blender *ModifierData DNA type except Subsurf/Mirror/Fluid (specialized). */
 struct GenericModifierData final : SharedModifierData {};
 
 /** Subset of blender DNA FluidDomainSettings - cache paths for Host Flow/VDB. */
