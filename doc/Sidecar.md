@@ -233,7 +233,19 @@ fields stay at WARN defaults. Assimp does not run the Blender depsgraph.
 Fixture: `test/models/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend`.
 Test: `utBlenderImporter.sceneTimingSidecarS0Test`.
 
-Further BLEND slices (Principled bag, NLA/Action anim sidecar, Physics
-`BLEND_physics_*`) land on `feature/blend-sidecar` - see RenderAssimp
-`docs/ASSIMP_REQUEST_sidecars_blend_usd.md` and
-`docs/ASSIMP_REQUEST_physics_sidecar_blend.md`.
+### BLEND S1-S8 category bags (`feature/blend-sidecar`)
+
+| Slice | Channel | Contents |
+|---|---|---|
+| S1 | `aiMeshSidecar.mExtensionsJson` | `customDataLayers[]` (vertex/loop domain, type, name) |
+| S2 | (skipped when empty) | Action/NLA not mapped yet -> listed in `skipped` |
+| S3 | `aiMaterialSidecar` | `BLEND_shader` name bag (typed Principled stays on `aiMaterial`) |
+| S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` inventory |
+| S5 | `aiPhysicsSidecar` | Rigidbody DNA pointer not mapped -> `skipped`; KHR-shaped when DNA lands |
+| S6 | `aiPhysicsSidecar` | `BLEND_physics_softbody/cloth/fluid/smoke` from modifier inventory |
+| S7 | `SceneSidecarJson` | `volumes[]` / `pointInstancers[]` placeholders |
+| S8 | `SceneSidecarJson` | `skipped[]` (full nodegraph, Action/NLA, rigidbody pointer) |
+
+Fixture: `test/models/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend`.
+Tests: `utBlenderImporter.sceneTimingSidecarS0Test`, `categorySidecarsS1toS8Test`.
+See also `docs/ASSIMP_REQUEST_physics_sidecar_blend.md`.

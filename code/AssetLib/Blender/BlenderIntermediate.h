@@ -50,6 +50,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderDNA.h"
 #include "BlenderScene.h"
 #include <deque>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <assimp/material.h>
 
 struct aiTexture;
@@ -170,6 +173,20 @@ namespace Blender {
 
         // original file data
         const FileDatabase& db;
+
+        // Parallel to meshes[]: CustomData/primvar JSON for aiMeshSidecar (S1).
+        std::vector<std::string> meshSidecarJson;
+
+        // Physics modifier inventory (S5/S6) - filled while walking objects.
+        std::ostringstream physicsSoftNodes;
+        std::ostringstream physicsClothNodes;
+        std::ostringstream physicsFluidNodes;
+        std::ostringstream physicsSmokeNodes;
+        bool physicsSoftFirst{ true };
+        bool physicsClothFirst{ true };
+        bool physicsFluidFirst{ true };
+        bool physicsSmokeFirst{ true };
+        std::vector<std::string> skippedCategories;
     };
 #if defined(_MSC_VER) && _MSC_VER < 1900
 #   pragma warning(default:4351)

@@ -269,3 +269,39 @@ TEST(utBlenderImporter, sceneTimingSidecarS0Test) {
     EXPECT_NE(nullptr, std::strstr(j, "\"endTimeCode\":"));
     EXPECT_NE(nullptr, std::strstr(j, "\"framesPerSecond\":"));
 }
+
+TEST(utBlenderImporter, categorySidecarsS1toS8Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend",
+            0);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    // S1 mesh CustomData inventory (may be empty layers array, but bag present)
+    EXPECT_NE(0, aiSceneHasMeshSidecar(scene));
+    ASSERT_GE(scene->mNumMeshes, 1u);
+    const aiMeshSidecar *meshSc = aiGetMeshSidecar(scene, 0);
+    ASSERT_NE(nullptr, meshSc);
+    ASSERT_NE(nullptr, meshSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(meshSc->mExtensionsJson, "customDataLayers"));
+
+    // S3 material bag
+    EXPECT_NE(0, aiSceneHasMaterialSidecar(scene));
+    ASSERT_GE(scene->mNumMaterials, 1u);
+    const aiMaterialSidecar *matSc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, matSc);
+    ASSERT_NE(nullptr, matSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "BLEND_shader"));
+
+    // S4 cameras/lights + S8 skipped in scene JSON
+    aiString sceneJson;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
+    const char *sj = sceneJson.C_Str();
+    EXPECT_NE(nullptr, std::strstr(sj, "\"cameras\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"lights\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"skipped\""));
+
+    // Default cube fixture has no Soft/Cloth/Fluid modifiers -> physics sidecar absent
+    EXPECT_EQ(0, aiSceneHasPhysicsSidecar(scene));
+}
