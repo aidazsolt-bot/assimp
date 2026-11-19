@@ -17,7 +17,7 @@
     "ArmatureModifierData",
     "HookModifierData",
     "SoftbodyModifierData",
-    "ClothModifierData",
+    /* ClothModifierData: specialized converter (sim_parms). */
     "CollisionModifierData",
     "SurfaceModifierData",
     "BooleanModifierData",

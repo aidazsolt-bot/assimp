@@ -116,6 +116,36 @@ template <> void Structure :: Convert<RigidBodyOb> (
     ) const
 ;
 
+template <> void Structure :: Convert<RigidBodyCon> (
+    RigidBodyCon& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ClothSimSettings> (
+    ClothSimSettings& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ClothModifierData> (
+    ClothModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ParticleSettings> (
+    ParticleSettings& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ParticleSystem> (
+    ParticleSystem& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<MFace> (
     MFace& dest,
     const FileDatabase& db
