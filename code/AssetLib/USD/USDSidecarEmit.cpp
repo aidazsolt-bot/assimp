@@ -18,6 +18,7 @@ All rights reserved.
 #include <climits>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -73,6 +74,9 @@ struct StageWalkAccum {
     std::ostringstream volumes;
     std::ostringstream instancers;
     std::ostringstream physicsNodes;
+    std::ostringstream physicsJoints;
+    std::ostringstream physicsMaterials;
+    std::ostringstream physicsFilters;
     std::ostringstream composition;
     std::vector<std::string> skipped;
     bool firstCam{ true };
@@ -80,10 +84,66 @@ struct StageWalkAccum {
     bool firstVol{ true };
     bool firstInst{ true };
     bool firstPhys{ true };
+    bool firstJoint{ true };
+    bool firstPhysMat{ true };
+    bool firstFilter{ true };
 };
+
+bool TryFloatProp(const std::map<std::string, lightusd::Property> &props, const char *key, double &out) {
+    auto it = props.find(key);
+    if (it == props.end() || !it->second.is_attribute()) {
+        return false;
+    }
+    const auto &attr = it->second.get_attribute();
+    if (auto f = attr.get_value<float>()) {
+        out = double(*f);
+        return true;
+    }
+    if (auto d = attr.get_value<double>()) {
+        out = *d;
+        return true;
+    }
+    return false;
+}
+
+const lightusd::GPrim *AsGPrim(const lightusd::Prim &prim) {
+    if (const auto *c = prim.as<lightusd::GeomCube>()) {
+        return c;
+    }
+    if (const auto *s = prim.as<lightusd::GeomSphere>()) {
+        return s;
+    }
+    if (const auto *y = prim.as<lightusd::GeomCylinder>()) {
+        return y;
+    }
+    if (const auto *o = prim.as<lightusd::GeomCone>()) {
+        return o;
+    }
+    if (const auto *a = prim.as<lightusd::GeomCapsule>()) {
+        return a;
+    }
+    if (const auto *m = prim.as<lightusd::GeomMesh>()) {
+        return m;
+    }
+    if (const auto *p = prim.as<lightusd::GeomPoints>()) {
+        return p;
+    }
+    if (const auto *pi = prim.as<lightusd::PointInstancer>()) {
+        return pi;
+    }
+    return nullptr;
+}
 
 bool IsLightType(const std::string &ty) {
     return ty.find("Light") != std::string::npos;
+}
+
+bool IsPhysicsJointType(const std::string &ty) {
+    return ty.find("Joint") != std::string::npos;
+}
+
+bool IsPhysicsCollisionGroupType(const std::string &ty) {
+    return ty.find("CollisionGroup") != std::string::npos;
 }
 
 bool IsPhysicsApi(lightusd::APISchemas::APIName n) {
@@ -139,13 +199,60 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
             acc.volumes << ',';
         }
         acc.firstVol = false;
-        acc.volumes << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path) << "\",\"type\":\"" << JsonEscape(ty) << "\"}";
-    } else if (ty == "PointInstancer") {
+        // TinyUSDZ Volume/OpenVDBAsset are not full Prim type-traits; emit path + type.
+        // filePath may appear as custom prop on some authored stages via GPrim fallback below.
+        acc.volumes << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
+                    << "\",\"type\":\"" << JsonEscape(ty) << "\"";
+        if (const lightusd::GPrim *gp = AsGPrim(prim)) {
+            auto it = gp->props.find("filePath");
+            if (it == gp->props.end()) {
+                it = gp->props.find("field:filePath");
+            }
+            if (it != gp->props.end() && it->second.is_attribute()) {
+                if (auto s = it->second.get_attribute().get_value<std::string>()) {
+                    acc.volumes << ",\"filePath\":\"" << JsonEscape(*s) << '"';
+                }
+            }
+        }
+        acc.volumes << '}';
+    } else if (ty == "PointInstancer" || ty == "Points") {
         if (!acc.firstInst) {
             acc.instancers << ',';
         }
         acc.firstInst = false;
-        acc.instancers << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path) << "\"}";
+        acc.instancers << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
+                       << "\",\"type\":\"" << JsonEscape(ty) << '"';
+        if (prim.as<lightusd::PointInstancer>() != nullptr) {
+            acc.instancers << ",\"kind\":\"PointInstancer\"";
+        } else if (prim.as<lightusd::GeomPoints>() != nullptr) {
+            acc.instancers << ",\"kind\":\"GeomPoints\"";
+        }
+        acc.instancers << '}';
+    } else if (IsPhysicsJointType(ty) || IsPhysicsJointType(name) || path.find("Joint") != std::string::npos) {
+        // TinyUSDZ may keep unknown UsdPhysics joint schemas as generic Prim; still inventory by name/path.
+        if (!acc.firstJoint) {
+            acc.physicsJoints << ',';
+        }
+        acc.firstJoint = false;
+        std::string jointTy = ty;
+        // TinyUSDZ often maps unknown UsdPhysics joint schemas to Model.
+        if (jointTy.empty() || jointTy == "Model" || jointTy == "Scope" || jointTy == "Xform") {
+            if (name.find("Distance") != std::string::npos || path.find("Distance") != std::string::npos) {
+                jointTy = "DistancePhysicsJoint";
+            } else {
+                jointTy = "PhysicsJoint";
+            }
+        }
+        acc.physicsJoints << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
+                          << "\",\"type\":\"" << JsonEscape(jointTy) << "\"}";
+    } else if (IsPhysicsCollisionGroupType(ty) || IsPhysicsCollisionGroupType(name) ||
+               path.find("CollisionGroup") != std::string::npos) {
+        if (!acc.firstFilter) {
+            acc.physicsFilters << ',';
+        }
+        acc.firstFilter = false;
+        acc.physicsFilters << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
+                           << "\",\"type\":\"" << JsonEscape(ty) << "\"}";
     } else if (ty == "BasisCurves" || ty == "NurbsCurves" || ty == "Hair") {
         acc.skipped.push_back(std::string("curves:") + path);
     }
@@ -158,13 +265,23 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
         std::ostringstream apis;
         bool firstApi = true;
         bool anyPhys = false;
+        bool isMaterialApiOnly = false;
+        bool isFilteredPairs = false;
         if (prim.metas().apiSchemas) {
             for (const auto &pair : prim.metas().apiSchemas->names) {
                 const char *pn = PhysicsApiName(pair.first);
+                // FilteredPairs / CollisionGroup may arrive as unknown API name strings in metas;
+                // also detect via type name above. Unknown enum values are skipped by PhysicsApiName.
                 if (pn == nullptr && !IsPhysicsApi(pair.first)) {
                     continue;
                 }
                 anyPhys = true;
+                if (pn && (std::strcmp(pn, "PhysicsMaterialAPI") == 0 ||
+                           std::strcmp(pn, "Preliminary_PhysicsMaterialAPI") == 0)) {
+                    isMaterialApiOnly = true;
+                } else {
+                    isMaterialApiOnly = false;
+                }
                 if (!firstApi) {
                     apis << ',';
                 }
@@ -172,43 +289,63 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
                 apis << '"' << (pn ? pn : "PhysicsAPI") << '"';
             }
         }
+        const lightusd::GPrim *gprim = AsGPrim(prim);
         // Fallback: authored physics:* props without apiSchemas recognition.
-        if (!anyPhys) {
-            const lightusd::GPrim *gprim = nullptr;
-            if (const auto *c = prim.as<lightusd::GeomCube>()) {
-                gprim = c;
-            } else if (const auto *s = prim.as<lightusd::GeomSphere>()) {
-                gprim = s;
-            } else if (const auto *y = prim.as<lightusd::GeomCylinder>()) {
-                gprim = y;
-            } else if (const auto *o = prim.as<lightusd::GeomCone>()) {
-                gprim = o;
-            } else if (const auto *a = prim.as<lightusd::GeomCapsule>()) {
-                gprim = a;
-            } else if (const auto *m = prim.as<lightusd::GeomMesh>()) {
-                gprim = m;
-            }
-            if (gprim != nullptr) {
-                for (const auto &prop : gprim->props) {
-                    if (prop.first.size() >= 8 && prop.first.compare(0, 8, "physics:") == 0) {
-                        anyPhys = true;
-                        if (!firstApi) {
-                            apis << ',';
-                        }
-                        firstApi = false;
-                        apis << "\"physics:properties\"";
-                        break;
+        if (!anyPhys && gprim != nullptr) {
+            for (const auto &prop : gprim->props) {
+                if (prop.first.size() >= 8 && prop.first.compare(0, 8, "physics:") == 0) {
+                    anyPhys = true;
+                    if (!firstApi) {
+                        apis << ',';
                     }
+                    firstApi = false;
+                    apis << "\"physics:properties\"";
+                    break;
                 }
             }
         }
-        if (anyPhys) {
+        // apiSchemas token string may include FilteredPairs even when enum lacks it - scan raw?
+        (void)isFilteredPairs;
+
+        if (anyPhys && isMaterialApiOnly && !IsPhysicsJointType(ty)) {
+            if (!acc.firstPhysMat) {
+                acc.physicsMaterials << ',';
+            }
+            acc.firstPhysMat = false;
+            acc.physicsMaterials << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
+                                 << "\",\"apiSchemas\":[" << apis.str() << "]";
+            if (gprim) {
+                double fr = 0, rst = 0;
+                if (TryFloatProp(gprim->props, "physics:staticFriction", fr) ||
+                        TryFloatProp(gprim->props, "physics:dynamicFriction", fr)) {
+                    acc.physicsMaterials << ",\"friction\":" << fr;
+                }
+                if (TryFloatProp(gprim->props, "physics:restitution", rst)) {
+                    acc.physicsMaterials << ",\"restitution\":" << rst;
+                }
+            }
+            acc.physicsMaterials << '}';
+        } else if (anyPhys) {
             if (!acc.firstPhys) {
                 acc.physicsNodes << ',';
             }
             acc.firstPhys = false;
             acc.physicsNodes << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
-                             << "\",\"apiSchemas\":[" << apis.str() << "]}";
+                             << "\",\"apiSchemas\":[" << apis.str() << "]";
+            if (gprim) {
+                double mass = 0, fr = 0, rst = 0;
+                if (TryFloatProp(gprim->props, "physics:mass", mass) || TryFloatProp(gprim->props, "mass", mass)) {
+                    acc.physicsNodes << ",\"mass\":" << mass;
+                }
+                if (TryFloatProp(gprim->props, "physics:staticFriction", fr) ||
+                        TryFloatProp(gprim->props, "physics:dynamicFriction", fr)) {
+                    acc.physicsNodes << ",\"friction\":" << fr;
+                }
+                if (TryFloatProp(gprim->props, "physics:restitution", rst)) {
+                    acc.physicsNodes << ",\"restitution\":" << rst;
+                }
+            }
+            acc.physicsNodes << '}';
         }
     }
 
@@ -346,12 +483,38 @@ void EmitAnimSidecars(aiScene *scene, const lightusd::tydra::RenderScene &rs) {
 }
 
 void EmitPhysicsSidecar(aiScene *scene, const StageWalkAccum &acc, const char *formatTok) {
-    if (acc.firstPhys) {
+    if (acc.firstPhys && acc.firstJoint && acc.firstPhysMat && acc.firstFilter) {
         return;
     }
     std::ostringstream json;
-    json << "{\"schemaVersion\":1,\"source\":{\"format\":\"" << formatTok
-         << "\"},\"USD_physics_rigid\":{\"nodes\":[" << acc.physicsNodes.str() << "]}}";
+    json << "{\"schemaVersion\":1,\"source\":{\"format\":\"" << formatTok << "\"";
+    json << "},\"USD_physics_rigid\":{";
+    bool needComma = false;
+    if (!acc.firstPhys) {
+        json << "\"nodes\":[" << acc.physicsNodes.str() << ']';
+        needComma = true;
+    }
+    if (!acc.firstJoint) {
+        if (needComma) {
+            json << ',';
+        }
+        json << "\"joints\":[" << acc.physicsJoints.str() << ']';
+        needComma = true;
+    }
+    if (!acc.firstPhysMat) {
+        if (needComma) {
+            json << ',';
+        }
+        json << "\"materials\":[" << acc.physicsMaterials.str() << ']';
+        needComma = true;
+    }
+    if (!acc.firstFilter) {
+        if (needComma) {
+            json << ',';
+        }
+        json << "\"collisionGroups\":[" << acc.physicsFilters.str() << ']';
+    }
+    json << "}}";
     auto *sc = new aiPhysicsSidecar();
     sc->mExtensionsJson = DupJson(json.str(), sc->mExtensionsJsonLength);
     AttachPhysicsSidecar(scene, sc);
