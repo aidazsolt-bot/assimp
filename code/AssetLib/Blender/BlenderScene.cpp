@@ -77,6 +77,8 @@ void Structure ::Convert<Object>(
     ReadFieldPtr<ErrorPolicy_Warn>(dest.dup_group, "*dup_group", db);
     ReadFieldPtr<ErrorPolicy_Fail>(dest.data, "*data", db);
     ReadField<ErrorPolicy_Igno>(dest.modifiers, "modifiers", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.soft, "*soft", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_object, "*rigidbody_object", db);
 
     db.reader->IncPtr(size);
 }
@@ -209,6 +211,85 @@ void Structure ::Convert<SubsurfModifierData>(
     ReadField<ErrorPolicy_Igno>(dest.renderLevels, "renderLevels", db);
     ReadField<ErrorPolicy_Igno>(dest.flags, "flags", db);
 
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<ClothModifierData>(
+        ClothModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<SoftbodyModifierData>(
+        SoftbodyModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<SmokeModifierData>(
+        SmokeModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<FluidsimModifierData>(
+        FluidsimModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<FluidDomainSettings>(
+        FluidDomainSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.cache_frame_start, "cache_frame_start", db);
+    ReadField<ErrorPolicy_Igno>(dest.cache_frame_end, "cache_frame_end", db);
+    ReadField<ErrorPolicy_Igno>(dest.cache_type, "cache_type", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.cache_directory, "cache_directory", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<FluidModifierData>(
+        FluidModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.domain, "*domain", db);
+    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<SoftBody>(
+        SoftBody &dest,
+        const FileDatabase &db) const {
+    (void)dest;
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<RigidBodyOb>(
+        RigidBodyOb &dest,
+        const FileDatabase &db) const {
+    (void)dest;
     db.reader->IncPtr(size);
 }
 
@@ -879,6 +960,14 @@ void DNA::RegisterConverters() {
     converters["MTex"] = DNA::FactoryPair(&Structure::Allocate<MTex>, &Structure::Convert<MTex>);
     converters["TFace"] = DNA::FactoryPair(&Structure::Allocate<TFace>, &Structure::Convert<TFace>);
     converters["SubsurfModifierData"] = DNA::FactoryPair(&Structure::Allocate<SubsurfModifierData>, &Structure::Convert<SubsurfModifierData>);
+    converters["ClothModifierData"] = DNA::FactoryPair(&Structure::Allocate<ClothModifierData>, &Structure::Convert<ClothModifierData>);
+    converters["SoftbodyModifierData"] = DNA::FactoryPair(&Structure::Allocate<SoftbodyModifierData>, &Structure::Convert<SoftbodyModifierData>);
+    converters["SmokeModifierData"] = DNA::FactoryPair(&Structure::Allocate<SmokeModifierData>, &Structure::Convert<SmokeModifierData>);
+    converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);
+    converters["FluidModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidModifierData>, &Structure::Convert<FluidModifierData>);
+    converters["FluidDomainSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidDomainSettings>, &Structure::Convert<FluidDomainSettings>);
+    converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
+    converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
     converters["MFace"] = DNA::FactoryPair(&Structure::Allocate<MFace>, &Structure::Convert<MFace>);
     converters["Lamp"] = DNA::FactoryPair(&Structure::Allocate<Lamp>, &Structure::Convert<Lamp>);
     converters["MDeformWeight"] = DNA::FactoryPair(&Structure::Allocate<MDeformWeight>, &Structure::Convert<MDeformWeight>);
