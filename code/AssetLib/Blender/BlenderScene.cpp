@@ -216,48 +216,12 @@ void Structure ::Convert<SubsurfModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ClothModifierData>(
-        ClothModifierData &dest,
-        const FileDatabase &db) const {
-    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
-    db.reader->IncPtr(size);
-}
-
-//--------------------------------------------------------------------------------
-template <>
 void Structure ::Convert<GenericModifierData>(
         GenericModifierData &dest,
         const FileDatabase &db) const {
     // Only the ModifierData header (next/type/name) - enough to walk the list
     // and classify by dest.modifier.type for physics inventory.
     ReadField<ErrorPolicy_Warn>(dest.modifier, "modifier", db);
-    db.reader->IncPtr(size);
-}
-
-//--------------------------------------------------------------------------------
-template <>
-void Structure ::Convert<SoftbodyModifierData>(
-        SoftbodyModifierData &dest,
-        const FileDatabase &db) const {
-    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
-    db.reader->IncPtr(size);
-}
-
-//--------------------------------------------------------------------------------
-template <>
-void Structure ::Convert<SmokeModifierData>(
-        SmokeModifierData &dest,
-        const FileDatabase &db) const {
-    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
-    db.reader->IncPtr(size);
-}
-
-//--------------------------------------------------------------------------------
-template <>
-void Structure ::Convert<FluidsimModifierData>(
-        FluidsimModifierData &dest,
-        const FileDatabase &db) const {
-    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
     db.reader->IncPtr(size);
 }
 
@@ -971,13 +935,18 @@ void DNA::RegisterConverters() {
     converters["MTex"] = DNA::FactoryPair(&Structure::Allocate<MTex>, &Structure::Convert<MTex>);
     converters["TFace"] = DNA::FactoryPair(&Structure::Allocate<TFace>, &Structure::Convert<TFace>);
     converters["SubsurfModifierData"] = DNA::FactoryPair(&Structure::Allocate<SubsurfModifierData>, &Structure::Convert<SubsurfModifierData>);
-    converters["ClothModifierData"] = DNA::FactoryPair(&Structure::Allocate<ClothModifierData>, &Structure::Convert<ClothModifierData>);
-    converters["SoftbodyModifierData"] = DNA::FactoryPair(&Structure::Allocate<SoftbodyModifierData>, &Structure::Convert<SoftbodyModifierData>);
-    converters["SmokeModifierData"] = DNA::FactoryPair(&Structure::Allocate<SmokeModifierData>, &Structure::Convert<SmokeModifierData>);
-    converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);
     converters["FluidModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidModifierData>, &Structure::Convert<FluidModifierData>);
     converters["FluidDomainSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidDomainSettings>, &Structure::Convert<FluidDomainSettings>);
     converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
+    {
+        // All blender.git *ModifierData DNA names except Subsurf/Mirror/Fluid (specialized).
+        static const char *const kGenericModifierDnaNames[] = {
+#include "BlenderModifierDnaNames.inc"
+        };
+        for (const char *dnaName : kGenericModifierDnaNames) {
+            converters[dnaName] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
+        }
+    }
     converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
     converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
     converters["MFace"] = DNA::FactoryPair(&Structure::Allocate<MFace>, &Structure::Convert<MFace>);
