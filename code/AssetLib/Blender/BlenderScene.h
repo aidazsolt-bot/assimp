@@ -652,10 +652,118 @@ struct FluidModifierData final : SharedModifierData {
             time(0.f), type(0) {}
 };
 
-/** Object.soft presence (Soft Body is often not a Softbody modifier). */
-struct SoftBody final : ElemBase {};
-/** Object.rigidbody_object presence (full KHR map later). */
-struct RigidBodyOb final : ElemBase {};
+/** Subset of DNA SoftBody (Object.soft). */
+struct SoftBody final : ElemBase {
+    float nodemass WARN;
+    float grav WARN;
+    float mediafrict WARN;
+    float goalspring WARN;
+    float goalfrict WARN;
+    float mingoal WARN;
+    float maxgoal WARN;
+    float defgoal WARN;
+    float inspring WARN;
+    float infrict WARN;
+
+    SoftBody() :
+            nodemass(1.f), grav(9.8f), mediafrict(0.5f), goalspring(0.5f), goalfrict(0.f),
+            mingoal(0.f), maxgoal(1.f), defgoal(0.7f), inspring(0.5f), infrict(0.5f) {}
+};
+
+/** Subset of DNA RigidBodyOb (Object.rigidbody_object). */
+struct RigidBodyOb final : ElemBase {
+    enum Type { Type_Active = 0, Type_Passive = 1 };
+    enum Shape {
+        Shape_Box = 0,
+        Shape_Sphere = 1,
+        Shape_Capsule = 2,
+        Shape_Cylinder = 3,
+        Shape_Cone = 4,
+        Shape_ConvexH = 5,
+        Shape_Trimesh = 6,
+        Shape_Compound = 7
+    };
+    enum Flag {
+        Flag_Kinematic = 1 << 0,
+        Flag_Disabled = 1 << 5
+    };
+
+    short type WARN;
+    short shape WARN;
+    int flag WARN;
+    int col_groups WARN;
+    float mass WARN;
+    float friction WARN;
+    float restitution WARN;
+    float margin WARN;
+    float lin_damping WARN;
+    float ang_damping WARN;
+
+    RigidBodyOb() :
+            type(Type_Active), shape(Shape_Box), flag(0), col_groups(0),
+            mass(1.f), friction(0.5f), restitution(0.f), margin(0.04f),
+            lin_damping(0.04f), ang_damping(0.1f) {}
+};
+
+/** Subset of DNA RigidBodyCon (Object.rigidbody_constraint). */
+struct RigidBodyCon final : ElemBase {
+    short type WARN;
+    float breaking_threshold WARN;
+
+    RigidBodyCon() :
+            type(0), breaking_threshold(10.f) {}
+};
+
+/** Subset of DNA ClothSimSettings (*ClothModifierData.sim_parms). */
+struct ClothSimSettings final : ElemBase {
+    float mass WARN;
+    float shear WARN;
+    float bending WARN;
+    float tension WARN;
+    float gravity[3] WARN;
+    float goalspring WARN;
+    float goalfrict WARN;
+    int stepsPerFrame WARN;
+
+    ClothSimSettings() :
+            mass(0.3f), shear(5.f), bending(0.5f), tension(15.f),
+            goalspring(1.f), goalfrict(0.f), stepsPerFrame(5) {
+        gravity[0] = 0.f;
+        gravity[1] = 0.f;
+        gravity[2] = -9.81f;
+    }
+};
+
+/** Cloth modifier with sim settings pointer (specialized vs Generic hull). */
+struct ClothModifierData final : SharedModifierData {
+    std::shared_ptr<ClothSimSettings> sim_parms;
+};
+
+/** Subset of DNA ParticleSettings. */
+struct ParticleSettings final : ElemBase {
+    ID id WARN;
+    int type WARN;
+    int totpart WARN;
+    float mass WARN;
+    float size WARN;
+    float lifetime WARN;
+    float sta WARN;
+    float end WARN;
+
+    ParticleSettings() :
+            type(0), totpart(0), mass(1.f), size(0.05f), lifetime(50.f), sta(1.f), end(200.f) {}
+};
+
+/** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
+struct ParticleSystem final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<ParticleSettings> part;
+    char name[64] WARN;
+
+    ParticleSystem() {
+        name[0] = '\0';
+    }
+};
 
 // -------------------------------------------------------------------------------
 struct SubsurfModifierData final : SharedModifierData {
@@ -729,8 +837,10 @@ struct Object final : ElemBase {
     std::shared_ptr<ElemBase> data FAIL;
 
     ListBase modifiers;
+    ListBase particlesystem; // ParticleSystem
     std::shared_ptr<SoftBody> soft;
     std::shared_ptr<RigidBodyOb> rigidbody_object;
+    std::shared_ptr<RigidBodyCon> rigidbody_constraint;
 
     Object() :
             type(Type_EMPTY), parent(nullptr) {
