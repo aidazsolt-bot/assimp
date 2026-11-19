@@ -64,22 +64,15 @@ static bool match4(StreamReaderAny &stream, const char *string) {
     return (tmp[0] == string[0] && tmp[1] == string[1] && tmp[2] == string[2] && tmp[3] == string[3]);
 }
 
-// DNA section markers (TYPE/TLEN/STRC) are preceded by 0-3 pad bytes. The marker
-// itself is not always 4-byte aligned (seen in Blender 3.0x DNA). Try the marker
-// at the current offset, then after each skipped pad byte.
-static void expectDnaMarker(StreamReaderAny &stream, const char *marker, const char *error) {
-    for (int skipped = 0; skipped < 4; ++skipped) {
-        const size_t pos = stream.GetCurrentPos();
-        if (match4(stream, marker)) {
-            return;
-        }
-        stream.SetCurrentPos(pos);
-        if (skipped == 3) {
-            break;
-        }
+// Blender dna_genfile pad_up_4: align relative to the SDNA buffer base, NOT the
+// absolute file offset. DNA1 bodies can start at file_off%4 != 0 while markers
+// remain 4-aligned within the SDNA blob (see Blender dna_genfile.cc).
+static void padDnaSection(StreamReaderAny &stream, size_t dnaBase) {
+    const size_t rel = stream.GetCurrentPos() - dnaBase;
+    const size_t pad = (4u - (rel & 3u)) & 3u;
+    for (size_t i = 0; i < pad; ++i) {
         stream.GetI1();
     }
-    throw DeadlyImportError(error);
 }
 
 struct Type {
@@ -92,6 +85,7 @@ void DNAParser::Parse() {
     StreamReaderAny &stream = *db.reader;
     DNA &dna = db.dna;
 
+    const size_t dnaBase = stream.GetCurrentPos();
     if (!match4(stream, "SDNA")) {
         throw DeadlyImportError("BlenderDNA: Expected SDNA chunk");
     }
@@ -109,7 +103,10 @@ void DNAParser::Parse() {
     }
 
     // type dictionary
-    expectDnaMarker(stream, "TYPE", "BlenderDNA: Expected TYPE field");
+    padDnaSection(stream, dnaBase);
+    if (!match4(stream, "TYPE")) {
+        throw DeadlyImportError("BlenderDNA: Expected TYPE field");
+    }
 
     std::vector<Type> types(stream.GetI4());
     for (Type &s : types) {
@@ -119,14 +116,20 @@ void DNAParser::Parse() {
     }
 
     // type length dictionary
-    expectDnaMarker(stream, "TLEN", "BlenderDNA: Expected TLEN field");
+    padDnaSection(stream, dnaBase);
+    if (!match4(stream, "TLEN")) {
+        throw DeadlyImportError("BlenderDNA: Expected TLEN field");
+    }
 
     for (Type &s : types) {
         s.size = stream.GetI2();
     }
 
     // structures dictionary
-    expectDnaMarker(stream, "STRC", "BlenderDNA: Expected STRC field");
+    padDnaSection(stream, dnaBase);
+    if (!match4(stream, "STRC")) {
+        throw DeadlyImportError("BlenderDNA: Expected STRC field");
+    }
 
     size_t end = stream.GetI4(), fields = 0;
 
