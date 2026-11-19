@@ -53,8 +53,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderIntermediate.h"
 #include "BlenderModifier.h"
 #include <assimp/StringUtils.h>
+#include <assimp/commonMetaData.h>
 #include <assimp/importerdesc.h>
+#include <assimp/metadata.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 
 #include <assimp/MemoryIOWrapper.h>
 #include <assimp/StreamReader.h>
@@ -62,6 +65,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cctype>
 #include <memory>
+#include <sstream>
 #include <utility>
 
 // zlib is needed for compressed blend files
@@ -150,12 +154,19 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
             " (64bit: ", file.i64bit ? "true" : "false",
             ", little endian: ", file.little ? "true" : "false", ")");
 
+    char blenderVersionStr[8] = { 0 };
+    blenderVersionStr[0] = version[0];
+    blenderVersionStr[1] = '.';
+    blenderVersionStr[2] = version[1];
+    blenderVersionStr[3] = version[2];
+    blenderVersionStr[4] = '\0';
+
     ParseBlendFile(file, std::move(stream));
 
     Scene scene;
     ExtractScene(scene, file);
 
-    ConvertBlendFile(pScene, scene, file);
+    ConvertBlendFile(pScene, scene, file, blenderVersionStr);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -267,7 +278,8 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file) {
+void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file,
+        const char *blenderVersion) {
     ConversionData conv(file);
 
     aiNode *root = out->mRootNode = new aiNode("<BlenderRoot>");
@@ -345,6 +357,33 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     if (!out->mNumMeshes) {
         out->mFlags |= AI_SCENE_FLAGS_INCOMPLETE;
     }
+
+    // C0 scene timing / units (doc/Sidecar.md BLEND). Always emit bag when
+    // Scene DNA was loaded so host can tell "importer ran" vs missing file.
+    if (out->mMetaData == nullptr) {
+        out->mMetaData = new aiMetadata();
+    }
+    const float fpsDenom = (in.r.frs_sec_base > 0.f) ? in.r.frs_sec_base : 1.f;
+    const float fps = (fpsDenom != 0.f) ? (in.r.frs_sec / fpsDenom) : in.r.frs_sec;
+    const float metersPerUnit = (in.unit.scale_length > 0.f) ? in.unit.scale_length : 1.f;
+
+    std::ostringstream json;
+    json.setf(std::ios::fixed);
+    json.precision(9);
+    json << "{\"schemaVersion\":1,\"source\":{"
+         << "\"format\":\"blend\"";
+    if (blenderVersion != nullptr && blenderVersion[0] != '\0') {
+        json << ",\"generator\":\"Blender " << blenderVersion << '"';
+        out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(blenderVersion));
+    }
+    json << ",\"metersPerUnit\":" << metersPerUnit
+         << ",\"timeCodesPerSecond\":" << fps
+         << ",\"framesPerSecond\":" << fps
+         << ",\"startTimeCode\":" << static_cast<double>(in.r.sfra)
+         << ",\"endTimeCode\":" << static_cast<double>(in.r.efra)
+         << "}}";
+    out->mMetaData->Add(AI_METADATA_SCENE_SIDECAR_JSON, aiString(json.str()));
+    out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString("blend"));
 }
 
 // ------------------------------------------------------------------------------------------------

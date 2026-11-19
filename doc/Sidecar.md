@@ -198,3 +198,42 @@ Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_
 
 Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/` (generic `BodyDynamic0` /
 `BodyKinematic0` names only for local geometry; tests walk JSON structure).
+
+## BLEND scene timing / units (C0 / S0)
+
+No new C API. After `.blend` import, `aiScene::mMetaData` carries:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | `aiString` | UTF-8 JSON bag below |
+| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `blend` |
+| `AI_METADATA_SOURCE_FORMAT_VERSION` | `aiString` | Blender file version (`X.YZ`) when available |
+
+JSON shape (schemaVersion 1):
+
+```json
+{
+  "schemaVersion": 1,
+  "source": {
+    "format": "blend",
+    "generator": "Blender 2.69",
+    "metersPerUnit": 1.0,
+    "timeCodesPerSecond": 24.0,
+    "framesPerSecond": 24.0,
+    "startTimeCode": 1.0,
+    "endTimeCode": 250.0
+  }
+}
+```
+
+Source DNA: `Scene.r` (`RenderData` sfra/efra/frs_sec/frs_sec_base) and
+`Scene.unit` (`UnitSettings.scale_length` -> `metersPerUnit`). Missing DNA
+fields stay at WARN defaults. Assimp does not run the Blender depsgraph.
+
+Fixture: `test/models/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend`.
+Test: `utBlenderImporter.sceneTimingSidecarS0Test`.
+
+Further BLEND slices (Principled bag, NLA/Action anim sidecar, Physics
+`BLEND_physics_*`) land on `feature/blend-sidecar` - see RenderAssimp
+`docs/ASSIMP_REQUEST_sidecars_blend_usd.md` and
+`docs/ASSIMP_REQUEST_physics_sidecar_blend.md`.

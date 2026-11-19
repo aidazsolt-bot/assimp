@@ -41,10 +41,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "AbstractImportExportBase.h"
 #include "UnitTestPCH.h"
 
+#include <assimp/commonMetaData.h>
 #include <assimp/postprocess.h>
 #include <assimp/Importer.hpp>
+#include <assimp/metadata.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 #include <assimp/SpatialSort.h>
+#include <cstring>
 
 using namespace Assimp;
 
@@ -241,4 +245,27 @@ TEST_F(utBlenderImporterExporter, importBlendWithSubdivisionSurface) {
 
         EXPECT_TRUE(scene->mMeshes[0]->mVertices[spatialSortResult[0]].Equal(positionMesh1));
     }
+}
+
+TEST(utBlenderImporter, sceneTimingSidecarS0Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    aiString format;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SOURCE_FORMAT, format));
+    EXPECT_STREQ("blend", format.C_Str());
+
+    aiString json;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, json));
+    const char *j = json.C_Str();
+    EXPECT_NE(nullptr, std::strstr(j, "\"schemaVersion\":1"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"format\":\"blend\""));
+    EXPECT_NE(nullptr, std::strstr(j, "\"metersPerUnit\":"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"startTimeCode\":"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"endTimeCode\":"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"framesPerSecond\":"));
 }

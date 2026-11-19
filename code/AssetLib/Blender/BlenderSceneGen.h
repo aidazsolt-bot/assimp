@@ -152,6 +152,18 @@ template <> void Structure :: Convert<World> (
     ) const
 ;
 
+template <> void Structure :: Convert<RenderData> (
+    RenderData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<UnitSettings> (
+    UnitSettings& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<MLoopCol> (
     MLoopCol& dest,
     const FileDatabase& db
