@@ -64,6 +64,24 @@ static bool match4(StreamReaderAny &stream, const char *string) {
     return (tmp[0] == string[0] && tmp[1] == string[1] && tmp[2] == string[2] && tmp[3] == string[3]);
 }
 
+// DNA section markers (TYPE/TLEN/STRC) are preceded by 0-3 pad bytes. The marker
+// itself is not always 4-byte aligned (seen in Blender 3.0x DNA). Try the marker
+// at the current offset, then after each skipped pad byte.
+static void expectDnaMarker(StreamReaderAny &stream, const char *marker, const char *error) {
+    for (int skipped = 0; skipped < 4; ++skipped) {
+        const size_t pos = stream.GetCurrentPos();
+        if (match4(stream, marker)) {
+            return;
+        }
+        stream.SetCurrentPos(pos);
+        if (skipped == 3) {
+            break;
+        }
+        stream.GetI1();
+    }
+    throw DeadlyImportError(error);
+}
+
 struct Type {
     size_t size;
     std::string name;
@@ -91,11 +109,7 @@ void DNAParser::Parse() {
     }
 
     // type dictionary
-    for (; stream.GetCurrentPos() & 0x3; stream.GetI1())
-        ;
-    if (!match4(stream, "TYPE")) {
-        throw DeadlyImportError("BlenderDNA: Expected TYPE field");
-    }
+    expectDnaMarker(stream, "TYPE", "BlenderDNA: Expected TYPE field");
 
     std::vector<Type> types(stream.GetI4());
     for (Type &s : types) {
@@ -105,22 +119,14 @@ void DNAParser::Parse() {
     }
 
     // type length dictionary
-    for (; stream.GetCurrentPos() & 0x3; stream.GetI1())
-        ;
-    if (!match4(stream, "TLEN")) {
-        throw DeadlyImportError("BlenderDNA: Expected TLEN field");
-    }
+    expectDnaMarker(stream, "TLEN", "BlenderDNA: Expected TLEN field");
 
     for (Type &s : types) {
         s.size = stream.GetI2();
     }
 
     // structures dictionary
-    for (; stream.GetCurrentPos() & 0x3; stream.GetI1())
-        ;
-    if (!match4(stream, "STRC")) {
-        throw DeadlyImportError("BlenderDNA: Expected STRC field");
-    }
+    expectDnaMarker(stream, "STRC", "BlenderDNA: Expected STRC field");
 
     size_t end = stream.GetI4(), fields = 0;
 

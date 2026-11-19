@@ -89,6 +89,12 @@ TEST(utBlenderImporter, importBlenderDefault250) {
     ASSERT_NE(nullptr, scene);
 }
 
+TEST(utBlenderImporter, importBlenderDefault250ZstdCompressed) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/BLEND/BlenderDefault_250_zstd.blend", aiProcess_ValidateDataStructure);
+    EXPECT_NE(nullptr, scene);
+}
+
 TEST(utBlenderImporter, importBlenderDefault250Compressed) {
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/BLEND/BlenderDefault_250_Compressed.blend", aiProcess_ValidateDataStructure);

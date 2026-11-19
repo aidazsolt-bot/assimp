@@ -249,3 +249,15 @@ Test: `utBlenderImporter.sceneTimingSidecarS0Test`.
 Fixture: `test/models/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend`.
 Tests: `utBlenderImporter.sceneTimingSidecarS0Test`, `categorySidecarsS1toS8Test`.
 See also `docs/ASSIMP_REQUEST_physics_sidecar_blend.md`.
+
+### BLEND compressed containers + DNA (Host probe 2026-11-19)
+
+- Gzip (`.blend` with `1f 8b`) and **Zstandard** (`28 b5 2f fd`, Blender 3+ default,
+  often multi-frame) are decompressed in `ParseMagicToken` before DNA parse
+  (`ASSIMP_BLEND_SUPPORT_ZSTD`).
+- Fixture: `test/models/BLEND/BlenderDefault_250_zstd.blend`
+  (`utBlenderImporter.importBlenderDefault250ZstdCompressed`).
+- Empty `mesh->mat[]` slots are skipped in UV/texture mapping and `BuildMaterials`
+  (avoids SEGV on large fluid demos such as `lava_fluid-viscosity-demo.blend`).
+- Blender 3.0x DNA markers (`TYPE`/`TLEN`/`STRC`) may be preceded by 0-3 pad bytes
+  without the marker itself being 4-byte aligned; `DNAParser` accepts both layouts.
