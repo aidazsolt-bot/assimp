@@ -240,9 +240,9 @@ Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTE
 | S2 | `aiAnimationSidecar` | `USD_skel_channels[]`, `blendshapeWeights[]` when TinyUSDZ emits clips |
 | S3 | `aiMaterialSidecar` | `UsdPreviewSurface` remainder (diffuse/metallic/roughness/ior/clearcoat/…) |
 | S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
-| S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` from Physics/Preliminary apiSchemas and/or `physics:*` props |
+| S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` + optional `mass` from `physics:mass` |
 | S6 | (same physics bag) | Soft/cloth USD schemas recorded when present; else listed under `skipped` |
-| S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset`), `pointInstancers[]` |
+| S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset` + `filePath`/`fieldName` when authored), `pointInstancers[]` |
 | S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
 
 Host-probe hardening (2026-11-19):
