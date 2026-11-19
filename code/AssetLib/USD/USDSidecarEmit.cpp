@@ -20,6 +20,7 @@ All rights reserved.
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <map>
 #include <vector>
 
 namespace Assimp {
@@ -82,6 +83,50 @@ struct StageWalkAccum {
     bool firstPhys{ true };
 };
 
+bool TryAssetPathFromProp(const lightusd::Property &prop, std::string &outPath) {
+    if (!prop.is_attribute()) {
+        return false;
+    }
+    const lightusd::Attribute &attr = prop.get_attribute();
+    if (auto ap = attr.get_value<lightusd::value::AssetPath>()) {
+        outPath = ap->GetAssetPath();
+        return !outPath.empty();
+    }
+    lightusd::value::AssetPath ap;
+    if (attr.get_value(0.0, &ap)) {
+        outPath = ap.GetAssetPath();
+        return !outPath.empty();
+    }
+    return false;
+}
+
+std::string ExtractOpenVdbFilePath(const lightusd::Prim &prim) {
+    std::string path;
+    const auto &props = prim.props();
+    auto it = props.find("filePath");
+    if (it != props.end() && TryAssetPathFromProp(it->second, path)) {
+        return path;
+    }
+    return path;
+}
+
+bool TryFloatProp(const std::map<std::string, lightusd::Property> &props, const char *key, double &out) {
+    auto it = props.find(key);
+    if (it == props.end() || !it->second.is_attribute()) {
+        return false;
+    }
+    const auto &attr = it->second.get_attribute();
+    if (auto f = attr.get_value<float>()) {
+        out = double(*f);
+        return true;
+    }
+    if (auto d = attr.get_value<double>()) {
+        out = *d;
+        return true;
+    }
+    return false;
+}
+
 bool IsLightType(const std::string &ty) {
     return ty.find("Light") != std::string::npos;
 }
@@ -139,7 +184,21 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
             acc.volumes << ',';
         }
         acc.firstVol = false;
-        acc.volumes << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path) << "\",\"type\":\"" << JsonEscape(ty) << "\"}";
+        const std::string filePath = ExtractOpenVdbFilePath(prim);
+        acc.volumes << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
+                     << "\",\"type\":\"" << JsonEscape(ty) << '"';
+        if (!filePath.empty()) {
+            acc.volumes << ",\"filePath\":\"" << JsonEscape(filePath) << '"';
+        }
+        auto fit = prim.props().find("fieldName");
+        if (fit != prim.props().end() && fit->second.is_attribute()) {
+            if (auto tok = fit->second.get_attribute().get_value<lightusd::value::token>()) {
+                acc.volumes << ",\"fieldName\":\"" << JsonEscape(tok->str()) << '"';
+            } else if (auto s = fit->second.get_attribute().get_value<std::string>()) {
+                acc.volumes << ",\"fieldName\":\"" << JsonEscape(*s) << '"';
+            }
+        }
+        acc.volumes << '}';
     } else if (ty == "PointInstancer") {
         if (!acc.firstInst) {
             acc.instancers << ',';
@@ -208,7 +267,24 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
             }
             acc.firstPhys = false;
             acc.physicsNodes << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
-                             << "\",\"apiSchemas\":[" << apis.str() << "]}";
+                             << "\",\"apiSchemas\":[" << apis.str() << "]";
+            double mass = 0;
+            if (TryFloatProp(prim.props(), "physics:mass", mass) || TryFloatProp(prim.props(), "mass", mass)) {
+                acc.physicsNodes << ",\"mass\":" << mass;
+            } else if (const auto *cube = prim.as<lightusd::GeomCube>()) {
+                if (TryFloatProp(cube->props, "physics:mass", mass)) {
+                    acc.physicsNodes << ",\"mass\":" << mass;
+                }
+            } else if (const auto *sph = prim.as<lightusd::GeomSphere>()) {
+                if (TryFloatProp(sph->props, "physics:mass", mass)) {
+                    acc.physicsNodes << ",\"mass\":" << mass;
+                }
+            } else if (const auto *mesh = prim.as<lightusd::GeomMesh>()) {
+                if (TryFloatProp(mesh->props, "physics:mass", mass)) {
+                    acc.physicsNodes << ",\"mass\":" << mass;
+                }
+            }
+            acc.physicsNodes << '}';
         }
     }
 

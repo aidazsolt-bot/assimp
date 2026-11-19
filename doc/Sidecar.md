@@ -85,24 +85,19 @@ positions and attached via `AttachMeshSidecar`.
 Mesh- and primitive-level `extras` / `extensions` are serialized to JSON on the
 same mesh sidecar bag.
 
-### Material: unmapped extensions (iridescence, dispersion, diffuse transmission, …)
+### Material: `KHR_materials_iridescence`
 
-Extensions that already have complete typed `AI_MATKEY_*` mapping
-(transmission, volume, IOR, clearcoat, sheen, …) stay on `aiMaterial` only.
+Assimp does **not** yet write typed `AI_MATKEY_IRIDESCENCE_*` properties. Until
+that exists, the glTF2 importer attaches a material sidecar whose
+`mExtensionsJson` contains only keys **present in the source** (no Assimp
+defaults such as factor=0 / ior=1.3 when omitted; no non-finite floats).
 
-Unmapped material extensions go to `aiMaterialSidecar::mExtensionsJson` with
-**authored keys only** (no Assimp defaults). Path-resolved texture objects are
-emitted for iridescence and diffuse transmission (`path` = URI or `*N`).
-Other unmapped bags (e.g. `KHR_materials_volume_scatter`) are copied as authored JSON.
+Texture objects include a resolved `path` (same rules as `aiMaterial::GetTexture`:
+external URI or `*N` embedded). glTF `index` alone is never enough for the
+RenderAssimp pack. `texCoord` / transform `scale` are emitted only when authored.
 
 Fixtures: `test/models/glTF2/SidecarCustomAttr/`,
 `test/models/glTF2/SidecarIridescence/`.
-
-### Mesh: `KHR_gaussian_splatting`
-
-Typed payload: `aiGetGaussianSplat` (`doc/GaussianSplatting.md`). Extension meta
-JSON remains on the mesh sidecar; promoted attribute buffers are stripped from
-`mBuffers`.
 
 ### Animation: `KHR_animation_pointer`
 
@@ -245,10 +240,10 @@ Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTE
 | S2 | `aiAnimationSidecar` | `USD_skel_channels[]`, `blendshapeWeights[]` when TinyUSDZ emits clips |
 | S3 | `aiMaterialSidecar` | `UsdPreviewSurface` remainder (diffuse/metallic/roughness/ior/clearcoat/…) |
 | S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
-| S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` from Physics/Preliminary apiSchemas and/or `physics:*` props |
+| S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` + optional `mass` from `physics:mass` |
 | S6 | (same physics bag) | Soft/cloth USD schemas recorded when present; else listed under `skipped` |
-| S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset`), `pointInstancers[]` |
-| S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference) |
+| S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset` + `filePath`/`fieldName` when authored), `pointInstancers[]` |
+| S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
 
 Host-probe hardening (2026-11-19):
 
@@ -264,66 +259,8 @@ Tests: `utUSDImport.categorySidecarsS1toS8Test`, `gprimPhysicsTessellationTest`,
 `payloadCompositionHonestyTest`.
 Spec map: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.
 
-## BLEND scene timing / units (C0 / S0)
+### BLEND Zstandard (Blender 3+ default) — `feature/blend-sidecar`
 
-No new C API. After `.blend` import, `aiScene::mMetaData` carries:
-
-| Key | Type | Meaning |
-|---|---|---|
-| `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | `aiString` | UTF-8 JSON bag below |
-| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `blend` |
-| `AI_METADATA_SOURCE_FORMAT_VERSION` | `aiString` | Blender file version (`X.YZ`) when available |
-
-JSON shape (schemaVersion 1):
-
-```json
-{
-  "schemaVersion": 1,
-  "source": {
-    "format": "blend",
-    "generator": "Blender 2.69",
-    "metersPerUnit": 1.0,
-    "timeCodesPerSecond": 24.0,
-    "framesPerSecond": 24.0,
-    "startTimeCode": 1.0,
-    "endTimeCode": 250.0
-  }
-}
-```
-
-Source DNA: `Scene.r` (`RenderData` sfra/efra/frs_sec/frs_sec_base) and
-`Scene.unit` (`UnitSettings.scale_length` -> `metersPerUnit`). Missing DNA
-fields stay at WARN defaults. Assimp does not run the Blender depsgraph.
-
-Fixture: `test/models/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend`.
-Test: `utBlenderImporter.sceneTimingSidecarS0Test`.
-
-### BLEND S1-S8 category bags (`feature/blend-sidecar`)
-
-| Slice | Channel | Contents |
-|---|---|---|
-| S1 | `aiMeshSidecar.mExtensionsJson` | `customDataLayers[]` (vertex/loop domain, type, name) |
-| S2 | (skipped when empty) | Action/NLA not mapped yet -> listed in `skipped` |
-| S3 | `aiMaterialSidecar` | `BLEND_shader` name bag (typed Principled stays on `aiMaterial`) |
-| S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` inventory |
-| S5 | `aiPhysicsSidecar` | `BLEND_physics_rigidbody` presence from `Object.rigidbody_object` (KHR field map still open); else `skipped` |
-| S6 | `aiPhysicsSidecar` | Softbody/Cloth/Smoke/Fluidsim + Fluid=56 (cache) + Nodes=57 name-heuristic; Object.soft/rigidbody presence; GenericModifierData keeps ListBase intact |
-| S7 | `SceneSidecarJson` | `volumes[]` / `pointInstancers[]` placeholders |
-| S8 | `SceneSidecarJson` | `skipped[]` (full nodegraph, Action/NLA, rigidbody pointer) |
-
-Fixture: `test/models/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend`.
-Tests: `utBlenderImporter.sceneTimingSidecarS0Test`, `categorySidecarsS1toS8Test`.
-See also `docs/ASSIMP_REQUEST_physics_sidecar_blend.md`.
-
-### BLEND compressed containers + DNA (Host probe 2026-11-19)
-
-- Gzip (`.blend` with `1f 8b`) and **Zstandard** (`28 b5 2f fd`, Blender 3+ default,
-  often multi-frame) are decompressed in `ParseMagicToken` before DNA parse
-  (`ASSIMP_BLEND_SUPPORT_ZSTD`).
-- Fixture: `test/models/BLEND/BlenderDefault_250_zstd.blend`
-  (`utBlenderImporter.importBlenderDefault250ZstdCompressed`).
-- Empty `mesh->mat[]` slots are skipped in UV/texture mapping and `BuildMaterials`
-  (avoids SEGV on large fluid demos such as `lava_fluid-viscosity-demo.blend`).
-- DNA `TYPE`/`TLEN`/`STRC` padding follows Blender `pad_up_4` relative to the
-  **SDNA blob base** (not absolute file offset). DNA1 bodies can start at
-  `file_off % 4 != 0` while markers stay aligned inside the DNA payload.
+Blender 3+ often writes multi-frame **Zstandard** `.blend` (`28 b5 2f fd`) instead of gzip.
+Assimp decompresses the full ZSTD stream before DNA parse when built with ZSTD
+(`ASSIMP_BLEND_SUPPORT_ZSTD`). See commit on `feature/blend-sidecar`.
