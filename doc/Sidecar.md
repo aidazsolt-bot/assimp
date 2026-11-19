@@ -259,5 +259,6 @@ See also `docs/ASSIMP_REQUEST_physics_sidecar_blend.md`.
   (`utBlenderImporter.importBlenderDefault250ZstdCompressed`).
 - Empty `mesh->mat[]` slots are skipped in UV/texture mapping and `BuildMaterials`
   (avoids SEGV on large fluid demos such as `lava_fluid-viscosity-demo.blend`).
-- Blender 3.0x DNA markers (`TYPE`/`TLEN`/`STRC`) may be preceded by 0-3 pad bytes
-  without the marker itself being 4-byte aligned; `DNAParser` accepts both layouts.
+- DNA `TYPE`/`TLEN`/`STRC` padding follows Blender `pad_up_4` relative to the
+  **SDNA blob base** (not absolute file offset). DNA1 bodies can start at
+  `file_off % 4 != 0` while markers stay aligned inside the DNA payload.
