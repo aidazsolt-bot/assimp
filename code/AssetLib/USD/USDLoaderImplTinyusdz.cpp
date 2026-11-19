@@ -53,6 +53,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "tydra/scene-access.hh"
 #include "tydra/shader-network.hh"
 
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <sstream>
 
@@ -65,17 +67,82 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/StringUtils.h>
 #include <assimp/ai_assert.h>
 #include <assimp/anim.h>
+#include <assimp/commonMetaData.h>
 #include <assimp/fast_atof.h>
 #include <assimp/importerdesc.h>
 #include <assimp/DefaultLogger.hpp>
 #include <assimp/IOSystem.hpp>
 #include <assimp/Importer.hpp>
+#include <assimp/metadata.h>
+#include <assimp/sidecar.h>
 
 
 #include "../../../contrib/tinyusdz/assimp_tinyusdz_logging.inc"
 
 namespace {
     static constexpr char TAG[] = "tinyusdz loader";
+
+    const char *UsdSourceFormatToken(const std::string &pFile) {
+        if (Assimp::isUsdz(pFile)) {
+            return "usdz";
+        }
+        if (Assimp::isUsdc(pFile)) {
+            return "usdc";
+        }
+        if (Assimp::isUsda(pFile)) {
+            return "usda";
+        }
+        return "usd";
+    }
+
+    void AppendJsonDouble(std::ostringstream &os, const char *key, double value, bool &first) {
+        if (!std::isfinite(value)) {
+            return;
+        }
+        if (!first) {
+            os << ',';
+        }
+        first = false;
+        os << '"' << key << "\":" << value;
+    }
+
+    /// C0 scene timing / units bag (doc/Sidecar.md USD). No new public API.
+    void AttachUsdSceneTimingMetadata(aiScene *pScene, const std::string &pFile,
+            const lightusd::tydra::SceneMetadata &meta) {
+        if (pScene == nullptr) {
+            return;
+        }
+        if (pScene->mMetaData == nullptr) {
+            pScene->mMetaData = new aiMetadata();
+        }
+
+        const char *format = UsdSourceFormatToken(pFile);
+        std::ostringstream json;
+        json.setf(std::ios::fixed);
+        json.precision(9);
+        json << "{\"schemaVersion\":1,\"source\":{";
+        bool first = true;
+        json << "\"format\":\"" << format << '"';
+        first = false;
+        if (!meta.upAxis.empty()) {
+            json << ",\"upAxis\":\"" << meta.upAxis << '"';
+        }
+        AppendJsonDouble(json, "metersPerUnit", meta.metersPerUnit, first);
+        AppendJsonDouble(json, "timeCodesPerSecond", meta.timeCodesPerSecond, first);
+        AppendJsonDouble(json, "framesPerSecond", meta.framesPerSecond, first);
+        if (meta.startTimeCode) {
+            AppendJsonDouble(json, "startTimeCode", *meta.startTimeCode, first);
+        }
+        if (meta.endTimeCode) {
+            AppendJsonDouble(json, "endTimeCode", *meta.endTimeCode, first);
+        }
+        json << "}}";
+
+        const std::string jsonStr = json.str();
+        pScene->mMetaData->Add(AI_METADATA_SCENE_SIDECAR_JSON, aiString(jsonStr));
+        // Prefer package token over generic importer name for host inject.
+        pScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString(format));
+    }
 }
 
 namespace Assimp {
@@ -227,6 +294,29 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
     pScene->mRootNode = nodesRecursive(nullptr, render_scene.nodes[0], render_scene.skeletons);
 
     setupBlendShapes(render_scene, pScene, nameWExt);
+
+    // Prefer authored Stage metas when present; fall back to RenderScene meta.
+    lightusd::tydra::SceneMetadata sceneMeta = render_scene.meta;
+    {
+        const auto &sm = stage.metas();
+        const auto up = sm.upAxis.get_value();
+        if (up == lightusd::Axis::X) {
+            sceneMeta.upAxis = "X";
+        } else if (up == lightusd::Axis::Y) {
+            sceneMeta.upAxis = "Y";
+        } else if (up == lightusd::Axis::Z) {
+            sceneMeta.upAxis = "Z";
+        }
+        sceneMeta.metersPerUnit = sm.metersPerUnit.get_value();
+        sceneMeta.timeCodesPerSecond = sm.timeCodesPerSecond.get_value();
+        sceneMeta.framesPerSecond = sm.framesPerSecond.get_value();
+        sceneMeta.startTimeCode = sm.startTimeCode.get_value();
+        const double endTc = sm.endTimeCode.get_value();
+        if (std::isfinite(endTc)) {
+            sceneMeta.endTimeCode = endTc;
+        }
+    }
+    AttachUsdSceneTimingMetadata(pScene, pFile, sceneMeta);
 }
 
 void USDImporterImplTinyusdz::animations(const lightusd::tydra::RenderScene &render_scene, aiScene *pScene) {

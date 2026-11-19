@@ -83,6 +83,10 @@ struct aiScene;
 /** Scene metadata: present and true when physics sidecar JSON is attached. */
 #define AI_METADATA_PHYSICS_SIDECAR "HasPhysicsSidecar"
 
+/** Scene metadata: UTF-8 JSON bag for scene timing / units / source.format (C0).
+ *  See doc/Sidecar.md (BLEND / USD). Value type: aiString. */
+#define AI_METADATA_SCENE_SIDECAR_JSON "SceneSidecarJson"
+
 /** Component type for #aiSidecarBuffer::mComponentType (glTF-aligned). */
 enum aiSidecarComponentType {
     aiSidecarComponentType_Byte = 5120,

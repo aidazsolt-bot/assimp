@@ -41,10 +41,14 @@ Copyright (c) 2006-2026, assimp team
 #include "UnitTestPCH.h"
 
 #include "AbstractImportExportBase.h"
+#include <assimp/commonMetaData.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 #include <assimp/Exporter.hpp>
 #include <assimp/Importer.hpp>
+#include <assimp/metadata.h>
+#include <cstring>
 
 using namespace ::Assimp;
 
@@ -88,3 +92,27 @@ TEST_F(utUSDImport, singleAnimationTest) {
 
 // Note: Add multi-animation test once supported by USD
 // See https://github.com/lighttransport/tinyusdz/issues/122 for details.
+
+TEST_F(utUSDImport, sceneTimingSidecarS0Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarSceneTiming/SidecarSceneTiming.usda",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    aiString format;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SOURCE_FORMAT, format));
+    EXPECT_STREQ("usda", format.C_Str());
+
+    aiString json;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, json));
+    const char *j = json.C_Str();
+    EXPECT_NE(nullptr, std::strstr(j, "\"schemaVersion\":1"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"format\":\"usda\""));
+    EXPECT_NE(nullptr, std::strstr(j, "\"upAxis\":\"Z\""));
+    EXPECT_NE(nullptr, std::strstr(j, "\"metersPerUnit\":0.01"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"timeCodesPerSecond\":30"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"startTimeCode\":1"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"endTimeCode\":48"));
+}

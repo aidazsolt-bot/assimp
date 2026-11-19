@@ -198,3 +198,40 @@ Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_
 
 Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/` (generic `BodyDynamic0` /
 `BodyKinematic0` names only for local geometry; tests walk JSON structure).
+
+## USD scene timing / units (C0 / S0)
+
+No new C API. Stage metas are emitted on `aiScene::mMetaData`:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | `aiString` | UTF-8 JSON bag below |
+| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `usd` / `usda` / `usdc` / `usdz` |
+
+JSON shape (schemaVersion 1):
+
+```json
+{
+  "schemaVersion": 1,
+  "source": {
+    "format": "usda",
+    "upAxis": "Y|Z|X",
+    "metersPerUnit": 1.0,
+    "timeCodesPerSecond": 24.0,
+    "framesPerSecond": 24.0,
+    "startTimeCode": 1.0,
+    "endTimeCode": 100.0
+  }
+}
+```
+
+Source: TinyUSDZ `Stage::metas()` (preferred) / `RenderScene::meta`.
+Non-finite `endTimeCode` is omitted. Host uses this for Session frame loop;
+Assimp does not evaluate USD composition beyond the loaded stage snapshot.
+
+Fixture: `test/models/USD/SidecarSceneTiming/SidecarSceneTiming.usda`.
+Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTER`).
+
+Further USD slices (UsdSkel / PreviewSurface / UsdPhysics / UsdVol) land on
+`feature/usd-sidecar` as Mesh / Material / Anim / Physics sidecars - see
+RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.
