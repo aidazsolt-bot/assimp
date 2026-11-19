@@ -743,6 +743,27 @@ struct Base final : ElemBase {
 };
 
 // -------------------------------------------------------------------------------
+/** Subset of DNA RenderData - frame range / FPS for C0 scene sidecar. */
+struct RenderData final : ElemBase {
+    int sfra WARN; ///< Start frame
+    int efra WARN; ///< End frame
+    float frs_sec WARN; ///< Frames per second (numerator)
+    float frs_sec_base WARN; ///< Frames per second (denominator); 0 => treat as 1
+
+    RenderData() :
+            sfra(1), efra(250), frs_sec(24.f), frs_sec_base(1.f) {}
+};
+
+// -------------------------------------------------------------------------------
+/** Subset of DNA UnitSettings - scale_length for metersPerUnit mapping. */
+struct UnitSettings final : ElemBase {
+    float scale_length WARN;
+
+    UnitSettings() :
+            scale_length(1.f) {}
+};
+
+// -------------------------------------------------------------------------------
 struct Scene final : ElemBase {
     ID id FAIL;
 
@@ -752,6 +773,9 @@ struct Scene final : ElemBase {
     std::shared_ptr<Collection> master_collection WARN;
 
     ListBase base;
+
+    RenderData r WARN;
+    UnitSettings unit WARN;
 
     Scene() = default;
 };

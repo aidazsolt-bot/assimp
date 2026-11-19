@@ -546,6 +546,31 @@ void Structure ::Convert<World>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<RenderData>(
+        RenderData &dest,
+        const FileDatabase &db) const {
+
+    ReadField<ErrorPolicy_Warn>(dest.sfra, "sfra", db);
+    ReadField<ErrorPolicy_Warn>(dest.efra, "efra", db);
+    ReadField<ErrorPolicy_Warn>(dest.frs_sec, "frs_sec", db);
+    ReadField<ErrorPolicy_Warn>(dest.frs_sec_base, "frs_sec_base", db);
+
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<UnitSettings>(
+        UnitSettings &dest,
+        const FileDatabase &db) const {
+
+    ReadField<ErrorPolicy_Warn>(dest.scale_length, "scale_length", db);
+
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<MLoopCol>(
         MLoopCol &dest,
         const FileDatabase &db) const {
@@ -708,6 +733,8 @@ void Structure ::Convert<Scene>(
     ReadFieldPtr<ErrorPolicy_Warn>(dest.basact, "*basact", db);
     ReadFieldPtr<ErrorPolicy_Warn>(dest.master_collection, "*master_collection", db);
     ReadField<ErrorPolicy_Igno>(dest.base, "base", db);
+    ReadField<ErrorPolicy_Warn>(dest.r, "r", db);
+    ReadField<ErrorPolicy_Warn>(dest.unit, "unit", db);
 
     db.reader->IncPtr(size);
 }
@@ -863,6 +890,8 @@ void DNA::RegisterConverters() {
     converters["Mesh"] = DNA::FactoryPair(&Structure::Allocate<Mesh>, &Structure::Convert<Mesh>);
     converters["MDeformVert"] = DNA::FactoryPair(&Structure::Allocate<MDeformVert>, &Structure::Convert<MDeformVert>);
     converters["World"] = DNA::FactoryPair(&Structure::Allocate<World>, &Structure::Convert<World>);
+    converters["RenderData"] = DNA::FactoryPair(&Structure::Allocate<RenderData>, &Structure::Convert<RenderData>);
+    converters["UnitSettings"] = DNA::FactoryPair(&Structure::Allocate<UnitSettings>, &Structure::Convert<UnitSettings>);
     converters["MLoopCol"] = DNA::FactoryPair(&Structure::Allocate<MLoopCol>, &Structure::Convert<MLoopCol>);
     converters["MVert"] = DNA::FactoryPair(&Structure::Allocate<MVert>, &Structure::Convert<MVert>);
     converters["MEdge"] = DNA::FactoryPair(&Structure::Allocate<MEdge>, &Structure::Convert<MEdge>);

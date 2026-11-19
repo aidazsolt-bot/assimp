@@ -207,11 +207,16 @@ Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/` (generic `BodyDynamic0` 
 ## USD scene timing / units (C0 / S0)
 
 No new C API. Stage metas are emitted on `aiScene::mMetaData`:
+## BLEND scene timing / units (C0 / S0)
+
+No new C API. After `.blend` import, `aiScene::mMetaData` carries:
 
 | Key | Type | Meaning |
 |---|---|---|
 | `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | `aiString` | UTF-8 JSON bag below |
 | `AI_METADATA_SOURCE_FORMAT` | `aiString` | `usd` / `usda` / `usdc` / `usdz` |
+| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `blend` |
+| `AI_METADATA_SOURCE_FORMAT_VERSION` | `aiString` | Blender file version (`X.YZ`) when available |
 
 JSON shape (schemaVersion 1):
 
@@ -221,11 +226,14 @@ JSON shape (schemaVersion 1):
   "source": {
     "format": "usda",
     "upAxis": "Y|Z|X",
+    "format": "blend",
+    "generator": "Blender 2.69",
     "metersPerUnit": 1.0,
     "timeCodesPerSecond": 24.0,
     "framesPerSecond": 24.0,
     "startTimeCode": 1.0,
     "endTimeCode": 100.0
+    "endTimeCode": 250.0
   }
 }
 ```
@@ -253,3 +261,26 @@ Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTE
 Fixture: `test/models/USD/SidecarCategories/SidecarCategories.usda`.
 Test: `utUSDImport.categorySidecarsS1toS8Test`.
 Spec map: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.
+Source DNA: `Scene.r` (`RenderData` sfra/efra/frs_sec/frs_sec_base) and
+`Scene.unit` (`UnitSettings.scale_length` -> `metersPerUnit`). Missing DNA
+fields stay at WARN defaults. Assimp does not run the Blender depsgraph.
+
+Fixture: `test/models/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend`.
+Test: `utBlenderImporter.sceneTimingSidecarS0Test`.
+
+### BLEND S1-S8 category bags (`feature/blend-sidecar`)
+
+| Slice | Channel | Contents |
+|---|---|---|
+| S1 | `aiMeshSidecar.mExtensionsJson` | `customDataLayers[]` (vertex/loop domain, type, name) |
+| S2 | (skipped when empty) | Action/NLA not mapped yet -> listed in `skipped` |
+| S3 | `aiMaterialSidecar` | `BLEND_shader` name bag (typed Principled stays on `aiMaterial`) |
+| S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` inventory |
+| S5 | `aiPhysicsSidecar` | Rigidbody DNA pointer not mapped -> `skipped`; KHR-shaped when DNA lands |
+| S6 | `aiPhysicsSidecar` | `BLEND_physics_softbody/cloth/fluid/smoke` from modifier inventory |
+| S7 | `SceneSidecarJson` | `volumes[]` / `pointInstancers[]` placeholders |
+| S8 | `SceneSidecarJson` | `skipped[]` (full nodegraph, Action/NLA, rigidbody pointer) |
+
+Fixture: `test/models/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend`.
+Tests: `utBlenderImporter.sceneTimingSidecarS0Test`, `categorySidecarsS1toS8Test`.
+See also `docs/ASSIMP_REQUEST_physics_sidecar_blend.md`.

@@ -53,16 +53,117 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderIntermediate.h"
 #include "BlenderModifier.h"
 #include <assimp/StringUtils.h>
+#include <assimp/commonMetaData.h>
 #include <assimp/importerdesc.h>
+#include <assimp/metadata.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 
 #include <assimp/MemoryIOWrapper.h>
 #include <assimp/StreamReader.h>
 #include <assimp/StringComparison.h>
 
 #include <cctype>
+#include <cstring>
 #include <memory>
+#include <sstream>
 #include <utility>
+
+namespace {
+char *BlendDupJson(const std::string &s, size_t &outLen) {
+    outLen = s.size();
+    char *p = new char[outLen + 1];
+    std::memcpy(p, s.c_str(), outLen + 1);
+    return p;
+}
+
+std::string BlendJsonEscape(const std::string &in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) {
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string BuildBlendCustomDataLayersJson(const Assimp::Blender::Mesh *mesh) {
+    using namespace Assimp::Blender;
+    std::ostringstream json;
+    json << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"meshName\":\""
+         << BlendJsonEscape(mesh->id.name + 2) << "\",\"customDataLayers\":[";
+    bool first = true;
+    auto emitLayers = [&](const CustomData &cd, const char *domain) {
+        for (const auto &layer : cd.layers) {
+            if (!layer) {
+                continue;
+            }
+            if (!first) {
+                json << ',';
+            }
+            first = false;
+            json << "{\"domain\":\"" << domain << "\",\"type\":" << layer->type
+                 << ",\"name\":\"" << BlendJsonEscape(layer->name) << "\"}";
+        }
+    };
+    emitLayers(mesh->vdata, "vertex");
+    emitLayers(mesh->ldata, "loop");
+    json << "]}";
+    return json.str();
+}
+
+void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    if (obj == nullptr) {
+        return;
+    }
+    const char *objName = obj->id.name + 2;
+    const SharedModifierData *cur = static_cast<const SharedModifierData *>(obj->modifiers.first.get());
+    for (; cur; cur = static_cast<const SharedModifierData *>(cur->modifier.next.get())) {
+        const ModifierData &dat = cur->modifier;
+        std::ostringstream *stream = nullptr;
+        bool *firstFlag = nullptr;
+        const char *bagKey = nullptr;
+        switch (dat.type) {
+        case ModifierData::eModifierType_Softbody:
+            stream = &conv.physicsSoftNodes;
+            firstFlag = &conv.physicsSoftFirst;
+            bagKey = "softbody";
+            break;
+        case ModifierData::eModifierType_Cloth:
+            stream = &conv.physicsClothNodes;
+            firstFlag = &conv.physicsClothFirst;
+            bagKey = "cloth";
+            break;
+        case ModifierData::eModifierType_Fluidsim:
+            stream = &conv.physicsFluidNodes;
+            firstFlag = &conv.physicsFluidFirst;
+            bagKey = "fluid";
+            break;
+        case ModifierData::eModifierType_Smoke:
+            stream = &conv.physicsSmokeNodes;
+            firstFlag = &conv.physicsSmokeFirst;
+            bagKey = "smoke";
+            break;
+        default:
+            break;
+        }
+        if (stream == nullptr) {
+            continue;
+        }
+        if (!*firstFlag) {
+            *stream << ',';
+        }
+        *firstFlag = false;
+        *stream << "{\"name\":\"" << BlendJsonEscape(objName)
+                << "\",\"modifier\":\"" << BlendJsonEscape(dat.name)
+                << "\",\"type\":\"" << bagKey
+                << "\",\"settings\":{\"mode\":" << dat.mode << "}}";
+    }
+}
+} // namespace
 
 // zlib is needed for compressed blend files
 #ifndef ASSIMP_BUILD_NO_COMPRESSED_BLEND
@@ -150,12 +251,19 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
             " (64bit: ", file.i64bit ? "true" : "false",
             ", little endian: ", file.little ? "true" : "false", ")");
 
+    char blenderVersionStr[8] = { 0 };
+    blenderVersionStr[0] = version[0];
+    blenderVersionStr[1] = '.';
+    blenderVersionStr[2] = version[1];
+    blenderVersionStr[3] = version[2];
+    blenderVersionStr[4] = '\0';
+
     ParseBlendFile(file, std::move(stream));
 
     Scene scene;
     ExtractScene(scene, file);
 
-    ConvertBlendFile(pScene, scene, file);
+    ConvertBlendFile(pScene, scene, file, blenderVersionStr);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -267,7 +375,8 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file) {
+void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file,
+        const char *blenderVersion) {
     ConversionData conv(file);
 
     aiNode *root = out->mRootNode = new aiNode("<BlenderRoot>");
@@ -344,6 +453,121 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     // not a single mesh between them.
     if (!out->mNumMeshes) {
         out->mFlags |= AI_SCENE_FLAGS_INCOMPLETE;
+    }
+
+    // C0-S8 sidecars (doc/Sidecar.md BLEND). Always emit scene bag when Scene DNA loaded.
+    if (out->mMetaData == nullptr) {
+        out->mMetaData = new aiMetadata();
+    }
+    const float fpsDenom = (in.r.frs_sec_base > 0.f) ? in.r.frs_sec_base : 1.f;
+    const float fps = (fpsDenom != 0.f) ? (in.r.frs_sec / fpsDenom) : in.r.frs_sec;
+    const float metersPerUnit = (in.unit.scale_length > 0.f) ? in.unit.scale_length : 1.f;
+
+    // S1 mesh CustomData layers
+    for (unsigned int mi = 0; mi < out->mNumMeshes; ++mi) {
+        if (mi >= conv.meshSidecarJson.size() || conv.meshSidecarJson[mi].empty()) {
+            continue;
+        }
+        auto *sc = new aiMeshSidecar();
+        sc->mExtensionsJson = BlendDupJson(conv.meshSidecarJson[mi], sc->mExtensionsJsonLength);
+        AttachMeshSidecar(out, mi, sc);
+    }
+
+    // S3 material remainder bag (Principled factors live on aiMaterial; sidecar carries source tag)
+    for (unsigned int mati = 0; mati < out->mNumMaterials; ++mati) {
+        std::ostringstream mjson;
+        mjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"BLEND_shader\":{";
+        if (mati < conv.materials_raw.size() && conv.materials_raw[mati]) {
+            mjson << "\"name\":\"" << BlendJsonEscape(conv.materials_raw[mati]->id.name + 2) << '"';
+        }
+        mjson << "}}";
+        auto *msc = new aiMaterialSidecar();
+        msc->mExtensionsJson = BlendDupJson(mjson.str(), msc->mExtensionsJsonLength);
+        AttachMaterialSidecar(out, mati, msc);
+    }
+
+    // S5/S6 physics from modifiers (rigidbody DNA pointer not mapped yet -> skipped)
+    conv.skippedCategories.push_back("BLEND_physics_rigidbody_object_pointer");
+    conv.skippedCategories.push_back("BLEND_action_nla_animation_sidecar");
+    conv.skippedCategories.push_back("BLEND_shader_network_full_nodegraph");
+    const bool hasPhys = !conv.physicsSoftFirst || !conv.physicsClothFirst ||
+                         !conv.physicsFluidFirst || !conv.physicsSmokeFirst;
+    if (hasPhys) {
+        std::ostringstream pjson;
+        pjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"";
+        if (blenderVersion != nullptr && blenderVersion[0] != '\0') {
+            pjson << ",\"blender_version\":\"" << blenderVersion << '"';
+        }
+        pjson << '}';
+        if (!conv.physicsSoftFirst) {
+            pjson << ",\"BLEND_physics_softbody\":{\"nodes\":[" << conv.physicsSoftNodes.str() << "]}";
+        }
+        if (!conv.physicsClothFirst) {
+            pjson << ",\"BLEND_physics_cloth\":{\"nodes\":[" << conv.physicsClothNodes.str() << "]}";
+        }
+        if (!conv.physicsFluidFirst) {
+            pjson << ",\"BLEND_physics_fluid\":{\"nodes\":[" << conv.physicsFluidNodes.str() << "]}";
+        }
+        if (!conv.physicsSmokeFirst) {
+            pjson << ",\"BLEND_physics_smoke\":{\"nodes\":[" << conv.physicsSmokeNodes.str() << "]}";
+        }
+        pjson << '}';
+        auto *psc = new aiPhysicsSidecar();
+        psc->mExtensionsJson = BlendDupJson(pjson.str(), psc->mExtensionsJsonLength);
+        AttachPhysicsSidecar(out, psc);
+    }
+
+    std::ostringstream json;
+    json.setf(std::ios::fixed);
+    json.precision(9);
+    json << "{\"schemaVersion\":1,\"source\":{"
+         << "\"format\":\"blend\"";
+    if (blenderVersion != nullptr && blenderVersion[0] != '\0') {
+        json << ",\"generator\":\"Blender " << blenderVersion << '"';
+        out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(blenderVersion));
+    }
+    json << ",\"metersPerUnit\":" << metersPerUnit
+         << ",\"timeCodesPerSecond\":" << fps
+         << ",\"framesPerSecond\":" << fps
+         << ",\"startTimeCode\":" << static_cast<double>(in.r.sfra)
+         << ",\"endTimeCode\":" << static_cast<double>(in.r.efra)
+         << '}';
+
+    // S4 cameras / lights (typed already; bag for host inject inventory)
+    json << ",\"cameras\":[";
+    for (unsigned int ci = 0; ci < out->mNumCameras; ++ci) {
+        if (ci) {
+            json << ',';
+        }
+        json << "{\"index\":" << ci << ",\"name\":\"" << BlendJsonEscape(out->mCameras[ci]->mName.C_Str()) << "\"}";
+    }
+    json << "],\"lights\":[";
+    for (unsigned int li = 0; li < out->mNumLights; ++li) {
+        if (li) {
+            json << ',';
+        }
+        json << "{\"index\":" << li << ",\"name\":\"" << BlendJsonEscape(out->mLights[li]->mName.C_Str()) << "\"}";
+    }
+    json << "],\"volumes\":[],\"pointInstancers\":[],\"composition\":{},\"skipped\":[";
+    for (size_t si = 0; si < conv.skippedCategories.size(); ++si) {
+        if (si) {
+            json << ',';
+        }
+        json << '"' << BlendJsonEscape(conv.skippedCategories[si]) << '"';
+    }
+    json << "]}";
+
+    out->mMetaData->Add(AI_METADATA_SCENE_SIDECAR_JSON, aiString(json.str()));
+    out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString("blend"));
+    const bool flag = true;
+    if (aiSceneHasMeshSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_MESH_SIDECAR, flag);
+    }
+    if (aiSceneHasMaterialSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_MATERIAL_SIDECAR, flag);
+    }
+    if (aiSceneHasPhysicsSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_PHYSICS_SIDECAR, flag);
     }
 }
 
@@ -1100,6 +1324,17 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         }
     }
 
+    // S1: stash CustomData layer inventory for mesh sidecars (attached after scene owns meshes).
+    {
+        const std::string layerJson = BuildBlendCustomDataLayersJson(mesh);
+        if (conv_data.meshSidecarJson.size() < temp->size()) {
+            conv_data.meshSidecarJson.resize(temp->size());
+        }
+        for (size_t mi = old; mi < temp->size(); ++mi) {
+            conv_data.meshSidecarJson[mi] = layerJson;
+        }
+    }
+
     return;
 }
 
@@ -1283,6 +1518,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 
     // apply modifiers
     modifier_cache->ApplyModifiers(*node, conv_data, in, *obj);
+    CollectBlendPhysicsModifiers(obj, conv_data);
 
     return node.release();
 }
