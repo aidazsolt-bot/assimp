@@ -635,7 +635,9 @@ struct ModifierData final : ElemBase {
         eModifierType_Multires,
         eModifierType_Surface,
         eModifierType_Smoke,
-        eModifierType_ShapeKey
+        eModifierType_ShapeKey,
+        // Explicit values from blender.git DNA_modifier_types.h (gaps omitted).
+        eModifierType_Fluid = 56 // Mantaflow Fluid (replaces legacy Smoke/Fluidsim for new files)
     };
 
     std::shared_ptr<ElemBase> next WARN;
@@ -650,6 +652,47 @@ struct ModifierData final : ElemBase {
 struct SharedModifierData : ElemBase {
     ModifierData modifier;
 };
+
+// ------------------------------------------------------------------------------------------------
+/** Presence / inventory hulls for physics modifiers (DNA converters registered). */
+struct ClothModifierData final : SharedModifierData {};
+struct SoftbodyModifierData final : SharedModifierData {};
+struct SmokeModifierData final : SharedModifierData {};
+struct FluidsimModifierData final : SharedModifierData {};
+
+/** Subset of blender DNA FluidDomainSettings - cache paths for Host Flow/VDB. */
+struct FluidDomainSettings final : ElemBase {
+    int type WARN; // eFluidDomain_Type: gas/liquid
+    int cache_frame_start WARN;
+    int cache_frame_end WARN;
+    int cache_type WARN;
+    char cache_directory[1024] WARN;
+
+    FluidDomainSettings() :
+            type(0), cache_frame_start(1), cache_frame_end(250), cache_type(0) {
+        cache_directory[0] = '\0';
+    }
+};
+
+struct FluidModifierData final : SharedModifierData {
+    enum FluidModifierType {
+        MOD_FLUID_TYPE_DOMAIN = (1 << 0),
+        MOD_FLUID_TYPE_FLOW = (1 << 1),
+        MOD_FLUID_TYPE_EFFEC = (1 << 2)
+    };
+
+    std::shared_ptr<FluidDomainSettings> domain;
+    float time WARN;
+    int type WARN; // FluidModifierType bitflags
+
+    FluidModifierData() :
+            time(0.f), type(0) {}
+};
+
+/** Object.soft presence (Soft Body is often not a Softbody modifier). */
+struct SoftBody final : ElemBase {};
+/** Object.rigidbody_object presence (full KHR map later). */
+struct RigidBodyOb final : ElemBase {};
 
 // -------------------------------------------------------------------------------
 struct SubsurfModifierData final : SharedModifierData {
@@ -723,6 +766,8 @@ struct Object final : ElemBase {
     std::shared_ptr<ElemBase> data FAIL;
 
     ListBase modifiers;
+    std::shared_ptr<SoftBody> soft;
+    std::shared_ptr<RigidBodyOb> rigidbody_object;
 
     Object() :
             type(Type_EMPTY), parent(nullptr) {

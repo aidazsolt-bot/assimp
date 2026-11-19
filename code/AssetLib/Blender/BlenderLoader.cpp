@@ -125,6 +125,26 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         return;
     }
     const char *objName = obj->id.name + 2;
+
+    // Soft Body is commonly Object.soft (not Softbody modifier).
+    if (obj->soft) {
+        if (!conv.physicsSoftFirst) {
+            conv.physicsSoftNodes << ',';
+        }
+        conv.physicsSoftFirst = false;
+        conv.physicsSoftNodes << "{\"name\":\"" << BlendJsonEscape(objName)
+                              << "\",\"type\":\"softbody\",\"settings\":{\"source\":\"Object.soft\"}}";
+    }
+    // Rigid Body DNA presence (KHR-shaped field map still open).
+    if (obj->rigidbody_object) {
+        if (!conv.physicsRigidFirst) {
+            conv.physicsRigidNodes << ',';
+        }
+        conv.physicsRigidFirst = false;
+        conv.physicsRigidNodes << "{\"name\":\"" << BlendJsonEscape(objName)
+                               << "\",\"type\":\"rigidbody\",\"settings\":{\"source\":\"Object.rigidbody_object\"}}";
+    }
+
     const SharedModifierData *cur = static_cast<const SharedModifierData *>(obj->modifiers.first.get());
     for (; cur; cur = static_cast<const SharedModifierData *>(cur->modifier.next.get())) {
         const ModifierData &dat = cur->modifier;
@@ -143,6 +163,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             bagKey = "cloth";
             break;
         case ModifierData::eModifierType_Fluidsim:
+        case ModifierData::eModifierType_Fluid:
             stream = &conv.physicsFluidNodes;
             firstFlag = &conv.physicsFluidFirst;
             bagKey = "fluid";
@@ -162,10 +183,36 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             *stream << ',';
         }
         *firstFlag = false;
+
+        std::ostringstream settings;
+        settings << "{\"mode\":" << dat.mode;
+        if (dat.type == ModifierData::eModifierType_Fluid &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "FluidModifierData") == 0) {
+            const auto *fluid = static_cast<const FluidModifierData *>(cur);
+            const char *role = "unknown";
+            if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_DOMAIN) {
+                role = "domain";
+            } else if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_FLOW) {
+                role = "flow";
+            } else if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_EFFEC) {
+                role = "effector";
+            }
+            settings << ",\"fluid_role\":\"" << role << "\"";
+            if (fluid->domain) {
+                settings << ",\"domain_type\":" << fluid->domain->type;
+                settings << ",\"cache\":{\"directory\":\"" << BlendJsonEscape(fluid->domain->cache_directory)
+                         << "\",\"frame_start\":" << fluid->domain->cache_frame_start
+                         << ",\"frame_end\":" << fluid->domain->cache_frame_end
+                         << ",\"type\":" << fluid->domain->cache_type << '}';
+            }
+        }
+        settings << '}';
+
         *stream << "{\"name\":\"" << BlendJsonEscape(objName)
                 << "\",\"modifier\":\"" << BlendJsonEscape(dat.name)
                 << "\",\"type\":\"" << bagKey
-                << "\",\"settings\":{\"mode\":" << dat.mode << "}}";
+                << "\",\"settings\":" << settings.str() << '}';
     }
 }
 } // namespace
@@ -491,12 +538,15 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         AttachMaterialSidecar(out, mati, msc);
     }
 
-    // S5/S6 physics from modifiers (rigidbody DNA pointer not mapped yet -> skipped)
-    conv.skippedCategories.push_back("BLEND_physics_rigidbody_object_pointer");
+    // S5/S6 physics from modifiers + Object.soft / rigidbody_object presence
+    if (conv.physicsRigidFirst) {
+        conv.skippedCategories.push_back("BLEND_physics_rigidbody_object_pointer");
+    }
     conv.skippedCategories.push_back("BLEND_action_nla_animation_sidecar");
     conv.skippedCategories.push_back("BLEND_shader_network_full_nodegraph");
     const bool hasPhys = !conv.physicsSoftFirst || !conv.physicsClothFirst ||
-                         !conv.physicsFluidFirst || !conv.physicsSmokeFirst;
+                         !conv.physicsFluidFirst || !conv.physicsSmokeFirst ||
+                         !conv.physicsRigidFirst;
     if (hasPhys) {
         std::ostringstream pjson;
         pjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"";
@@ -515,6 +565,10 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         }
         if (!conv.physicsSmokeFirst) {
             pjson << ",\"BLEND_physics_smoke\":{\"nodes\":[" << conv.physicsSmokeNodes.str() << "]}";
+        }
+        if (!conv.physicsRigidFirst) {
+            // Presence-only until RigidBodyOb fields map to KHR_physics_rigid_bodies.
+            pjson << ",\"BLEND_physics_rigidbody\":{\"nodes\":[" << conv.physicsRigidNodes.str() << "]}";
         }
         pjson << '}';
         auto *psc = new aiPhysicsSidecar();

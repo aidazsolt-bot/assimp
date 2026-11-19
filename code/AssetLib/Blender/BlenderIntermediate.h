@@ -182,10 +182,12 @@ namespace Blender {
         std::ostringstream physicsClothNodes;
         std::ostringstream physicsFluidNodes;
         std::ostringstream physicsSmokeNodes;
+        std::ostringstream physicsRigidNodes;
         bool physicsSoftFirst{ true };
         bool physicsClothFirst{ true };
         bool physicsFluidFirst{ true };
         bool physicsSmokeFirst{ true };
+        bool physicsRigidFirst{ true };
         std::vector<std::string> skippedCategories;
     };
 #if defined(_MSC_VER) && _MSC_VER < 1900
