@@ -20,7 +20,6 @@ All rights reserved.
 #include <cstring>
 #include <sstream>
 #include <string>
-#include <map>
 #include <vector>
 
 namespace Assimp {
@@ -83,23 +82,6 @@ struct StageWalkAccum {
     bool firstPhys{ true };
 };
 
-bool TryFloatProp(const std::map<std::string, lightusd::Property> &props, const char *key, double &out) {
-    auto it = props.find(key);
-    if (it == props.end() || !it->second.is_attribute()) {
-        return false;
-    }
-    const auto &attr = it->second.get_attribute();
-    if (auto f = attr.get_value<float>()) {
-        out = double(*f);
-        return true;
-    }
-    if (auto d = attr.get_value<double>()) {
-        out = *d;
-        return true;
-    }
-    return false;
-}
-
 bool IsLightType(const std::string &ty) {
     return ty.find("Light") != std::string::npos;
 }
@@ -157,9 +139,7 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
             acc.volumes << ',';
         }
         acc.firstVol = false;
-        // TinyUSDZ Prim has no props(); OpenVDB filePath not exposed via Prim::as<> yet.
-        acc.volumes << "{"name":"" << JsonEscape(name) << "","primPath":"" << JsonEscape(path)
-                     << "","type":"" << JsonEscape(ty) << ""}";
+        acc.volumes << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path) << "\",\"type\":\"" << JsonEscape(ty) << "\"}";
     } else if (ty == "PointInstancer") {
         if (!acc.firstInst) {
             acc.instancers << ',';
@@ -228,23 +208,7 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
             }
             acc.firstPhys = false;
             acc.physicsNodes << "{\"name\":\"" << JsonEscape(name) << "\",\"primPath\":\"" << JsonEscape(path)
-                             << "\",\"apiSchemas\":[" << apis.str() << "]";
-            double mass = 0;
-            const lightusd::GPrim *gprimMass = nullptr;
-            if (const auto *c = prim.as<lightusd::GeomCube>()) {
-                gprimMass = c;
-            } else if (const auto *s = prim.as<lightusd::GeomSphere>()) {
-                gprimMass = s;
-            } else if (const auto *y = prim.as<lightusd::GeomCylinder>()) {
-                gprimMass = y;
-            } else if (const auto *m = prim.as<lightusd::GeomMesh>()) {
-                gprimMass = m;
-            }
-            if (gprimMass && (TryFloatProp(gprimMass->props, "physics:mass", mass) ||
-                              TryFloatProp(gprimMass->props, "mass", mass))) {
-                acc.physicsNodes << ","mass":" << mass;
-            }
-            acc.physicsNodes << '}';
+                             << "\",\"apiSchemas\":[" << apis.str() << "]}";
         }
     }
 
