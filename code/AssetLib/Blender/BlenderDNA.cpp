@@ -286,7 +286,21 @@ DNA::FactoryPair DNA ::GetBlobToStructureConverter(
         const FileDatabase & /*db*/
 ) const {
     std::map<std::string, FactoryPair>::const_iterator it = converters.find(structure.name);
-    return it == converters.end() ? FactoryPair() : (*it).second;
+    if (it != converters.end()) {
+        return (*it).second;
+    }
+    // Unknown XXXModifierData: still decode ModifierData header so Object.modifiers
+    // ListBase does not collapse when the first entry is e.g. NodesModifierData.
+    static const char kSuffix[] = "ModifierData";
+    const size_t n = structure.name.size();
+    const size_t sl = sizeof(kSuffix) - 1;
+    if (n > sl && structure.name.compare(n - sl, sl, kSuffix) == 0) {
+        it = converters.find("GenericModifierData");
+        if (it != converters.end()) {
+            return (*it).second;
+        }
+    }
+    return FactoryPair();
 }
 
 // basing on http://www.blender.org/development/architecture/notes-on-sdna/

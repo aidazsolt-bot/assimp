@@ -225,6 +225,17 @@ void Structure ::Convert<ClothModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<GenericModifierData>(
+        GenericModifierData &dest,
+        const FileDatabase &db) const {
+    // Only the ModifierData header (next/type/name) - enough to walk the list
+    // and classify by dest.modifier.type for physics inventory.
+    ReadField<ErrorPolicy_Warn>(dest.modifier, "modifier", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<SoftbodyModifierData>(
         SoftbodyModifierData &dest,
         const FileDatabase &db) const {
@@ -966,6 +977,7 @@ void DNA::RegisterConverters() {
     converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);
     converters["FluidModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidModifierData>, &Structure::Convert<FluidModifierData>);
     converters["FluidDomainSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidDomainSettings>, &Structure::Convert<FluidDomainSettings>);
+    converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
     converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
     converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
     converters["MFace"] = DNA::FactoryPair(&Structure::Allocate<MFace>, &Structure::Convert<MFace>);

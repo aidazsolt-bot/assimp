@@ -307,7 +307,7 @@ Test: `utBlenderImporter.sceneTimingSidecarS0Test`.
 | S3 | `aiMaterialSidecar` | `BLEND_shader` name bag (typed Principled stays on `aiMaterial`) |
 | S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` inventory |
 | S5 | `aiPhysicsSidecar` | `BLEND_physics_rigidbody` presence from `Object.rigidbody_object` (KHR field map still open); else `skipped` |
-| S6 | `aiPhysicsSidecar` | `BLEND_physics_softbody/cloth/fluid/smoke`: Softbody/Cloth/Smoke/Fluidsim modifiers + modern **Fluid** (`eModifierType_Fluid=56`) with domain `cache.directory` / frame range; `Object.soft` softbody presence |
+| S6 | `aiPhysicsSidecar` | Softbody/Cloth/Smoke/Fluidsim + Fluid=56 (cache) + Nodes=57 name-heuristic; Object.soft/rigidbody presence; GenericModifierData keeps ListBase intact |
 | S7 | `SceneSidecarJson` | `volumes[]` / `pointInstancers[]` placeholders |
 | S8 | `SceneSidecarJson` | `skipped[]` (full nodegraph, Action/NLA, rigidbody pointer) |
 

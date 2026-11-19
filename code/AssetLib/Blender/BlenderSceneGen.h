@@ -92,6 +92,12 @@ template <> void Structure :: Convert<ClothModifierData> (
     ) const
 ;
 
+template <> void Structure :: Convert<GenericModifierData> (
+    GenericModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<SoftbodyModifierData> (
     SoftbodyModifierData& dest,
     const FileDatabase& db
