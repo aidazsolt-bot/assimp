@@ -249,7 +249,7 @@ Host-probe hardening (2026-11-19):
 
 - **UsdGeomGprim tessellation:** `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` -> `aiMesh` when TinyUSDZ leaves them as Xform-only (`USDGprimMesh`).
 - **Empty-mesh stages:** Volume-only / payload-only sets `AI_SCENE_FLAGS_INCOMPLETE` so ValidateDS does not hard-fail; sidecars still emit.
-- **USDA sanitize for TinyUSDZ:** strip stage meta `kilogramsPerUnit` and unknown prim dict metas (e.g. `Usd_DCE_Params`); notes land in `skipped[]` as `sanitized:*`.
+- **TinyUSDZ patch (not Assimp ASCII strip):** accept UsdPhysics `kilogramsPerUnit`; ignore other unknown stage/prim metas (e.g. `Usd_DCE_Params`); recognize distinct `Physics*API` vs Apple `Preliminary_Physics*API` tokens (`contrib/tinyusdz/patches/`).
 - **Composition honesty:** `payload` / `references` -> `skipped[]` entry `composition:payload_or_reference:<path>` (no nullptr child path).
 
 Fixtures: `test/models/USD/SidecarCategories/SidecarCategories.usda`,

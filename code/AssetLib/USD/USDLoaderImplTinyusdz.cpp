@@ -51,7 +51,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "USDGprimMesh.h"
 #include "USDPreprocessor.h"
 #include "USDSidecarEmit.h"
-#include "USDUsdaSanitize.h"
 #include "io-util.hh" // namespace lightusd::io
 #include "tydra/scene-access.hh"
 #include "tydra/shader-network.hh"
@@ -197,31 +196,12 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
         ss << "InternReadFile(): LoadUSDCFromFile() result: " << ret;
         TINYUSDZLOGD(TAG, "%s", ss.str().c_str());
     } else if (isUsda(pFile)) {
-        // TinyUSDZ rejects some Pixar-authored stage/prim metas (kilogramsPerUnit,
-        // plugin dict metas). Sanitize USDA ASCII then load from memory.
-        std::string usdaText;
-        if (is_load_from_mem) {
-            usdaText.assign(reinterpret_cast<const char *>(in_mem_data.data()), in_mem_data.size());
-        } else {
-            auto stream_closer = [pIOHandler](IOStream *pStream) {
-                pIOHandler->Close(pStream);
-            };
-            std::unique_ptr<IOStream, decltype(stream_closer)> file_stream(pIOHandler->Open(pFile, "rb"), stream_closer);
-            if (!file_stream) {
-                throw DeadlyImportError("Failed to open file ", pFile, ".");
-            }
-            const size_t file_size = file_stream->FileSize();
-            usdaText.resize(file_size);
-            file_stream->Read(usdaText.data(), 1, file_size);
-        }
-        if (SanitizeUsdaAscii(usdaText, &honestyNotes)) {
-            ss.str("");
-            ss << "InternReadFile(): sanitized USDA ASCII (" << honestyNotes.size() << " note(s)) before TinyUSDZ load";
-            TINYUSDZLOGW(TAG, "%s", ss.str().c_str());
-        }
-        ret = LoadUSDAFromMemory(reinterpret_cast<const uint8_t *>(usdaText.data()), usdaText.size(), pFile, &stage, &warn, &err, options);
+        // TinyUSDZ (Assimp patch) ignores unknown stage/prim metas and accepts
+        // UsdPhysics kilogramsPerUnit + Physics*API tokens - no Assimp ASCII strip.
+        ret = is_load_from_mem ? LoadUSDAFromMemory(in_mem_data.data(), in_mem_data.size(), pFile, &stage, &warn, &err, options) :
+                                 LoadUSDAFromFile(pFile, &stage, &warn, &err, options);
         ss.str("");
-        ss << "InternReadFile(): LoadUSDAFromMemory() result: " << ret;
+        ss << "InternReadFile(): LoadUSDAFromFile() result: " << ret;
         TINYUSDZLOGD(TAG, "%s", ss.str().c_str());
     } else if (isUsdz(pFile)) {
         ret = is_load_from_mem ? LoadUSDZFromMemory(in_mem_data.data(), in_mem_data.size(), pFile, &stage, &warn, &err, options) :

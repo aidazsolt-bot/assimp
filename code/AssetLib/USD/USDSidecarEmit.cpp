@@ -88,21 +88,29 @@ bool IsLightType(const std::string &ty) {
 
 bool IsPhysicsApi(lightusd::APISchemas::APIName n) {
     using N = lightusd::APISchemas::APIName;
-    // TinyUSDZ currently maps both USDZ Preliminary_* and common UsdPhysics
-    // schema tokens onto these Preliminary_* enum values when recognized.
+    // Apple USDZ Preliminary_* and OpenUSD UsdPhysics Physics*API are distinct schemas.
     return n == N::Preliminary_PhysicsRigidBodyAPI ||
            n == N::Preliminary_PhysicsColliderAPI ||
-           n == N::Preliminary_PhysicsMaterialAPI;
+           n == N::Preliminary_PhysicsMaterialAPI ||
+           n == N::PhysicsRigidBodyAPI ||
+           n == N::PhysicsCollisionAPI ||
+           n == N::PhysicsMaterialAPI;
 }
 
 const char *PhysicsApiName(lightusd::APISchemas::APIName n) {
     using N = lightusd::APISchemas::APIName;
     switch (n) {
     case N::Preliminary_PhysicsRigidBodyAPI:
-        return "PhysicsRigidBodyAPI";
+        return "Preliminary_PhysicsRigidBodyAPI";
     case N::Preliminary_PhysicsColliderAPI:
-        return "PhysicsCollisionAPI";
+        return "Preliminary_PhysicsColliderAPI";
     case N::Preliminary_PhysicsMaterialAPI:
+        return "Preliminary_PhysicsMaterialAPI";
+    case N::PhysicsRigidBodyAPI:
+        return "PhysicsRigidBodyAPI";
+    case N::PhysicsCollisionAPI:
+        return "PhysicsCollisionAPI";
+    case N::PhysicsMaterialAPI:
         return "PhysicsMaterialAPI";
     default:
         return nullptr;
@@ -164,8 +172,7 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
                 apis << '"' << (pn ? pn : "PhysicsAPI") << '"';
             }
         }
-        // Pixar usdPhysics examples often author `physics:*` properties and/or
-        // UsdPhysics*API tokens that TinyUSDZ may not map onto Preliminary_* enums.
+        // Fallback: authored physics:* props without apiSchemas recognition.
         if (!anyPhys) {
             const lightusd::GPrim *gprim = nullptr;
             if (const auto *c = prim.as<lightusd::GeomCube>()) {
@@ -366,6 +373,9 @@ std::string BuildSceneCategoryJson(
     }
     if (std::isfinite(meta.metersPerUnit)) {
         json << ",\"metersPerUnit\":" << meta.metersPerUnit;
+    }
+    if (stage.metas().kilogramsPerUnit.has_value()) {
+        json << ",\"kilogramsPerUnit\":" << stage.metas().kilogramsPerUnit.value();
     }
     if (std::isfinite(meta.timeCodesPerSecond)) {
         json << ",\"timeCodesPerSecond\":" << meta.timeCodesPerSecond;

@@ -3,13 +3,13 @@
     defaultPrim = "World"
     metersPerUnit = 0.01
     upAxis = "Z"
-    # Pixar usdPhysics examples author this; TinyUSDZ rejects it unless sanitized.
+    # Official UsdPhysics stage mass metric - TinyUSDZ must accept (not Assimp-strip).
     kilogramsPerUnit = 1.0
 )
 def Xform "World"
 {
     def Cube "BoxActor" (
-        prepend apiSchemas = ["Preliminary_PhysicsColliderAPI", "Preliminary_PhysicsRigidBodyAPI"]
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
     )
     {
         double size = 25
@@ -18,7 +18,7 @@ def Xform "World"
         bool physics:rigidBodyEnabled = 1
     }
     def Cube "Ground" (
-        prepend apiSchemas = ["Preliminary_PhysicsColliderAPI"]
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
     )
     {
         double size = 2

@@ -839,8 +839,6 @@ ADD_ASSIMP_IMPORTER( USD
   AssetLib/USD/USDSidecarEmit.cpp
   AssetLib/USD/USDGprimMesh.cpp
   AssetLib/USD/USDGprimMesh.h
-  AssetLib/USD/USDUsdaSanitize.cpp
-  AssetLib/USD/USDUsdaSanitize.h
   AssetLib/USD/USDLoaderImplTinyusdz.h
   AssetLib/USD/USDLoaderImplTinyusdzHelper.cpp
   AssetLib/USD/USDLoaderImplTinyusdzHelper.h
@@ -1027,10 +1025,8 @@ IF (ASSIMP_BUILD_USD_IMPORTER)
         message("\n\n**** Cloning legacy tinyusdz repo, git tag ${TINYUSDZ_GIT_TAG}\n\n")
     endif () # if (ASSIMP_USD_BETA)
 
-    # Patch required to build arm32 on android
-    set(TINYUSDZ_PATCHFILE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/tinyusdz/patches/tinyusdz.patch")
-    set(TINYUSDZ_PATCH_CMD git apply ${TINYUSDZ_PATCHFILE_PATH})
-
+    # Patches: (1) arm32 android stb stub (2) ignore unknown metas + UsdPhysics tokens
+    set(TINYUSDZ_PATCH_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/tinyusdz/patches/apply-tinyusdz-patches.sh")
     # Note: CMake's "FetchContent" (which executes at configure time) is much better for this use case
     #       than "ExternalProject" (which executes at build time); we just want to clone a repo and
     #       block (wait) as long as necessary until cloning is complete, so we immediately have full
@@ -1043,7 +1039,7 @@ IF (ASSIMP_BUILD_USD_IMPORTER)
             EXCLUDE_FROM_ALL TRUE
             GIT_REPOSITORY "https://github.com/lighttransport/tinyusdz"
             GIT_TAG        ${TINYUSDZ_GIT_TAG}
-            PATCH_COMMAND  ${TINYUSDZ_PATCH_CMD}
+            PATCH_COMMAND  ${TINYUSDZ_PATCH_SCRIPT}
     )
     FetchContent_MakeAvailable(tinyusdz_repo)
     message("**** Finished cloning tinyusdz repo")

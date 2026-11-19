@@ -172,9 +172,11 @@ TEST_F(utUSDImport, gprimPhysicsTessellationTest) {
     ASSERT_NE(nullptr, phys);
     ASSERT_NE(nullptr, phys->mExtensionsJson);
     EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "USD_physics_rigid"));
+    EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "PhysicsRigidBodyAPI"));
     ASSERT_NE(nullptr, scene->mMetaData);
     aiString sceneJson;
     ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
+    // kilogramsPerUnit kept via TinyUSDZ (not Assimp ASCII strip).
     EXPECT_NE(nullptr, std::strstr(sceneJson.C_Str(), "kilogramsPerUnit"));
 }
 
@@ -193,5 +195,6 @@ TEST_F(utUSDImport, payloadCompositionHonestyTest) {
     ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
     const char *sj = sceneJson.C_Str();
     EXPECT_NE(nullptr, std::strstr(sj, "composition:payload_or_reference"));
-    EXPECT_NE(nullptr, std::strstr(sj, "sanitized:stripped_prim_dict_meta:Usd_DCE_Params"));
+    // Unknown Usd_DCE_Params is ignored by TinyUSDZ (not Assimp-stripped).
+    EXPECT_EQ(nullptr, std::strstr(sj, "sanitized:stripped"));
 }
