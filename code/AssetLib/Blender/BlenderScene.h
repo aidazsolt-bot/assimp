@@ -637,7 +637,8 @@ struct ModifierData final : ElemBase {
         eModifierType_Smoke,
         eModifierType_ShapeKey,
         // Explicit values from blender.git DNA_modifier_types.h (gaps omitted).
-        eModifierType_Fluid = 56 // Mantaflow Fluid (replaces legacy Smoke/Fluidsim for new files)
+        eModifierType_Fluid = 56, // Mantaflow Fluid (replaces legacy Smoke/Fluidsim for new files)
+        eModifierType_Nodes = 57 // Geometry Nodes (often owns Cloth/Soft sims in Blender 3+)
     };
 
     std::shared_ptr<ElemBase> next WARN;
@@ -659,6 +660,8 @@ struct ClothModifierData final : SharedModifierData {};
 struct SoftbodyModifierData final : SharedModifierData {};
 struct SmokeModifierData final : SharedModifierData {};
 struct FluidsimModifierData final : SharedModifierData {};
+/** Fallback hull so unknown *ModifierData still chains Object.modifiers ListBase. */
+struct GenericModifierData final : SharedModifierData {};
 
 /** Subset of blender DNA FluidDomainSettings - cache paths for Host Flow/VDB. */
 struct FluidDomainSettings final : ElemBase {

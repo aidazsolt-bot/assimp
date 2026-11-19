@@ -173,6 +173,41 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             firstFlag = &conv.physicsSmokeFirst;
             bagKey = "smoke";
             break;
+        case ModifierData::eModifierType_Nodes: {
+            // Blender 3+ often drives cloth/soft via Geometry Nodes - map by name heuristic.
+            auto lowerContains = [](const char *a, const char *b) -> bool {
+                if (a == nullptr || b == nullptr) {
+                    return false;
+                }
+                std::string hay(a), needle(b);
+                for (char &c : hay) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                for (char &c : needle) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                return hay.find(needle) != std::string::npos;
+            };
+            const bool hitCloth = lowerContains(dat.name, "cloth") || lowerContains(objName, "cloth");
+            const bool hitSoft = lowerContains(dat.name, "soft") || lowerContains(objName, "soft") ||
+                                 lowerContains(objName, "pudding") || lowerContains(objName, "jiggle");
+            const bool hitFluid = lowerContains(dat.name, "fluid") || lowerContains(dat.name, "smoke") ||
+                                  lowerContains(objName, "smoke") || lowerContains(objName, "fluid");
+            if (hitCloth) {
+                stream = &conv.physicsClothNodes;
+                firstFlag = &conv.physicsClothFirst;
+                bagKey = "cloth";
+            } else if (hitSoft) {
+                stream = &conv.physicsSoftNodes;
+                firstFlag = &conv.physicsSoftFirst;
+                bagKey = "softbody";
+            } else if (hitFluid) {
+                stream = &conv.physicsFluidNodes;
+                firstFlag = &conv.physicsFluidFirst;
+                bagKey = "fluid";
+            }
+            break;
+        }
         default:
             break;
         }
@@ -186,6 +221,9 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
 
         std::ostringstream settings;
         settings << "{\"mode\":" << dat.mode;
+        if (dat.type == ModifierData::eModifierType_Nodes) {
+            settings << ",\"source\":\"NodesModifierData\"";
+        }
         if (dat.type == ModifierData::eModifierType_Fluid &&
                 cur->dna_type != nullptr &&
                 std::strcmp(cur->dna_type, "FluidModifierData") == 0) {
