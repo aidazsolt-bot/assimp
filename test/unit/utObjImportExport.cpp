@@ -589,6 +589,8 @@ TEST_F(utObjImportExport, mtl_reflection_sphere_and_map_refl) {
     EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_METALNESS), 0U);
     EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_SHEEN), 0U);
     EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_NORMALS), 0U);
+}
+
 TEST_F(utObjImportExport, face_index_too_large_for_int_is_rejected) {
     // 4294967297 used to overflow int while parsing and silently wrap to a
     // valid vertex index. The out-of-range index must now fail the import.
