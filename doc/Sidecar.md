@@ -240,11 +240,27 @@ Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTE
 | S2 | `aiAnimationSidecar` | `USD_skel_channels[]`, `blendshapeWeights[]` when TinyUSDZ emits clips |
 | S3 | `aiMaterialSidecar` | `UsdPreviewSurface` remainder (diffuse/metallic/roughness/ior/clearcoat/…) |
 | S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
-| S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` from `Preliminary_Physics*API` apiSchemas |
+| S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` from Physics/Preliminary apiSchemas and/or `physics:*` props |
 | S6 | (same physics bag) | Soft/cloth USD schemas recorded when present; else listed under `skipped` |
 | S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset`), `pointInstancers[]` |
-| S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra) |
+| S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
 
-Fixture: `test/models/USD/SidecarCategories/SidecarCategories.usda`.
-Test: `utUSDImport.categorySidecarsS1toS8Test`.
+Host-probe hardening (2026-11-19):
+
+- **UsdGeomGprim tessellation:** `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` -> `aiMesh` when TinyUSDZ leaves them as Xform-only (`USDGprimMesh`).
+- **Empty-mesh stages:** Volume-only / payload-only sets `AI_SCENE_FLAGS_INCOMPLETE` so ValidateDS does not hard-fail; sidecars still emit.
+- **USDA sanitize for TinyUSDZ:** strip stage meta `kilogramsPerUnit` and unknown prim dict metas (e.g. `Usd_DCE_Params`); notes land in `skipped[]` as `sanitized:*`.
+- **Composition honesty:** `payload` / `references` -> `skipped[]` entry `composition:payload_or_reference:<path>` (no nullptr child path).
+
+Fixtures: `test/models/USD/SidecarCategories/SidecarCategories.usda`,
+`SidecarGprimPhysics/SidecarGprimPhysics.usda`,
+`SidecarPayloadHonesty/SidecarPayloadHonesty.usda`.
+Tests: `utUSDImport.categorySidecarsS1toS8Test`, `gprimPhysicsTessellationTest`,
+`payloadCompositionHonestyTest`.
 Spec map: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.
+
+### BLEND Zstandard (Blender 3+ default) — `feature/blend-sidecar`
+
+Blender 3+ often writes multi-frame **Zstandard** `.blend` (`28 b5 2f fd`) instead of gzip.
+Assimp decompresses the full ZSTD stream before DNA parse when built with ZSTD
+(`ASSIMP_BLEND_SUPPORT_ZSTD`). See commit on `feature/blend-sidecar`.

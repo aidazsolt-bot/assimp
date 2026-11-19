@@ -23,6 +23,9 @@ All rights reserved.
 #endif
 #include "tydra/render-data.hh"
 
+#include <string>
+#include <vector>
+
 struct aiScene;
 
 #if !defined(ASSIMP_BUILD_USD_BETA)
@@ -32,12 +35,14 @@ namespace lightusd = tinyusdz;
 namespace Assimp {
 
 /// Emit Mesh/Material/Anim/Physics sidecars + extend SceneSidecarJson (S1-S8).
+/// `extraSkipped` appends composition / sanitize honesty notes into `skipped[]`.
 void EmitUsdCategorySidecars(
         aiScene *pScene,
         const std::string &pFile,
         const lightusd::Stage &stage,
         const lightusd::tydra::RenderScene &render_scene,
-        const lightusd::tydra::SceneMetadata &sceneMeta);
+        const lightusd::tydra::SceneMetadata &sceneMeta,
+        const std::vector<std::string> *extraSkipped = nullptr);
 
 } // namespace Assimp
 

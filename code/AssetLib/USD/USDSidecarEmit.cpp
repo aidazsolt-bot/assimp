@@ -88,6 +88,8 @@ bool IsLightType(const std::string &ty) {
 
 bool IsPhysicsApi(lightusd::APISchemas::APIName n) {
     using N = lightusd::APISchemas::APIName;
+    // TinyUSDZ currently maps both USDZ Preliminary_* and common UsdPhysics
+    // schema tokens onto these Preliminary_* enum values when recognized.
     return n == N::Preliminary_PhysicsRigidBodyAPI ||
            n == N::Preliminary_PhysicsColliderAPI ||
            n == N::Preliminary_PhysicsMaterialAPI;
@@ -97,11 +99,11 @@ const char *PhysicsApiName(lightusd::APISchemas::APIName n) {
     using N = lightusd::APISchemas::APIName;
     switch (n) {
     case N::Preliminary_PhysicsRigidBodyAPI:
-        return "Preliminary_PhysicsRigidBodyAPI";
+        return "PhysicsRigidBodyAPI";
     case N::Preliminary_PhysicsColliderAPI:
-        return "Preliminary_PhysicsColliderAPI";
+        return "PhysicsCollisionAPI";
     case N::Preliminary_PhysicsMaterialAPI:
-        return "Preliminary_PhysicsMaterialAPI";
+        return "PhysicsMaterialAPI";
     default:
         return nullptr;
     }
@@ -140,21 +142,58 @@ void WalkPrim(const lightusd::Prim &prim, StageWalkAccum &acc) {
         acc.skipped.push_back(std::string("curves:") + path);
     }
 
-    if (prim.metas().apiSchemas) {
+    if (prim.metas().references.has_value() || prim.metas().payload.has_value()) {
+        acc.skipped.push_back(std::string("composition:payload_or_reference:") + path);
+    }
+
+    {
         std::ostringstream apis;
         bool firstApi = true;
         bool anyPhys = false;
-        for (const auto &pair : prim.metas().apiSchemas->names) {
-            const char *pn = PhysicsApiName(pair.first);
-            if (pn == nullptr && !IsPhysicsApi(pair.first)) {
-                continue;
+        if (prim.metas().apiSchemas) {
+            for (const auto &pair : prim.metas().apiSchemas->names) {
+                const char *pn = PhysicsApiName(pair.first);
+                if (pn == nullptr && !IsPhysicsApi(pair.first)) {
+                    continue;
+                }
+                anyPhys = true;
+                if (!firstApi) {
+                    apis << ',';
+                }
+                firstApi = false;
+                apis << '"' << (pn ? pn : "PhysicsAPI") << '"';
             }
-            anyPhys = true;
-            if (!firstApi) {
-                apis << ',';
+        }
+        // Pixar usdPhysics examples often author `physics:*` properties and/or
+        // UsdPhysics*API tokens that TinyUSDZ may not map onto Preliminary_* enums.
+        if (!anyPhys) {
+            const lightusd::GPrim *gprim = nullptr;
+            if (const auto *c = prim.as<lightusd::GeomCube>()) {
+                gprim = c;
+            } else if (const auto *s = prim.as<lightusd::GeomSphere>()) {
+                gprim = s;
+            } else if (const auto *y = prim.as<lightusd::GeomCylinder>()) {
+                gprim = y;
+            } else if (const auto *o = prim.as<lightusd::GeomCone>()) {
+                gprim = o;
+            } else if (const auto *a = prim.as<lightusd::GeomCapsule>()) {
+                gprim = a;
+            } else if (const auto *m = prim.as<lightusd::GeomMesh>()) {
+                gprim = m;
             }
-            firstApi = false;
-            apis << '"' << (pn ? pn : "PhysicsAPI") << '"';
+            if (gprim != nullptr) {
+                for (const auto &prop : gprim->props) {
+                    if (prop.first.size() >= 8 && prop.first.compare(0, 8, "physics:") == 0) {
+                        anyPhys = true;
+                        if (!firstApi) {
+                            apis << ',';
+                        }
+                        firstApi = false;
+                        apis << "\"physics:properties\"";
+                        break;
+                    }
+                }
+            }
         }
         if (anyPhys) {
             if (!acc.firstPhys) {
@@ -409,7 +448,8 @@ void EmitUsdCategorySidecars(
         const std::string &pFile,
         const lightusd::Stage &stage,
         const lightusd::tydra::RenderScene &render_scene,
-        const lightusd::tydra::SceneMetadata &sceneMeta) {
+        const lightusd::tydra::SceneMetadata &sceneMeta,
+        const std::vector<std::string> *extraSkipped) {
     if (pScene == nullptr) {
         return;
     }
@@ -426,6 +466,11 @@ void EmitUsdCategorySidecars(
     StageWalkAccum acc;
     for (const auto &root : stage.root_prims()) {
         WalkPrim(root, acc);
+    }
+    if (extraSkipped != nullptr) {
+        for (const auto &note : *extraSkipped) {
+            acc.skipped.push_back(note);
+        }
     }
 
     EmitMeshSidecars(pScene, render_scene);
