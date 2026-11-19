@@ -116,3 +116,43 @@ TEST_F(utUSDImport, sceneTimingSidecarS0Test) {
     EXPECT_NE(nullptr, std::strstr(j, "\"startTimeCode\":1"));
     EXPECT_NE(nullptr, std::strstr(j, "\"endTimeCode\":48"));
 }
+
+TEST_F(utUSDImport, categorySidecarsS1toS8Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarCategories/SidecarCategories.usda",
+            0);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    EXPECT_NE(0, aiSceneHasMeshSidecar(scene));
+    ASSERT_GE(scene->mNumMeshes, 1u);
+    const aiMeshSidecar *meshSc = aiGetMeshSidecar(scene, 0);
+    ASSERT_NE(nullptr, meshSc);
+    ASSERT_NE(nullptr, meshSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(meshSc->mExtensionsJson, "\"primvars\""));
+
+    EXPECT_NE(0, aiSceneHasMaterialSidecar(scene));
+    ASSERT_GE(scene->mNumMaterials, 1u);
+    const aiMaterialSidecar *matSc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, matSc);
+    ASSERT_NE(nullptr, matSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "UsdPreviewSurface"));
+
+    // Physics API schemas on fixture RigidBody
+    EXPECT_NE(0, aiSceneHasPhysicsSidecar(scene));
+    const aiPhysicsSidecar *phys = aiGetPhysicsSidecar(scene);
+    ASSERT_NE(nullptr, phys);
+    ASSERT_NE(nullptr, phys->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "USD_physics_rigid"));
+
+    aiString sceneJson;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
+    const char *sj = sceneJson.C_Str();
+    EXPECT_NE(nullptr, std::strstr(sj, "\"cameras\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"lights\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"pointInstancers\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"volumes\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"composition\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"skipped\""));
+}

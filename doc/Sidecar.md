@@ -232,6 +232,19 @@ Assimp does not evaluate USD composition beyond the loaded stage snapshot.
 Fixture: `test/models/USD/SidecarSceneTiming/SidecarSceneTiming.usda`.
 Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTER`).
 
-Further USD slices (UsdSkel / PreviewSurface / UsdPhysics / UsdVol) land on
-`feature/usd-sidecar` as Mesh / Material / Anim / Physics sidecars - see
-RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.
+### USD S1-S8 category bags (`feature/usd-sidecar`)
+
+| Slice | Channel | Contents |
+|---|---|---|
+| S1 | `aiMeshSidecar.mExtensionsJson` | `primPath`, `primvars` (texcoord slots, normals, displayColor/Opacity), blendShapes, skel |
+| S2 | `aiAnimationSidecar` | `USD_skel_channels[]`, `blendshapeWeights[]` when TinyUSDZ emits clips |
+| S3 | `aiMaterialSidecar` | `UsdPreviewSurface` remainder (diffuse/metallic/roughness/ior/clearcoat/…) |
+| S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
+| S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` from `Preliminary_Physics*API` apiSchemas |
+| S6 | (same physics bag) | Soft/cloth USD schemas recorded when present; else listed under `skipped` |
+| S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset`), `pointInstancers[]` |
+| S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra) |
+
+Fixture: `test/models/USD/SidecarCategories/SidecarCategories.usda`.
+Test: `utUSDImport.categorySidecarsS1toS8Test`.
+Spec map: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.

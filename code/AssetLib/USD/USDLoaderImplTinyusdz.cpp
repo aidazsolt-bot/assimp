@@ -49,6 +49,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "USDLoaderImplTinyusdzHelper.h"
 #include "USDLoaderUtil.h"
 #include "USDPreprocessor.h"
+#include "USDSidecarEmit.h"
 #include "io-util.hh" // namespace lightusd::io
 #include "tydra/scene-access.hh"
 #include "tydra/shader-network.hh"
@@ -317,6 +318,8 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
         }
     }
     AttachUsdSceneTimingMetadata(pScene, pFile, sceneMeta);
+    // S1-S8 category sidecars (mesh/material/anim/physics + scene bags).
+    EmitUsdCategorySidecars(pScene, pFile, stage, render_scene, sceneMeta);
 }
 
 void USDImporterImplTinyusdz::animations(const lightusd::tydra::RenderScene &render_scene, aiScene *pScene) {

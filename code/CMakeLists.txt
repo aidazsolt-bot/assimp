@@ -836,6 +836,7 @@ ADD_ASSIMP_IMPORTER( USD
   AssetLib/USD/USDLoader.cpp
   AssetLib/USD/USDLoader.h
   AssetLib/USD/USDLoaderImplTinyusdz.cpp
+  AssetLib/USD/USDSidecarEmit.cpp
   AssetLib/USD/USDLoaderImplTinyusdz.h
   AssetLib/USD/USDLoaderImplTinyusdzHelper.cpp
   AssetLib/USD/USDLoaderImplTinyusdzHelper.h
