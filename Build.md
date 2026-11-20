@@ -37,6 +37,32 @@ cmake CMakeLists.txt
 ```
 This will generate the project files for the visual studio. All dependencies used to build Asset-Importer-Lib shall be part of the repo. If you want to use you own zlib installation this is possible as well. Check the options for it.
 
+### Build instructions for Windows with VS2022 Build Tools MSVC 14.44.35207 (Ninja)
+Both `14.38.33130` and `14.44.35207` may be installed under `VC\Tools\MSVC\`. **Do not** `cmake --build build-msvc` after switching toolsets without reconfigure.
+
+`STL1001: Unexpected compiler version, expected MSVC 19.44 or newer` means `cl.exe` is still **14.38** while `INCLUDE` points at **14.44** headers (typical when an old `build-msvc` Ninja file keeps `14.38\...\cl.exe` but the shell loaded 14.44 includes).
+
+Fix: wipe + pin + reconfigure:
+```bat
+build-msvc-14.44.cmd clean
+```
+Or manually:
+```bat
+call "%VSINSTALLDIR%\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=14.44.35207
+rmdir /s /q build-msvc
+cmake -G Ninja -S . -B build-msvc -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_C_COMPILER="%VSINSTALLDIR%\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\cl.exe" ^
+  -DCMAKE_CXX_COMPILER="%VSINSTALLDIR%\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\cl.exe" ^
+  -DASSIMP_WARNINGS_AS_ERRORS=OFF -DASSIMP_BUILD_USD_IMPORTER=ON ^
+  -DASSIMP_BUILD_TESTS=OFF -DASSIMP_BUILD_ASSIMP_TOOLS=ON ^
+  -DASSIMP_BUILD_SAMPLES=OFF -DASSIMP_BUILD_DRACO_STATIC=ON -DBUILD_SHARED_LIBS=ON
+cmake --build build-msvc
+```
+Notes:
+- `cl` and STL headers must come from the **same** `VC\Tools\MSVC\14.44.35207` folder (`Hostx64\x64`).
+- USD: TinyUSDZ patches via CMake `git apply`; if configure fails on `kilogramsPerUnit`, delete `build-msvc\_deps\tinyusdz_repo-{src,subbuild}` and reconfigure.
+- Known MSVC `/W4 /WX` fixes already on this line: GEO C4706, glTF2 `docNodes` C4458, vendored SPZ `/W0`.
+
 ### Build instructions for Windows on ARM64
 Install the *MSVC ARM64 build tools* component of Visual Studio. On an ARM64 machine you can build natively from an *ARM64 Native Tools Command Prompt*:
 ```bash
