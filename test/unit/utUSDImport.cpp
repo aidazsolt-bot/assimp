@@ -157,6 +157,31 @@ TEST_F(utUSDImport, categorySidecarsS1toS8Test) {
     EXPECT_NE(nullptr, std::strstr(sj, "\"skipped\""));
 }
 
+// Honesty: only authored UsdPreviewSurface inputs become typed keys / sidecar factors.
+TEST_F(utUSDImport, previewSurfaceAuthoredPresenceTest) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarPreviewPresence/SidecarPreviewPresence.usda",
+            0);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_GE(scene->mNumMaterials, 1u);
+    const aiMaterial *mat = scene->mMaterials[0];
+    aiColor3D diffuse;
+    ASSERT_EQ(AI_SUCCESS, mat->Get(AI_MATKEY_COLOR_DIFFUSE, diffuse));
+    float unused = 0.f;
+    EXPECT_NE(AI_SUCCESS, mat->Get(AI_MATKEY_METALLIC_FACTOR, unused));
+    EXPECT_NE(AI_SUCCESS, mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, unused));
+    EXPECT_NE(AI_SUCCESS, mat->Get(AI_MATKEY_OPACITY, unused));
+    EXPECT_NE(AI_SUCCESS, mat->Get(AI_MATKEY_REFRACTI, unused));
+    const aiMaterialSidecar *matSc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, matSc);
+    ASSERT_NE(nullptr, matSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "diffuseColor"));
+    EXPECT_EQ(nullptr, std::strstr(matSc->mExtensionsJson, "metallic"));
+    EXPECT_EQ(nullptr, std::strstr(matSc->mExtensionsJson, "roughness"));
+    EXPECT_EQ(nullptr, std::strstr(matSc->mExtensionsJson, "opacity"));
+}
+
 // Host probe: UsdGeom Cube physics USDA must tessellate into aiMesh (not empty-mesh fail).
 // Fixture also authors kilogramsPerUnit (stripped for TinyUSDZ) like Pixar usdPhysicsBoxOnBox.
 TEST_F(utUSDImport, gprimPhysicsTessellationTest) {

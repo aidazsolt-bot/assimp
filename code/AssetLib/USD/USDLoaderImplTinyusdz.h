@@ -144,7 +144,8 @@ namespace Assimp {
     void materials(
             const lightusd::tydra::RenderScene &render_scene,
             aiScene *pScene,
-            const std::string &nameWExt);
+            const std::string &nameWExt,
+            const lightusd::Stage &stage);
 
     void textures(
             const lightusd::tydra::RenderScene &render_scene,

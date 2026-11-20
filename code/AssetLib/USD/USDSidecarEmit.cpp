@@ -15,6 +15,8 @@ All rights reserved.
 #include <assimp/scene.h>
 #include <assimp/sidecar.h>
 
+#include "tydra/scene-access.hh"
+
 #include <climits>
 #include <cmath>
 #include <cstring>
@@ -417,7 +419,86 @@ void EmitMeshSidecars(aiScene *scene, const lightusd::tydra::RenderScene &rs) {
     }
 }
 
-void EmitMaterialSidecars(aiScene *scene, const lightusd::tydra::RenderScene &rs) {
+// Match RenderMaterial.abs_path (Material prim) to a child/self UsdPreviewSurface shader.
+const lightusd::UsdPreviewSurface *FindPreviewSurfaceForMaterial(
+        const lightusd::tydra::PathShaderMap<lightusd::UsdPreviewSurface> &shaders,
+        const std::string &matAbsPath) {
+    const lightusd::UsdPreviewSurface *best = nullptr;
+    size_t bestLen = 0;
+    for (const auto &kv : shaders) {
+        const std::string &spath = kv.first;
+        if (spath.compare(0, matAbsPath.size(), matAbsPath) != 0) {
+            continue;
+        }
+        if (spath.size() != matAbsPath.size() && spath[matAbsPath.size()] != '/') {
+            continue;
+        }
+        if (spath.size() >= bestLen) {
+            bestLen = spath.size();
+            best = kv.second.second;
+        }
+    }
+    return best;
+}
+
+template <typename T>
+bool TryAuthoredAnimValue(const lightusd::TypedAttributeWithFallback<lightusd::Animatable<T>> &attr, T &out) {
+    if (!attr.authored() || attr.is_blocked() || attr.is_connection()) {
+        return false;
+    }
+    return attr.get_value().get(lightusd::value::TimeCode::Default(), &out);
+}
+
+void AppendAuthoredPreviewSurface(
+        std::ostringstream &json,
+        const lightusd::UsdPreviewSurface &ps) {
+    bool first = true;
+    auto comma = [&]() {
+        if (!first) {
+            json << ',';
+        }
+        first = false;
+    };
+
+    lightusd::value::color3f col;
+    if (TryAuthoredAnimValue(ps.diffuseColor, col)) {
+        comma();
+        json << "\"diffuseColor\":[" << col[0] << ',' << col[1] << ',' << col[2] << ']';
+    }
+    float f = 0.f;
+    if (TryAuthoredAnimValue(ps.metallic, f)) {
+        comma();
+        json << "\"metallic\":" << f;
+    }
+    if (TryAuthoredAnimValue(ps.roughness, f)) {
+        comma();
+        json << "\"roughness\":" << f;
+    }
+    if (TryAuthoredAnimValue(ps.opacity, f)) {
+        comma();
+        json << "\"opacity\":" << f;
+    }
+    if (TryAuthoredAnimValue(ps.ior, f)) {
+        comma();
+        json << "\"ior\":" << f;
+    }
+    if (TryAuthoredAnimValue(ps.clearcoat, f)) {
+        comma();
+        json << "\"clearcoat\":" << f;
+    }
+    if (TryAuthoredAnimValue(ps.clearcoatRoughness, f)) {
+        comma();
+        json << "\"clearcoatRoughness\":" << f;
+    }
+}
+
+void EmitMaterialSidecars(
+        aiScene *scene,
+        const lightusd::Stage &stage,
+        const lightusd::tydra::RenderScene &rs) {
+    lightusd::tydra::PathShaderMap<lightusd::UsdPreviewSurface> previewShaders;
+    (void)lightusd::tydra::ListShaders(stage, previewShaders);
+
     for (size_t i = 0; i < rs.materials.size() && i < scene->mNumMaterials; ++i) {
         const auto &mat = rs.materials[i];
         std::ostringstream json;
@@ -425,21 +506,10 @@ void EmitMaterialSidecars(aiScene *scene, const lightusd::tydra::RenderScene &rs
         json.precision(6);
         json << "{\"schemaVersion\":1,\"source\":{\"format\":\"usd\"},\"primPath\":\"" << JsonEscape(mat.abs_path)
              << "\",\"name\":\"" << JsonEscape(mat.name) << "\",\"UsdPreviewSurface\":{";
-#if defined(ASSIMP_BUILD_USD_BETA)
-        if (mat.surfaceShader.has_value()) {
-            const auto &sh = *mat.surfaceShader;
-#else
-        {
-            const auto &sh = mat.surfaceShader;
-#endif
-            json << "\"diffuseColor\":[" << sh.diffuseColor.value[0] << ',' << sh.diffuseColor.value[1] << ',' << sh.diffuseColor.value[2] << ']'
-                 << ",\"metallic\":" << sh.metallic.value
-                 << ",\"roughness\":" << sh.roughness.value
-                 << ",\"opacity\":" << sh.opacity.value
-                 << ",\"ior\":" << sh.ior.value
-                 << ",\"clearcoat\":" << sh.clearcoat.value
-                 << ",\"clearcoatRoughness\":" << sh.clearcoatRoughness.value;
+        if (const lightusd::UsdPreviewSurface *ps = FindPreviewSurfaceForMaterial(previewShaders, mat.abs_path)) {
+            AppendAuthoredPreviewSurface(json, *ps);
         }
+        // Honesty: omit schema-default factors when inputs were not authored (no TinyUSDZ fallback emit).
         json << "}}";
 
         auto *sc = new aiMaterialSidecar();
@@ -647,7 +717,7 @@ void EmitUsdCategorySidecars(
     }
 
     EmitMeshSidecars(pScene, render_scene);
-    EmitMaterialSidecars(pScene, render_scene);
+    EmitMaterialSidecars(pScene, stage, render_scene);
     EmitAnimSidecars(pScene, render_scene);
     EmitPhysicsSidecar(pScene, acc, formatTok);
 
