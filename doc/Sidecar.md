@@ -259,8 +259,39 @@ Tests: `utUSDImport.categorySidecarsS1toS8Test`, `gprimPhysicsTessellationTest`,
 `payloadCompositionHonestyTest`.
 Spec map: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.
 
-### BLEND Zstandard (Blender 3+ default) — `feature/blend-sidecar`
+### BLEND compressed containers + DNA (Host probe 2026-11-19)
 
-Blender 3+ often writes multi-frame **Zstandard** `.blend` (`28 b5 2f fd`) instead of gzip.
-Assimp decompresses the full ZSTD stream before DNA parse when built with ZSTD
-(`ASSIMP_BLEND_SUPPORT_ZSTD`). See commit on `feature/blend-sidecar`.
+- Gzip (`.blend` with `1f 8b`) and **Zstandard** (`28 b5 2f fd`, Blender 3+ default,
+  often multi-frame) are decompressed in `ParseMagicToken` before DNA parse
+  (`ASSIMP_BLEND_SUPPORT_ZSTD`).
+- Fixture: `test/models/BLEND/BlenderDefault_250_zstd.blend`
+  (`utBlenderImporter.importBlenderDefault250ZstdCompressed`).
+- Empty `mesh->mat[]` slots are skipped in UV/texture mapping and `BuildMaterials`
+  (avoids SEGV on large fluid demos such as `lava_fluid-viscosity-demo.blend`).
+- DNA `TYPE`/`TLEN`/`STRC` padding follows Blender `pad_up_4` relative to the
+  **SDNA blob base** (not absolute file offset). DNA1 bodies can start at
+  `file_off % 4 != 0` while markers stay aligned inside the DNA payload.
+
+### BLEND file format version 0 vs 1 (Blender 5.0+ LargeBHead8)
+
+Blender low-level container (see `BLO_core_blend_header.hh` / `BLO_core_bhead.hh`):
+
+| Format | Header | Block header | Notes |
+|---|---|---|---|
+| **v0** | 12 bytes `BLENDER` + `[-_]` + `[vV]` + 3-digit ver | `BHead4` (4-byte ptr) or `SmallBHead8` (8-byte ptr) | Blender <=4.x write path |
+| **v1** | 17 bytes `BLENDER` + `17` + `-` + `01` + `v` + 4-digit ver | always **`LargeBHead8`** (`code`, `SDNAnr`, `old`, `len` i64, `nr` i64) | Blender 5.0+; blocks can exceed 2GiB |
+
+Assimp decodes v0/v1 before DNA walk. Unknown format version (`>01`) or bad header ->
+`DeadlyImportError` with header dump (no silent mis-parse).
+
+`SceneSidecarJson.source` / `BLEND_file` include:
+
+| Key | Meaning |
+|---|---|
+| `formatVersion` | `0` or `1` |
+| `blenderFileVersion` | integer from header (`282`, `500`, …) |
+
+Fixture: `BlenderFormatV1_Header.blend` (ZSTD + `BLENDER17-01v0500`).
+Test: `importBlenderFormatV1Header`. Blender 5 mesh attributes (`CD_PROP_FLOAT3`
+instead of classic `*mvert`) may yield 0 drawable meshes until a follow-up
+convert; container parse + `formatVersion` emit are the acceptance bar here.

@@ -354,11 +354,24 @@ void SectionParser ::Next() {
     };
     current.id = std::string(tmp, tmp[3] ? 4 : tmp[2] ? 3 : tmp[1] ? 2 : 1);
 
-    current.size = stream.GetI4();
-    current.address.val = ptr64 ? stream.GetU8() : stream.GetU4();
-
-    current.dna_index = stream.GetI4();
-    current.num = stream.GetI4();
+    if (largeBHead) {
+        // Blender LargeBHead8 (format v1): code, SDNAnr, old, len, nr
+        current.dna_index = static_cast<unsigned int>(stream.GetI4());
+        current.address.val = stream.GetU8();
+        const int64_t len64 = stream.GetI8();
+        const int64_t num64 = stream.GetI8();
+        if (len64 < 0 || num64 < 0) {
+            throw DeadlyImportError("BLEND: negative LargeBHead8 len/nr");
+        }
+        current.size = static_cast<size_t>(len64);
+        current.num = static_cast<size_t>(num64);
+    } else {
+        // BHead4 / SmallBHead8 (format v0): code, len, old, SDNAnr, nr
+        current.size = stream.GetI4();
+        current.address.val = ptr64 ? stream.GetU8() : stream.GetU4();
+        current.dna_index = stream.GetI4();
+        current.num = stream.GetI4();
+    }
 
     current.start = stream.GetCurrentPos();
     if (stream.GetRemainingSizeToLimit() < current.size) {

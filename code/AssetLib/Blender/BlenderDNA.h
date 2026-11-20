@@ -581,9 +581,11 @@ public:
     /** @param stream Inout stream, must point to the
      *  first section in the file. Call Next() once
      *  to have it read.
-     *  @param ptr64 Pointer size in file is 64 bits? */
-    SectionParser(StreamReaderAny &stream, bool ptr64) :
-            stream(stream), ptr64(ptr64) {
+     *  @param ptr64 Pointer size in file is 64 bits?
+     *  @param largeBHead Format v1 uses Blender LargeBHead8
+     *  (code, SDNAnr, old, len64, nr64) instead of SmallBHead8/BHead4. */
+    SectionParser(StreamReaderAny &stream, bool ptr64, bool largeBHead = false) :
+            stream(stream), ptr64(ptr64), largeBHead(largeBHead) {
         current.size = current.start = 0;
     }
 
@@ -603,6 +605,7 @@ public:
     FileBlockHead current;
     StreamReaderAny &stream;
     bool ptr64;
+    bool largeBHead;
 };
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
@@ -724,6 +727,10 @@ public:
     // publicly accessible fields
     bool i64bit;
     bool little;
+    /// Blender low-level file format: 0 = classic 12-byte header, 1 = 17-byte + LargeBHead8.
+    int file_format_version = 0;
+    /// BLENDER_FILE_VERSION from header (3 digits for v0, 4 for v1, e.g. 500).
+    int blender_file_version = 0;
 
     DNA dna;
     std::shared_ptr<StreamReaderAny> reader;

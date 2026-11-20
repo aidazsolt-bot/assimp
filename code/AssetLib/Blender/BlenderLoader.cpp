@@ -65,6 +65,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <memory>
@@ -1434,23 +1435,93 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
     }
     std::shared_ptr<IOStream> stream = std::move(streamOrError.stream);
 
-    char version[4] = { 0 };
-    file.i64bit = (stream->Read(version, 1, 1), version[0] == '-');
-    file.little = (stream->Read(version, 1, 1), version[0] == 'v');
+    // After "BLENDER" magic: format v0 is 5 more bytes (12 total), v1 is 10 more (17 total).
+    // Spec: Blender BLO_core_blend_header.hh (BLEND_FILE_FORMAT_VERSION_0 / _1).
+    char hdr[16] = { 0 };
+    if (stream->Read(hdr, 1, 5) != 5) {
+        ThrowException("BLEND: truncated file header");
+    }
 
-    stream->Read(version, 3, 1);
-    version[3] = '\0';
+    char blenderVersionStr[16] = { 0 };
+    if (hdr[0] == '_' || hdr[0] == '-') {
+        // Format v0: ptr, endian, 3-digit BLENDER_FILE_VERSION
+        file.file_format_version = 0;
+        file.i64bit = (hdr[0] == '-');
+        if (hdr[1] != 'v' && hdr[1] != 'V') {
+            ThrowException("BLEND: invalid endian marker in v0 header");
+        }
+        file.little = (hdr[1] == 'v');
+        if (!std::isdigit(static_cast<unsigned char>(hdr[2])) ||
+                !std::isdigit(static_cast<unsigned char>(hdr[3])) ||
+                !std::isdigit(static_cast<unsigned char>(hdr[4]))) {
+            ThrowException("BLEND: invalid version digits in v0 header");
+        }
+        file.blender_file_version = (hdr[2] - '0') * 100 + (hdr[3] - '0') * 10 + (hdr[4] - '0');
+        blenderVersionStr[0] = hdr[2];
+        blenderVersionStr[1] = '.';
+        blenderVersionStr[2] = hdr[3];
+        blenderVersionStr[3] = hdr[4];
+        blenderVersionStr[4] = '\0';
+    } else if (std::isdigit(static_cast<unsigned char>(hdr[0])) &&
+            std::isdigit(static_cast<unsigned char>(hdr[1]))) {
+        // Format v1: ASCII header size ("17"), then 5 more bytes already partially read...
+        // Bytes read so far after magic: [0]=size tens, [1]=size ones, need rest of 17-byte header.
+        const int header_size = (hdr[0] - '0') * 10 + (hdr[1] - '0');
+        if (header_size != 17) {
+            ThrowException("BLEND: unsupported header size ", header_size,
+                    " (expected 12 for v0 or 17 for v1)");
+        }
+        // Already have 5 bytes after magic (positions 7..11 of full header). Need bytes 12..16.
+        char hdr_rest[8] = { 0 };
+        if (stream->Read(hdr_rest, 1, 5) != 5) {
+            ThrowException("BLEND: truncated format-v1 file header");
+        }
+        // Full after-magic: hdr[0..4] + hdr_rest[0..4] == bytes 7..16
+        // 7-8 size, 9 '-', 10-11 format ver, 12 'v', 13-16 file version
+        if (hdr[2] != '-') {
+            ThrowException("BLEND: format-v1 header missing '-' separator");
+        }
+        if (!std::isdigit(static_cast<unsigned char>(hdr[3])) ||
+                !std::isdigit(static_cast<unsigned char>(hdr[4]))) {
+            ThrowException("BLEND: invalid format-version digits in v1 header");
+        }
+        file.file_format_version = (hdr[3] - '0') * 10 + (hdr[4] - '0');
+        if (file.file_format_version != 1) {
+            char dump[24];
+            std::snprintf(dump, sizeof(dump), "BLENDER%c%c%c%c%c%c%c%c%c%c",
+                    hdr[0], hdr[1], hdr[2], hdr[3], hdr[4],
+                    hdr_rest[0], hdr_rest[1], hdr_rest[2], hdr_rest[3], hdr_rest[4]);
+            ThrowException("BLEND: unsupported file format version ", file.file_format_version,
+                    " (header ", dump, ")");
+        }
+        if (hdr_rest[0] != 'v') {
+            ThrowException("BLEND: format-v1 requires little-endian marker 'v'");
+        }
+        file.little = true;
+        file.i64bit = true; // LargeBHead8 always 8-byte pointers
+        if (!std::isdigit(static_cast<unsigned char>(hdr_rest[1])) ||
+                !std::isdigit(static_cast<unsigned char>(hdr_rest[2])) ||
+                !std::isdigit(static_cast<unsigned char>(hdr_rest[3])) ||
+                !std::isdigit(static_cast<unsigned char>(hdr_rest[4]))) {
+            ThrowException("BLEND: invalid BLENDER_FILE_VERSION digits in v1 header");
+        }
+        file.blender_file_version =
+                (hdr_rest[1] - '0') * 1000 + (hdr_rest[2] - '0') * 100 +
+                (hdr_rest[3] - '0') * 10 + (hdr_rest[4] - '0');
+        // "0500" -> "5.00" for generator string
+        std::snprintf(blenderVersionStr, sizeof(blenderVersionStr), "%d.%02d",
+                file.blender_file_version / 100, file.blender_file_version % 100);
+    } else {
+        char dump[8];
+        std::snprintf(dump, sizeof(dump), "%c%c%c%c%c", hdr[0], hdr[1], hdr[2], hdr[3], hdr[4]);
+        ThrowException("BLEND: unrecognized header after BLENDER magic: ", dump);
+    }
 
-    LogInfo("Blender version is ", version[0], ".", version + 1,
-            " (64bit: ", file.i64bit ? "true" : "false",
+    LogInfo("Blender version is ", blenderVersionStr,
+            " (format: ", file.file_format_version,
+            ", file_version: ", file.blender_file_version,
+            ", 64bit: ", file.i64bit ? "true" : "false",
             ", little endian: ", file.little ? "true" : "false", ")");
-
-    char blenderVersionStr[8] = { 0 };
-    blenderVersionStr[0] = version[0];
-    blenderVersionStr[1] = '.';
-    blenderVersionStr[2] = version[1];
-    blenderVersionStr[3] = version[2];
-    blenderVersionStr[4] = '\0';
 
     ParseBlendFile(file, std::move(stream));
 
@@ -1469,7 +1540,8 @@ void BlenderImporter::ParseBlendFile(FileDatabase &out, std::shared_ptr<IOStream
 
     out.entries.reserve(128);
     { // even small BLEND files tend to consist of many file blocks
-        SectionParser parser(*out.reader, out.i64bit);
+        const bool largeBHead = (out.file_format_version >= 1);
+        SectionParser parser(*out.reader, out.i64bit, largeBHead);
 
         // first parse the file in search for the DNA and insert all other sections into the database
         while ((parser.Next(), 1)) {
@@ -1746,11 +1818,18 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         json << ",\"generator\":\"Blender " << blenderVersion << '"';
         out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(blenderVersion));
     }
-    json << ",\"metersPerUnit\":" << metersPerUnit
+    json << ",\"formatVersion\":" << file.file_format_version
+         << ",\"blenderFileVersion\":" << file.blender_file_version
+         << ",\"metersPerUnit\":" << metersPerUnit
          << ",\"timeCodesPerSecond\":" << fps
          << ",\"framesPerSecond\":" << fps
          << ",\"startTimeCode\":" << static_cast<double>(in.r.sfra)
          << ",\"endTimeCode\":" << static_cast<double>(in.r.efra)
+         << '}';
+    // Optional BLEND_file bag for host logs (container honesty)
+    json << ",\"BLEND_file\":{"
+         << "\"formatVersion\":" << file.file_format_version
+         << ",\"blenderFileVersion\":" << file.blender_file_version
          << '}';
 
     // S4 cameras / lights (typed already; bag for host inject inventory)
@@ -2195,12 +2274,19 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         ThrowException("Number of faces is larger than the corresponding array");
     }
 
-    if (static_cast<size_t>(mesh->totvert) > mesh->mvert.size()) {
-        ThrowException("Number of vertices is larger than the corresponding array");
-    }
-
-    if (static_cast<size_t>(mesh->totloop) > mesh->mloop.size()) {
-        ThrowException("Number of vertices is larger than the corresponding array");
+    // Blender 5+ often keeps totvert/totloop but stores positions/topology in
+    // CustomData layers instead of classic *mvert/*mloop arrays. Container/format
+    // v1 is already parsed; full CD_PROP_FLOAT3 mesh convert is a follow-up.
+    // Skip this mesh honestly instead of aborting the whole file.
+    if (static_cast<size_t>(mesh->totvert) > mesh->mvert.size() ||
+            static_cast<size_t>(mesh->totloop) > mesh->mloop.size()) {
+        LogWarn("BLEND: mesh '", mesh->id.name + 2,
+                "' uses non-classic vertex/loop storage (Blender 5+ attributes); "
+                "skipping geometry convert (totvert=", mesh->totvert,
+                " mvert=", mesh->mvert.size(),
+                " totloop=", mesh->totloop,
+                " mloop=", mesh->mloop.size(), ")");
+        return;
     }
 
     // collect per-submesh numbers
