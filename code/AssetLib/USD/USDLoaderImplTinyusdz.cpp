@@ -294,7 +294,7 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
         animations(render_scene, pScene);
         meshes(render_scene, pScene, nameWExt);
         bones(render_scene, pScene, nameWExt);
-        materials(render_scene, pScene, nameWExt);
+        materials(render_scene, pScene, nameWExt, stage);
         textures(render_scene, pScene, nameWExt);
         textureImages(render_scene, pScene, nameWExt);
         buffers(render_scene, pScene, nameWExt);
@@ -936,10 +936,42 @@ static void assignTexture(
     mat->AddProperty(&texName, _AI_MATKEY_TEXTURE_BASE, aiTextureType, 0);
 }
 
+namespace {
+template <typename T>
+bool UsdTryAuthoredAnimValue(const lightusd::TypedAttributeWithFallback<lightusd::Animatable<T>> &attr, T &out) {
+    if (!attr.authored() || attr.is_blocked() || attr.is_connection()) {
+        return false;
+    }
+    return attr.get_value().get(lightusd::value::TimeCode::Default(), &out);
+}
+
+const lightusd::UsdPreviewSurface *UsdFindPreviewSurface(
+        const lightusd::tydra::PathShaderMap<lightusd::UsdPreviewSurface> &shaders,
+        const std::string &matAbsPath) {
+    const lightusd::UsdPreviewSurface *best = nullptr;
+    size_t bestLen = 0;
+    for (const auto &kv : shaders) {
+        const std::string &spath = kv.first;
+        if (spath.compare(0, matAbsPath.size(), matAbsPath) != 0) {
+            continue;
+        }
+        if (spath.size() != matAbsPath.size() && spath[matAbsPath.size()] != '/') {
+            continue;
+        }
+        if (spath.size() >= bestLen) {
+            bestLen = spath.size();
+            best = kv.second.second;
+        }
+    }
+    return best;
+}
+} // namespace
+
 void USDImporterImplTinyusdz::materials(
         const lightusd::tydra::RenderScene &render_scene,
         aiScene *pScene,
-        const std::string &nameWExt) {
+        const std::string &nameWExt,
+        const lightusd::Stage &stage) {
     const size_t numMaterials{ render_scene.materials.size() };
     std::stringstream ss;
     ss.str("");
@@ -949,6 +981,9 @@ void USDImporterImplTinyusdz::materials(
     if (render_scene.materials.empty()) {
         return;
     }
+
+    lightusd::tydra::PathShaderMap<lightusd::UsdPreviewSurface> previewShaders;
+    (void)lightusd::tydra::ListShaders(stage, previewShaders);
 
     pScene->mMaterials = new aiMaterial *[render_scene.materials.size()];
     for (const auto &material : render_scene.materials) {
@@ -961,131 +996,92 @@ void USDImporterImplTinyusdz::materials(
         materialName.Set(material.name);
         mat->AddProperty(&materialName, AI_MATKEY_NAME);
 
+        // Authored UsdPreviewSurface inputs only - never invent TinyUSDZ schema fallbacks.
+        if (const lightusd::UsdPreviewSurface *ps = UsdFindPreviewSurface(previewShaders, material.abs_path)) {
+            lightusd::value::color3f col;
+            if (UsdTryAuthoredAnimValue(ps->diffuseColor, col)) {
+                const aiColor3D c(col.r, col.g, col.b);
+                mat->AddProperty(&c, 1, AI_MATKEY_COLOR_DIFFUSE);
+            }
+            if (UsdTryAuthoredAnimValue(ps->specularColor, col)) {
+                const aiColor3D c(col.r, col.g, col.b);
+                mat->AddProperty(&c, 1, AI_MATKEY_COLOR_SPECULAR);
+            }
+            if (UsdTryAuthoredAnimValue(ps->emissiveColor, col)) {
+                const aiColor3D c(col.r, col.g, col.b);
+                mat->AddProperty(&c, 1, AI_MATKEY_COLOR_EMISSIVE);
+            }
+            float f = 0.f;
+            if (UsdTryAuthoredAnimValue(ps->metallic, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_METALLIC_FACTOR);
+            }
+            if (UsdTryAuthoredAnimValue(ps->roughness, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_ROUGHNESS_FACTOR);
+            }
+            if (UsdTryAuthoredAnimValue(ps->opacity, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_OPACITY);
+            }
+            if (UsdTryAuthoredAnimValue(ps->ior, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_REFRACTI);
+            }
+            if (UsdTryAuthoredAnimValue(ps->clearcoat, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_CLEARCOAT_FACTOR);
+            }
+            if (UsdTryAuthoredAnimValue(ps->clearcoatRoughness, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR);
+            }
+        }
+
 #if defined(ASSIMP_BUILD_USD_BETA)
-        if (material.surfaceShader.has_value()) {
-            mat->AddProperty(
-                    reinterpret_cast<const aiColor3D *>(material.surfaceShader->diffuseColor.value.data()),
-                    1, AI_MATKEY_COLOR_DIFFUSE);
-            mat->AddProperty(
-                    reinterpret_cast<const aiColor3D *>(material.surfaceShader->specularColor.value.data()),
-                    1, AI_MATKEY_COLOR_SPECULAR);
-            mat->AddProperty(
-                    reinterpret_cast<const aiColor3D *>(material.surfaceShader->emissiveColor.value.data()),
-                    1, AI_MATKEY_COLOR_EMISSIVE);
-
-            ss.str("");
-            if (material.surfaceShader->diffuseColor.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->diffuseColor.texture_id, aiTextureType_DIFFUSE);
-                ss << "    material[" << pScene->mNumMaterials << "]: diff tex id " << material.surfaceShader->diffuseColor.texture_id << "\n";
-            }
-            if (material.surfaceShader->specularColor.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->specularColor.texture_id, aiTextureType_SPECULAR);
-                ss << "    material[" << pScene->mNumMaterials << "]: spec tex id " << material.surfaceShader->specularColor.texture_id << "\n";
-            }
-            if (material.surfaceShader->normal.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->normal.texture_id, aiTextureType_NORMALS);
-                ss << "    material[" << pScene->mNumMaterials << "]: normal tex id " << material.surfaceShader->normal.texture_id << "\n";
-            }
-            if (material.surfaceShader->emissiveColor.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->emissiveColor.texture_id, aiTextureType_EMISSIVE);
-                ss << "    material[" << pScene->mNumMaterials << "]: emissive tex id " << material.surfaceShader->emissiveColor.texture_id << "\n";
-            }
-            if (material.surfaceShader->occlusion.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->occlusion.texture_id, aiTextureType_LIGHTMAP);
-                ss << "    material[" << pScene->mNumMaterials << "]: lightmap (occlusion) tex id " << material.surfaceShader->occlusion.texture_id << "\n";
-            }
-            if (material.surfaceShader->metallic.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->metallic.texture_id, aiTextureType_METALNESS);
-                ss << "    material[" << pScene->mNumMaterials << "]: metallic tex id " << material.surfaceShader->metallic.texture_id << "\n";
-            }
-            if (material.surfaceShader->roughness.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->roughness.texture_id, aiTextureType_DIFFUSE_ROUGHNESS);
-                ss << "    material[" << pScene->mNumMaterials << "]: roughness tex id " << material.surfaceShader->roughness.texture_id << "\n";
-            }
-            if (material.surfaceShader->clearcoat.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->clearcoat.texture_id, aiTextureType_CLEARCOAT);
-                ss << "    material[" << pScene->mNumMaterials << "]: clearcoat tex id " << material.surfaceShader->clearcoat.texture_id << "\n";
-            }
-            if (material.surfaceShader->opacity.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->opacity.texture_id, aiTextureType_OPACITY);
-                ss << "    material[" << pScene->mNumMaterials << "]: opacity tex id " << material.surfaceShader->opacity.texture_id << "\n";
-            }
-            if (material.surfaceShader->displacement.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->displacement.texture_id, aiTextureType_DISPLACEMENT);
-                ss << "    material[" << pScene->mNumMaterials << "]: displacement tex id " << material.surfaceShader->displacement.texture_id << "\n";
-            }
-            if (material.surfaceShader->clearcoatRoughness.is_texture()) {
-                ss << "    material[" << pScene->mNumMaterials << "]: clearcoatRoughness tex id " << material.surfaceShader->clearcoatRoughness.texture_id << "\n";
-            }
-            if (material.surfaceShader->opacityThreshold.is_texture()) {
-                ss << "    material[" << pScene->mNumMaterials << "]: opacityThreshold tex id " << material.surfaceShader->opacityThreshold.texture_id << "\n";
-            }
-            if (material.surfaceShader->ior.is_texture()) {
-                ss << "    material[" << pScene->mNumMaterials << "]: ior tex id " << material.surfaceShader->ior.texture_id << "\n";
-            }
-        } // if (material.surfaceShader.has_value())
+        const bool haveShader = material.surfaceShader.has_value();
+        const auto *shPtr = haveShader ? &(*material.surfaceShader) : nullptr;
 #else
-        mat->AddProperty(
-                reinterpret_cast<const aiColor3D *>(material.surfaceShader.diffuseColor.value.data()),
-                1, AI_MATKEY_COLOR_DIFFUSE);
-        mat->AddProperty(
-                reinterpret_cast<const aiColor3D *>(material.surfaceShader.specularColor.value.data()),
-                1, AI_MATKEY_COLOR_SPECULAR);
-        mat->AddProperty(
-                reinterpret_cast<const aiColor3D *>(material.surfaceShader.emissiveColor.value.data()),
-                1, AI_MATKEY_COLOR_EMISSIVE);
-
+        const bool haveShader = true;
+        const auto *shPtr = &material.surfaceShader;
+#endif
         ss.str("");
-        if (material.surfaceShader.diffuseColor.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.diffuseColor.texture_id, aiTextureType_DIFFUSE);
-            ss << "    material[" << pScene->mNumMaterials << "]: diff tex id " << material.surfaceShader.diffuseColor.texture_id << "\n";
+        if (haveShader && shPtr != nullptr) {
+            if (shPtr->diffuseColor.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->diffuseColor.texture_id, aiTextureType_DIFFUSE);
+                ss << "    material[" << pScene->mNumMaterials << "]: diff tex id " << shPtr->diffuseColor.texture_id << "\n";
+            }
+            if (shPtr->specularColor.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->specularColor.texture_id, aiTextureType_SPECULAR);
+                ss << "    material[" << pScene->mNumMaterials << "]: spec tex id " << shPtr->specularColor.texture_id << "\n";
+            }
+            if (shPtr->normal.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->normal.texture_id, aiTextureType_NORMALS);
+                ss << "    material[" << pScene->mNumMaterials << "]: normal tex id " << shPtr->normal.texture_id << "\n";
+            }
+            if (shPtr->emissiveColor.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->emissiveColor.texture_id, aiTextureType_EMISSIVE);
+                ss << "    material[" << pScene->mNumMaterials << "]: emissive tex id " << shPtr->emissiveColor.texture_id << "\n";
+            }
+            if (shPtr->occlusion.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->occlusion.texture_id, aiTextureType_LIGHTMAP);
+                ss << "    material[" << pScene->mNumMaterials << "]: lightmap (occlusion) tex id " << shPtr->occlusion.texture_id << "\n";
+            }
+            if (shPtr->metallic.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->metallic.texture_id, aiTextureType_METALNESS);
+                ss << "    material[" << pScene->mNumMaterials << "]: metallic tex id " << shPtr->metallic.texture_id << "\n";
+            }
+            if (shPtr->roughness.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->roughness.texture_id, aiTextureType_DIFFUSE_ROUGHNESS);
+                ss << "    material[" << pScene->mNumMaterials << "]: roughness tex id " << shPtr->roughness.texture_id << "\n";
+            }
+            if (shPtr->clearcoat.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->clearcoat.texture_id, aiTextureType_CLEARCOAT);
+                ss << "    material[" << pScene->mNumMaterials << "]: clearcoat tex id " << shPtr->clearcoat.texture_id << "\n";
+            }
+            if (shPtr->opacity.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->opacity.texture_id, aiTextureType_OPACITY);
+                ss << "    material[" << pScene->mNumMaterials << "]: opacity tex id " << shPtr->opacity.texture_id << "\n";
+            }
+            if (shPtr->displacement.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->displacement.texture_id, aiTextureType_DISPLACEMENT);
+                ss << "    material[" << pScene->mNumMaterials << "]: displacement tex id " << shPtr->displacement.texture_id << "\n";
+            }
         }
-        if (material.surfaceShader.specularColor.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.specularColor.texture_id, aiTextureType_SPECULAR);
-            ss << "    material[" << pScene->mNumMaterials << "]: spec tex id " << material.surfaceShader.specularColor.texture_id << "\n";
-        }
-        if (material.surfaceShader.normal.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.normal.texture_id, aiTextureType_NORMALS);
-            ss << "    material[" << pScene->mNumMaterials << "]: normal tex id " << material.surfaceShader.normal.texture_id << "\n";
-        }
-        if (material.surfaceShader.emissiveColor.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.emissiveColor.texture_id, aiTextureType_EMISSIVE);
-            ss << "    material[" << pScene->mNumMaterials << "]: emissive tex id " << material.surfaceShader.emissiveColor.texture_id << "\n";
-        }
-        if (material.surfaceShader.occlusion.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.occlusion.texture_id, aiTextureType_LIGHTMAP);
-            ss << "    material[" << pScene->mNumMaterials << "]: lightmap (occlusion) tex id " << material.surfaceShader.occlusion.texture_id << "\n";
-        }
-        if (material.surfaceShader.metallic.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.metallic.texture_id, aiTextureType_METALNESS);
-            ss << "    material[" << pScene->mNumMaterials << "]: metallic tex id " << material.surfaceShader.metallic.texture_id << "\n";
-        }
-        if (material.surfaceShader.roughness.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.roughness.texture_id, aiTextureType_DIFFUSE_ROUGHNESS);
-            ss << "    material[" << pScene->mNumMaterials << "]: roughness tex id " << material.surfaceShader.roughness.texture_id << "\n";
-        }
-        if (material.surfaceShader.clearcoat.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.clearcoat.texture_id, aiTextureType_CLEARCOAT);
-            ss << "    material[" << pScene->mNumMaterials << "]: clearcoat tex id " << material.surfaceShader.clearcoat.texture_id << "\n";
-        }
-        if (material.surfaceShader.opacity.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.opacity.texture_id, aiTextureType_OPACITY);
-            ss << "    material[" << pScene->mNumMaterials << "]: opacity tex id " << material.surfaceShader.opacity.texture_id << "\n";
-        }
-        if (material.surfaceShader.displacement.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.displacement.texture_id, aiTextureType_DISPLACEMENT);
-            ss << "    material[" << pScene->mNumMaterials << "]: displacement tex id " << material.surfaceShader.displacement.texture_id << "\n";
-        }
-        if (material.surfaceShader.clearcoatRoughness.is_texture()) {
-            ss << "    material[" << pScene->mNumMaterials << "]: clearcoatRoughness tex id " << material.surfaceShader.clearcoatRoughness.texture_id << "\n";
-        }
-        if (material.surfaceShader.opacityThreshold.is_texture()) {
-            ss << "    material[" << pScene->mNumMaterials << "]: opacityThreshold tex id " << material.surfaceShader.opacityThreshold.texture_id << "\n";
-        }
-        if (material.surfaceShader.ior.is_texture()) {
-            ss << "    material[" << pScene->mNumMaterials << "]: ior tex id " << material.surfaceShader.ior.texture_id << "\n";
-        }
-#endif //#if defined(ASSIMP_BUILD_USD_BETA)
         if (!ss.str().empty()) {
             TINYUSDZLOGD(TAG, "%s", ss.str().c_str());
         }
