@@ -572,10 +572,11 @@ struct Mesh final : ElemBase {
     int attribute_dna_num = 0;
 };
 
-/** DNA subset of blender::AttributeStorage (file read only). */
+/** DNA subset of blender::AttributeStorage (DNA_attribute_types.h, file read only). */
 struct AttributeStorageDna final : ElemBase {
-    Pointer dna_attributes;
+    Pointer dna_attributes; // Attribute *dna_attributes
     int dna_attributes_num = 0;
+    // char _pad[4]; runtime* - ignored
 };
 
 // -------------------------------------------------------------------------------
