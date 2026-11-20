@@ -292,6 +292,10 @@ Assimp decodes v0/v1 before DNA walk. Unknown format version (`>01`) or bad head
 | `blenderFileVersion` | integer from header (`282`, `500`, …) |
 
 Fixture: `BlenderFormatV1_Header.blend` (ZSTD + `BLENDER17-01v0500`).
-Test: `importBlenderFormatV1Header`. Blender 5 mesh attributes (`CD_PROP_FLOAT3`
-instead of classic `*mvert`) may yield 0 drawable meshes until a follow-up
-convert; container parse + `formatVersion` emit are the acceptance bar here.
+Test: `importBlenderFormatV1Header`.
+
+Blender 5+ meshes often leave classic `*mvert` / `*mloop` / `*mpoly` null and
+store geometry in `AttributeStorage` (`position` Float3 on Point, `.corner_vert`
+Int32 on Corner) plus `*poly_offset_indices`. Assimp hydrates those into the
+classic arrays in `BlenderMeshAttributes.cpp` before `ConvertMesh` (shared
+generated block addresses are disambiguated by size and locality).

@@ -564,6 +564,18 @@ struct Mesh final : ElemBase {
     struct CustomData fdata;
     struct CustomData pdata;
     struct CustomData ldata;
+
+    // Blender 5+ AttributeStorage (filled during Convert; used to hydrate classic arrays)
+    Pointer poly_offset_ptr;
+    vector<int> poly_offset_indices;
+    Pointer attribute_dna_ptr;
+    int attribute_dna_num = 0;
+};
+
+/** DNA subset of blender::AttributeStorage (file read only). */
+struct AttributeStorageDna final : ElemBase {
+    Pointer dna_attributes;
+    int dna_attributes_num = 0;
 };
 
 // -------------------------------------------------------------------------------

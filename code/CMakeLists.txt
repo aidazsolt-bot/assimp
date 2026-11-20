@@ -731,6 +731,8 @@ ADD_ASSIMP_IMPORTER( BLEND
   AssetLib/Blender/BlenderTessellator.cpp
   AssetLib/Blender/BlenderCustomData.h
   AssetLib/Blender/BlenderCustomData.cpp
+  AssetLib/Blender/BlenderMeshAttributes.h
+  AssetLib/Blender/BlenderMeshAttributes.cpp
 )
 
 # Blender 3+ writes .blend as Zstandard by default. Prefer system libzstd;

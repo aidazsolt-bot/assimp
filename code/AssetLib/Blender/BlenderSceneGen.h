@@ -380,6 +380,12 @@ template <> void Structure::Convert<CustomDataLayer>(
     ) const
     ;
 
+template <> void Structure::Convert<AttributeStorageDna>(
+    AttributeStorageDna& dest,
+    const FileDatabase& db
+    ) const
+    ;
+
     }
 }
 
