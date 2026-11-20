@@ -196,7 +196,20 @@ bool Structure :: ReadFieldPtr(TOUT<T>& out, const char* name, const FileDatabas
     }
 
     // resolve the pointer and load the corresponding structure
-    const bool res = ResolvePointer(out,ptrval,db,*f, non_recursive);
+    bool res = false;
+    try {
+        res = ResolvePointer(out, ptrval, db, *f, non_recursive);
+    } catch (const Error &e) {
+        _defaultInitializer<error_policy>()(out, e.what());
+        out.reset();
+        if (!non_recursive) {
+            db.reader->SetCurrentPos(old);
+        }
+#ifndef ASSIMP_BUILD_BLENDER_NO_STATS
+        ++db.stats().fields_read;
+#endif
+        return false;
+    }
 
     if(!non_recursive) {
         // and recover the previous stream position
@@ -401,13 +414,22 @@ bool Structure::ResolvePointer(TOUT<T>& out, const Pointer & ptrval, const FileD
     if (!ptrval.val) {
         return false;
     }
-    const Structure& s = db.dna[f.type];
     // find the file block the pointer is pointing to
     const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
 
-    // also determine the target type from the block header
-    // and check if it matches the type which we expect.
+    // Target type from the block header (SDNA index written with the DATA).
     const Structure& ss = db.dna[block->dna_index];
+
+    // Pre-2.5 DNA often types geometry pointers as void* (e.g. Mesh::*mface,
+    // Mesh::*tface). `void` is a TYPE name only - not a STRC - so dna["void"]
+    // would throw. Resolve like Blender: use the pointee's block SDNA type.
+    const Structure *declared = db.dna.Get(f.type);
+    if (declared == nullptr || f.type == "void") {
+        declared = &ss;
+    }
+    const Structure &s = *declared;
+
+    // also check if it matches the type which we expect.
     if (ss != s) {
         throw Error("Expected target to be of type `",s.name,
             "` but seemingly it is a `",ss.name,"` instead"
