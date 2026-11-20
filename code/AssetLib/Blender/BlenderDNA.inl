@@ -414,11 +414,32 @@ bool Structure::ResolvePointer(TOUT<T>& out, const Pointer & ptrval, const FileD
             );
     }
 
+    const uint64_t cache_owner = (block->id == "DATA") ? block->owner_id.val : 0;
+
     // try to retrieve the object from the cache
-    db.cache(out).get(s,out,ptrval);
+    db.cache(out).get(s,out,ptrval,cache_owner);
     if (out) {
         return true;
     }
+
+    // Enter per-ID datamap scope when resolving an ID block (ME/OB/...).
+    struct ActiveIdScopeGuard {
+        const FileDatabase &db;
+        Pointer prev;
+        bool armed;
+        ActiveIdScopeGuard(const FileDatabase &d, const FileBlockHead *b) :
+                db(d), prev(d.active_id_scope), armed(false) {
+            if (b && b->id != "DATA") {
+                db.active_id_scope = b->address;
+                armed = true;
+            }
+        }
+        ~ActiveIdScopeGuard() {
+            if (armed) {
+                db.active_id_scope = prev;
+            }
+        }
+    } scope_guard(db, block);
 
     // seek to this location, but save the previous stream pointer.
     const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
@@ -431,7 +452,7 @@ bool Structure::ResolvePointer(TOUT<T>& out, const Pointer & ptrval, const FileD
     T* o = _allocate(out,num);
 
     // cache the object before we convert it to avoid cyclic recursion.
-    db.cache(out).set(s,out,ptrval);
+    db.cache(out).set(s,out,ptrval,cache_owner);
 
     // if the non_recursive flag is set, we don't do anything but leave
     // the cursor at the correct position to resolve the object.
@@ -531,11 +552,31 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
     // determine the target type from the block header
     const Structure& s = db.dna[block->dna_index];
 
+    const uint64_t cache_owner = (block->id == "DATA") ? block->owner_id.val : 0;
+
     // try to retrieve the object from the cache
-    db.cache(out).get(s,out,ptrval);
+    db.cache(out).get(s,out,ptrval,cache_owner);
     if (out) {
         return true;
     }
+
+    struct ActiveIdScopeGuard {
+        const FileDatabase &db;
+        Pointer prev;
+        bool armed;
+        ActiveIdScopeGuard(const FileDatabase &d, const FileBlockHead *b) :
+                db(d), prev(d.active_id_scope), armed(false) {
+            if (b && b->id != "DATA") {
+                db.active_id_scope = b->address;
+                armed = true;
+            }
+        }
+        ~ActiveIdScopeGuard() {
+            if (armed) {
+                db.active_id_scope = prev;
+            }
+        }
+    } scope_guard(db, block);
 
     // seek to this location, but save the previous stream pointer.
     const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
@@ -558,7 +599,7 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
 
     // cache the object immediately to prevent infinite recursion in a
     // circular list with a single element (i.e. a self-referencing element).
-    db.cache(out).set(s,out,ptrval);
+    db.cache(out).set(s,out,ptrval,cache_owner);
 
     // and do the actual conversion
     (s.*builders.second)(out,db);
@@ -579,6 +620,35 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
 //--------------------------------------------------------------------------------
 const FileBlockHead* Structure::LocateFileBlockForAddress(const Pointer &ptrval, 
 		const FileDatabase &db) const {
+    // Blender (readfile.cc): DATA pointers resolve through a per-ID datamap that
+    // is filled from the DATA blocks immediately following that ID and cleared
+    // before the next ID. The same `old` address can legally appear on DATA of
+    // different IDs (heap reuse when writing; stable pointer IDs fix this in
+    // newer Blender). Prefer the block owned by active_id_scope.
+    if (db.active_id_scope.val) {
+        const FileBlockHead *scoped = nullptr;
+        for (const FileBlockHead &e : db.entries) {
+            if (e.owner_id.val != db.active_id_scope.val) {
+                continue;
+            }
+            if (ptrval.val < e.address.val) {
+                continue;
+            }
+            if ((ptrval.val - e.address.val) >= e.size) {
+                continue;
+            }
+            // Same rule as global path: last block starting at or before ptr.
+            if (!scoped || e.address.val >= scoped->address.val) {
+                scoped = &e;
+            }
+        }
+        if (scoped) {
+            return scoped;
+        }
+        // Fall through: ID cross-refs (Object->Mesh, etc.) live outside the
+        // current ID's DATA run and use the global address map (libmap).
+    }
+
     // the file blocks appear in list sorted by
     // with ascending base addresses so we can run a
     // binary search to locate the pointer quickly.
@@ -776,7 +846,8 @@ const Structure& DNA::operator [] (const size_t i) const {
 template <template <typename> class TOUT> template <typename T> void ObjectCache<TOUT> :: get (
     const Structure& s,
     TOUT<T>& out,
-    const Pointer& ptr
+    const Pointer& ptr,
+    uint64_t owner_id
 ) const {
 
     if(s.cache_idx == static_cast<size_t>(-1)) {
@@ -785,7 +856,8 @@ template <template <typename> class TOUT> template <typename T> void ObjectCache
         return;
     }
 
-    typename StructureCache::const_iterator it = caches[s.cache_idx].find(ptr);
+    const CacheKey key(owner_id, ptr.val);
+    typename StructureCache::const_iterator it = caches[s.cache_idx].find(key);
     if (it != caches[s.cache_idx].end()) {
         out = std::static_pointer_cast<T>( (*it).second );
 
@@ -801,13 +873,14 @@ template <template <typename> class TOUT> template <typename T> void ObjectCache
 template <template <typename> class TOUT> template <typename T> void ObjectCache<TOUT> :: set (
     const Structure& s,
     const TOUT<T>& out,
-    const Pointer& ptr
+    const Pointer& ptr,
+    uint64_t owner_id
 ) {
     if(s.cache_idx == static_cast<size_t>(-1)) {
         s.cache_idx = db.next_cache_idx++;
         caches.resize(db.next_cache_idx);
     }
-    caches[s.cache_idx][ptr] = std::static_pointer_cast<ElemBase>( out );
+    caches[s.cache_idx][CacheKey(owner_id, ptr.val)] = std::static_pointer_cast<ElemBase>( out );
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
     ++db.stats().cached_objects;
