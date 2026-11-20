@@ -1156,42 +1156,48 @@ namespace Assimp {
             // generate a default material
             aiMaterial *pcHelper = new aiMaterial();
 
-            // fill in a default material
-            int iMode = aiShadingMode_Gouraud;
-            pcHelper->AddProperty<int>(&iMode, 1, AI_MATKEY_SHADING_MODEL);
-
-            // generate white material most 3D engine just multiply ambient / diffuse color with actual ambient / light color
-            aiColor3D clr;
-            clr.b = clr.g = clr.r = 1.0f;
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_SPECULAR);
-
-            clr.b = clr.g = clr.r = 1.0f;
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_AMBIENT);
-
-            // The face order is absolutely undefined for PLY, so we have to
-            // use two-sided rendering to be sure it's ok.
-            if (!pointsOnly) {
-                const int two_sided = 1;
-                pcHelper->AddProperty(&two_sided, 1, AI_MATKEY_TWOSIDED);
-            }
-
-            // default texture
-            if (!defaultTexture.empty()) {
-                const aiString name(defaultTexture.c_str());
-                pcHelper->AddProperty(&name, _AI_MATKEY_TEXTURE_BASE, aiTextureType_DIFFUSE, 0);
-            } else {
+            // GS / splat PLY: name only - do not invent white Kd/Ks/Ka (color lives on aiGaussianSplat).
+            if (mGaussianActive) {
                 const aiString name(AI_DEFAULT_MATERIAL_NAME);
                 pcHelper->AddProperty(&name, AI_MATKEY_NAME);
-            }
+                if (pointsOnly) {
+                    constexpr int wireframe = 1;
+                    pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
+                }
+                pvOut->push_back(pcHelper);
+            } else {
+                // Classic mesh PLY: keep historical white defaults for ValidateDS.
+                int iMode = aiShadingMode_Gouraud;
+                pcHelper->AddProperty<int>(&iMode, 1, AI_MATKEY_SHADING_MODEL);
 
-            // set to wireframe, so when using this material info we can switch to points rendering
-            if (pointsOnly) {
-                constexpr int wireframe = 1;
-                pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
-            }
+                aiColor3D clr;
+                clr.b = clr.g = clr.r = 1.0f;
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_SPECULAR);
 
-            pvOut->push_back(pcHelper);
+                clr.b = clr.g = clr.r = 1.0f;
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_AMBIENT);
+
+                if (!pointsOnly) {
+                    const int two_sided = 1;
+                    pcHelper->AddProperty(&two_sided, 1, AI_MATKEY_TWOSIDED);
+                }
+
+                if (!defaultTexture.empty()) {
+                    const aiString name(defaultTexture.c_str());
+                    pcHelper->AddProperty(&name, _AI_MATKEY_TEXTURE_BASE, aiTextureType_DIFFUSE, 0);
+                } else {
+                    const aiString name(AI_DEFAULT_MATERIAL_NAME);
+                    pcHelper->AddProperty(&name, AI_MATKEY_NAME);
+                }
+
+                if (pointsOnly) {
+                    constexpr int wireframe = 1;
+                    pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
+                }
+
+                pvOut->push_back(pcHelper);
+            }
         }
     }
 
