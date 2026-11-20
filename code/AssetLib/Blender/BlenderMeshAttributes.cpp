@@ -19,17 +19,31 @@ namespace Assimp {
 namespace Blender {
 namespace {
 
+/** True if block is DATA owned by the active ID datamap (Blender readfile datamap). */
+bool BlockInActiveIdScope(const FileBlockHead &e, const FileDatabase &db) {
+    if (!db.active_id_scope.val) {
+        return true;
+    }
+    return e.owner_id.val == db.active_id_scope.val;
+}
+
 const FileBlockHead *FindBlockExactAddress(const Pointer &ptr, const FileDatabase &db, size_t expectedSize) {
     if (!ptr.val) {
         return nullptr;
     }
-    // Collect every block whose base address equals ptr (Blender 5 generated
-    // pointers collide across IDs for AttributeStorage / AttributeArray).
+    // Blender 5 generated `old` IDs collide across ME datablocks (MarblesForever:
+    // dozens of AttributeArray at the same address). Resolve like Blender: only
+    // DATA belonging to the active ID (owner_id / active_id_scope).
     std::vector<const FileBlockHead *> exact;
+    exact.reserve(4);
     for (const FileBlockHead &e : db.entries) {
-        if (e.address.val == ptr.val) {
-            exact.push_back(&e);
+        if (e.address.val != ptr.val) {
+            continue;
         }
+        if (!BlockInActiveIdScope(e, db)) {
+            continue;
+        }
+        exact.push_back(&e);
     }
     if (exact.empty()) {
         return nullptr;
@@ -45,17 +59,9 @@ const FileBlockHead *FindBlockExactAddress(const Pointer &ptr, const FileDatabas
                 return b;
             }
         }
-        // Do not guess "largest" on size mismatch - generated addresses collide.
         return nullptr;
     }
-    // No size hint: prefer largest block.
-    const FileBlockHead *best = exact.front();
-    for (const FileBlockHead *b : exact) {
-        if (b->size > best->size) {
-            best = b;
-        }
-    }
-    return best;
+    return exact.front();
 }
 
 bool ReadBlockBytes(const FileBlockHead &block, const FileDatabase &db, std::vector<uint8_t> &out) {
@@ -74,17 +80,15 @@ bool ReadIntArrayAtPointer(const Pointer &ptr, size_t count, const FileDatabase 
     const size_t bytes = count * sizeof(int);
     const FileBlockHead *block = FindBlockExactAddress(ptr, db, bytes);
     if (block == nullptr) {
-        // Fall back to containing-block search used by classic Locate.
-        try {
-            // linear scan for containing block of exact size
-            for (const FileBlockHead &e : db.entries) {
-                if (e.address.val == ptr.val && e.size == bytes) {
-                    block = &e;
-                    break;
-                }
+        for (const FileBlockHead &e : db.entries) {
+            if (e.address.val != ptr.val || e.size != bytes) {
+                continue;
             }
-        } catch (...) {
-            return false;
+            if (!BlockInActiveIdScope(e, db)) {
+                continue;
+            }
+            block = &e;
+            break;
         }
     }
     if (block == nullptr || block->size < bytes) {
@@ -121,12 +125,16 @@ struct RawAttr {
  * points at the typed payload. Generated `old` addresses collide across IDs.
  */
 bool LoadAttributeArrayPayload(const Pointer &arrayPtr, BlendAttrType type, const FileDatabase &db, RawAttr &out,
-        int64_t preferredSize = -1, uint64_t localityHint = 0) {
+        int64_t preferredSize = -1) {
     std::vector<const FileBlockHead *> aaBlocks;
     for (const FileBlockHead &e : db.entries) {
-        if (e.address.val == arrayPtr.val && e.size >= kBlendAttrArrayDnaSizeMin) {
-            aaBlocks.push_back(&e);
+        if (e.address.val != arrayPtr.val || e.size < kBlendAttrArrayDnaSizeMin) {
+            continue;
         }
+        if (!BlockInActiveIdScope(e, db)) {
+            continue;
+        }
+        aaBlocks.push_back(&e);
     }
     if (aaBlocks.empty()) {
         return false;
@@ -139,8 +147,6 @@ bool LoadAttributeArrayPayload(const Pointer &arrayPtr, BlendAttrType type, cons
 
     const FileBlockHead *bestData = nullptr;
     int64_t bestSize = 0;
-    int bestScore = -1;
-    uint64_t bestDist = ~uint64_t(0);
     bool bestIsSingle = false;
 
     for (const FileBlockHead *aaBlock : aaBlocks) {
@@ -172,29 +178,22 @@ bool LoadAttributeArrayPayload(const Pointer &arrayPtr, BlendAttrType type, cons
         const size_t want = static_cast<size_t>(size) * elem;
         const FileBlockHead *dataBlock = nullptr;
         for (const FileBlockHead &e : db.entries) {
-            if (e.address.val == dataPtr.val && e.size == want) {
-                dataBlock = &e;
-                break;
+            if (e.address.val != dataPtr.val || e.size != want) {
+                continue;
             }
+            if (!BlockInActiveIdScope(e, db)) {
+                continue;
+            }
+            dataBlock = &e;
+            break;
         }
         if (dataBlock == nullptr) {
             continue;
         }
-        int score = 2;
-        if (preferredSize >= 0 && size == preferredSize) {
-            score = 3;
-        }
-        uint64_t dist = 0;
-        if (localityHint) {
-            dist = dataPtr.val > localityHint ? dataPtr.val - localityHint : localityHint - dataPtr.val;
-        }
-        if (score > bestScore || (score == bestScore && dist < bestDist)) {
-            bestScore = score;
-            bestDist = dist;
-            bestData = dataBlock;
-            bestSize = size;
-            bestIsSingle = is_single != 0;
-        }
+        bestData = dataBlock;
+        bestSize = size;
+        bestIsSingle = is_single != 0;
+        break;
     }
     if (bestData == nullptr) {
         return false;
@@ -215,10 +214,14 @@ bool LoadAttributeSinglePayload(const Pointer &singlePtr, BlendAttrType type, co
     }
     const FileBlockHead *block = nullptr;
     for (const FileBlockHead &e : db.entries) {
-        if (e.address.val == singlePtr.val && e.size >= kBlendAttrSingleDnaSize) {
-            block = &e;
-            break;
+        if (e.address.val != singlePtr.val || e.size < kBlendAttrSingleDnaSize) {
+            continue;
         }
+        if (!BlockInActiveIdScope(e, db)) {
+            continue;
+        }
+        block = &e;
+        break;
     }
     if (block == nullptr) {
         return false;
@@ -238,10 +241,14 @@ bool LoadAttributeSinglePayload(const Pointer &singlePtr, BlendAttrType type, co
     const FileBlockHead *dataBlock = FindBlockExactAddress(dataPtr, db, elem);
     if (dataBlock == nullptr) {
         for (const FileBlockHead &e : db.entries) {
-            if (e.address.val == dataPtr.val && e.size >= elem) {
-                dataBlock = &e;
-                break;
+            if (e.address.val != dataPtr.val || e.size < elem) {
+                continue;
             }
+            if (!BlockInActiveIdScope(e, db)) {
+                continue;
+            }
+            dataBlock = &e;
+            break;
         }
     }
     if (dataBlock == nullptr) {
@@ -268,11 +275,15 @@ bool LoadAttributesFromStorage(const Mesh &mesh, const FileDatabase &db, std::ve
     if (attrsBlock == nullptr) {
         // also try matching by num in block header
         for (const FileBlockHead &e : db.entries) {
-            if (e.address.val == mesh.attribute_dna_ptr.val &&
-                    e.num == static_cast<size_t>(mesh.attribute_dna_num)) {
-                attrsBlock = &e;
-                break;
+            if (e.address.val != mesh.attribute_dna_ptr.val ||
+                    e.num != static_cast<size_t>(mesh.attribute_dna_num)) {
+                continue;
             }
+            if (!BlockInActiveIdScope(e, db)) {
+                continue;
+            }
+            attrsBlock = &e;
+            break;
         }
     }
     if (attrsBlock == nullptr) {
@@ -307,17 +318,21 @@ bool LoadAttributesFromStorage(const Mesh &mesh, const FileDatabase &db, std::ve
 
         // name is a DATA string block
         for (const FileBlockHead &e : db.entries) {
-            if (e.address.val == namePtr.val && e.size > 0) {
-                std::vector<uint8_t> nb;
-                if (ReadBlockBytes(e, db, nb)) {
-                    size_t len = 0;
-                    while (len < nb.size() && nb[len] != 0) {
-                        ++len;
-                    }
-                    attr.name.assign(reinterpret_cast<const char *>(nb.data()), len);
-                }
-                break;
+            if (e.address.val != namePtr.val || e.size == 0) {
+                continue;
             }
+            if (!BlockInActiveIdScope(e, db)) {
+                continue;
+            }
+            std::vector<uint8_t> nb;
+            if (ReadBlockBytes(e, db, nb)) {
+                size_t len = 0;
+                while (len < nb.size() && nb[len] != 0) {
+                    ++len;
+                }
+                attr.name.assign(reinterpret_cast<const char *>(nb.data()), len);
+            }
+            break;
         }
 
         if (!dataPtr.val) {
@@ -333,9 +348,8 @@ bool LoadAttributesFromStorage(const Mesh &mesh, const FileDatabase &db, std::ve
         } else if (attr.domain == BlendAttrDomain::Edge) {
             preferred = mesh.totedge;
         }
-        const uint64_t hint = mesh.attribute_dna_ptr.val ? mesh.attribute_dna_ptr.val : mesh.poly_offset_ptr.val;
         if (attr.storage == BlendAttrStorageType::Array) {
-            if (!LoadAttributeArrayPayload(dataPtr, attr.data_type, db, attr, preferred, hint)) {
+            if (!LoadAttributeArrayPayload(dataPtr, attr.data_type, db, attr, preferred)) {
                 continue;
             }
         } else if (attr.storage == BlendAttrStorageType::Single) {
@@ -371,6 +385,25 @@ bool HydrateMeshFromAttributeStorage(Mesh &mesh, const FileDatabase &db) {
     if (!needVerts && !needLoops && !needPolys) {
         return false;
     }
+
+    // ConvertMesh runs after DNA Convert; restore per-ID datamap for DATA lookup.
+    struct ActiveIdScopeGuard {
+        const FileDatabase &db;
+        Pointer prev;
+        bool armed;
+        ActiveIdScopeGuard(const FileDatabase &d, const Pointer &id) :
+                db(d), prev(d.active_id_scope), armed(false) {
+            if (id.val) {
+                db.active_id_scope = id;
+                armed = true;
+            }
+        }
+        ~ActiveIdScopeGuard() {
+            if (armed) {
+                db.active_id_scope = prev;
+            }
+        }
+    } scope_guard(db, mesh.blend_id_address);
 
     // Face offsets: Mesh.face_offset_indices (DNA rename of poly_offset_indices), length faces_num+1.
     // See DNA_mesh_types.h and dna_rename_defs.h.
