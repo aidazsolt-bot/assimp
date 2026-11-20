@@ -286,7 +286,9 @@ Fixture: `BlenderFormatV1_Header.blend` (ZSTD + `BLENDER17-01v0500`).
 Test: `importBlenderFormatV1Header`.
 
 Blender 5+ meshes often leave classic `*mvert` / `*mloop` / `*mpoly` null and
-store geometry in `AttributeStorage` (`position` Float3 on Point, `.corner_vert`
-Int32 on Corner) plus `*poly_offset_indices`. Assimp hydrates those into the
-classic arrays in `BlenderMeshAttributes.cpp` before `ConvertMesh` (shared
-generated block addresses are disambiguated by size and locality).
+store geometry in `AttributeStorage` (see blender.git
+`DNA_attribute_types.h` / `BKE_attribute_enums.hh`: `position` Float3 on Point,
+`.corner_vert` Int32 on Corner) plus `face_offset_indices` (DNA rename of
+`poly_offset_indices`). Assimp hydrates those into the classic arrays in
+`BlenderMeshAttributes.cpp` before `ConvertMesh` (shared generated block
+addresses are disambiguated by size and locality).

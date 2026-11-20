@@ -722,19 +722,46 @@ void Structure ::Convert<Mesh>(
         const FileDatabase &db) const {
 
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
-    ReadField<ErrorPolicy_Fail>(dest.totface, "totface", db);
-    ReadField<ErrorPolicy_Fail>(dest.totedge, "totedge", db);
-    ReadField<ErrorPolicy_Fail>(dest.totvert, "totvert", db);
-    ReadField<ErrorPolicy_Igno>(dest.totloop, "totloop", db);
-    ReadField<ErrorPolicy_Igno>(dest.totpoly, "totpoly", db);
+    // dna_rename_defs.h: totface->totface_legacy, totedge->edges_num, totvert->verts_num,
+    // totloop->corners_num, totpoly->faces_num. File DNA uses whichever name was written.
+    if (Get("totface")) {
+        ReadField<ErrorPolicy_Fail>(dest.totface, "totface", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.totface, "totface_legacy", db);
+    }
+    if (Get("totedge")) {
+        ReadField<ErrorPolicy_Fail>(dest.totedge, "totedge", db);
+    } else {
+        ReadField<ErrorPolicy_Fail>(dest.totedge, "edges_num", db);
+    }
+    if (Get("totvert")) {
+        ReadField<ErrorPolicy_Fail>(dest.totvert, "totvert", db);
+    } else {
+        ReadField<ErrorPolicy_Fail>(dest.totvert, "verts_num", db);
+    }
+    if (Get("totloop")) {
+        ReadField<ErrorPolicy_Igno>(dest.totloop, "totloop", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.totloop, "corners_num", db);
+    }
+    if (Get("totpoly")) {
+        ReadField<ErrorPolicy_Igno>(dest.totpoly, "totpoly", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.totpoly, "faces_num", db);
+    }
     ReadField<ErrorPolicy_Igno>(dest.subdiv, "subdiv", db);
     ReadField<ErrorPolicy_Igno>(dest.subdivr, "subdivr", db);
     ReadField<ErrorPolicy_Igno>(dest.subsurftype, "subsurftype", db);
-    ReadField<ErrorPolicy_Igno>(dest.smoothresh, "smoothresh", db);
+    if (Get("smoothresh")) {
+        ReadField<ErrorPolicy_Igno>(dest.smoothresh, "smoothresh", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.smoothresh, "smoothresh_legacy", db);
+    }
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mface, "*mface", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mtface, "*mtface", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.tface, "*tface", db);
-    // Blender 5+ often leaves *mvert/*mloop/*mpoly null; geometry lives in AttributeStorage.
+    // Blender 5+ often leaves *mvert/*mloop/*mpoly null; geometry lives in AttributeStorage
+    // (DNA_mesh_types.h attribute_storage + DNA_attribute_types.h).
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mvert, "*mvert", db);
     ReadFieldPtr<ErrorPolicy_Warn>(dest.medge, "*medge", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mloop, "*mloop", db);
@@ -746,15 +773,40 @@ void Structure ::Convert<Mesh>(
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mcol, "*mcol", db);
     ReadFieldPtr<ErrorPolicy_Fail>(dest.mat, "**mat", db);
 
-    ReadField<ErrorPolicy_Igno>(dest.vdata, "vdata", db);
-    ReadField<ErrorPolicy_Igno>(dest.edata, "edata", db);
-    ReadField<ErrorPolicy_Igno>(dest.fdata, "fdata", db);
-    ReadField<ErrorPolicy_Igno>(dest.pdata, "pdata", db);
-    ReadField<ErrorPolicy_Warn>(dest.ldata, "ldata", db);
+    // CustomData renames: vdata->vert_data, edata->edge_data, pdata->face_data, ldata->corner_data.
+    if (Get("vdata")) {
+        ReadField<ErrorPolicy_Igno>(dest.vdata, "vdata", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.vdata, "vert_data", db);
+    }
+    if (Get("edata")) {
+        ReadField<ErrorPolicy_Igno>(dest.edata, "edata", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.edata, "edge_data", db);
+    }
+    if (Get("fdata")) {
+        ReadField<ErrorPolicy_Igno>(dest.fdata, "fdata", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.fdata, "fdata_legacy", db);
+    }
+    if (Get("pdata")) {
+        ReadField<ErrorPolicy_Igno>(dest.pdata, "pdata", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.pdata, "face_data", db);
+    }
+    if (Get("ldata")) {
+        ReadField<ErrorPolicy_Warn>(dest.ldata, "ldata", db);
+    } else {
+        ReadField<ErrorPolicy_Warn>(dest.ldata, "corner_data", db);
+    }
 
-    // Blender 5+: face offsets + AttributeStorage pointers (hydrate in ConvertMesh).
+    // DNA rename: poly_offset_indices -> face_offset_indices (dna_rename_defs.h).
     ReadField<ErrorPolicy_Igno>(dest.poly_offset_ptr, "*poly_offset_indices", db);
+    if (!dest.poly_offset_ptr.val) {
+        ReadField<ErrorPolicy_Igno>(dest.poly_offset_ptr, "*face_offset_indices", db);
+    }
     {
+        // blender::AttributeStorage (DNA_attribute_types.h)
         AttributeStorageDna as;
         ReadField<ErrorPolicy_Igno>(as, "attribute_storage", db);
         dest.attribute_dna_ptr = as.dna_attributes;

@@ -115,14 +115,16 @@ struct RawAttr {
     std::vector<uint8_t> data;
 };
 
+/**
+ * Read blender::AttributeArray (DNA_attribute_types.h).
+ * Attribute.data points at an AttributeArray file block; .data inside that
+ * points at the typed payload. Generated `old` addresses collide across IDs.
+ */
 bool LoadAttributeArrayPayload(const Pointer &arrayPtr, BlendAttrType type, const FileDatabase &db, RawAttr &out,
         int64_t preferredSize = -1, uint64_t localityHint = 0) {
-    // AttributeArray DNA is 24 bytes (some writers pad allocations to 32).
-    // Generated pointers collide across IDs - collect every candidate.
-    static const size_t kAttrArrayDnaSize = 24;
     std::vector<const FileBlockHead *> aaBlocks;
     for (const FileBlockHead &e : db.entries) {
-        if (e.address.val == arrayPtr.val && e.size >= kAttrArrayDnaSize) {
+        if (e.address.val == arrayPtr.val && e.size >= kBlendAttrArrayDnaSizeMin) {
             aaBlocks.push_back(&e);
         }
     }
@@ -139,16 +141,22 @@ bool LoadAttributeArrayPayload(const Pointer &arrayPtr, BlendAttrType type, cons
     int64_t bestSize = 0;
     int bestScore = -1;
     uint64_t bestDist = ~uint64_t(0);
+    bool bestIsSingle = false;
 
     for (const FileBlockHead *aaBlock : aaBlocks) {
         std::vector<uint8_t> aaRaw;
-        if (!ReadBlockBytes(*aaBlock, db, aaRaw) || aaRaw.size() < kAttrArrayDnaSize) {
+        if (!ReadBlockBytes(*aaBlock, db, aaRaw) || aaRaw.size() < kBlendAttrArrayDnaSizeMin) {
             continue;
         }
+        // DNA_attribute_types.h AttributeArray layout
         Pointer dataPtr;
         int64_t size = 0;
-        std::memcpy(&dataPtr.val, aaRaw.data(), 8);
+        int8_t is_single = 0;
+        std::memcpy(&dataPtr.val, aaRaw.data() + 0, 8);
         std::memcpy(&size, aaRaw.data() + 16, 8);
+        if (aaRaw.size() >= kBlendAttrArrayDnaSize) {
+            is_single = static_cast<int8_t>(aaRaw[24]);
+        }
         if (!db.little) {
             ByteSwap::Swap8(&dataPtr.val);
             ByteSwap::Swap8(&size);
@@ -156,8 +164,9 @@ bool LoadAttributeArrayPayload(const Pointer &arrayPtr, BlendAttrType type, cons
         if (size <= 0 || !dataPtr.val) {
             continue;
         }
-        // Strict size match when we know the domain count - avoids wrong twin arrays.
-        if (preferredSize >= 0 && size != preferredSize) {
+        // Strict domain-size match (Blender ArrayData.size == domain length),
+        // unless is_single marks 5.0-compat expanded single storage.
+        if (preferredSize >= 0 && size != preferredSize && !is_single) {
             continue;
         }
         const size_t want = static_cast<size_t>(size) * elem;
@@ -184,6 +193,7 @@ bool LoadAttributeArrayPayload(const Pointer &arrayPtr, BlendAttrType type, cons
             bestDist = dist;
             bestData = dataBlock;
             bestSize = size;
+            bestIsSingle = is_single != 0;
         }
     }
     if (bestData == nullptr) {
@@ -193,6 +203,56 @@ bool LoadAttributeArrayPayload(const Pointer &arrayPtr, BlendAttrType type, cons
         return false;
     }
     out.size = bestSize;
+    (void)bestIsSingle; // payload already expanded to domain size when written with is_single
+    return true;
+}
+
+/** Read blender::AttributeSingle (DNA_attribute_types.h) - one element. */
+bool LoadAttributeSinglePayload(const Pointer &singlePtr, BlendAttrType type, const FileDatabase &db, RawAttr &out) {
+    const size_t elem = BlendAttrTypeSize(type);
+    if (elem == 0) {
+        return false;
+    }
+    const FileBlockHead *block = nullptr;
+    for (const FileBlockHead &e : db.entries) {
+        if (e.address.val == singlePtr.val && e.size >= kBlendAttrSingleDnaSize) {
+            block = &e;
+            break;
+        }
+    }
+    if (block == nullptr) {
+        return false;
+    }
+    std::vector<uint8_t> raw;
+    if (!ReadBlockBytes(*block, db, raw) || raw.size() < kBlendAttrSingleDnaSize) {
+        return false;
+    }
+    Pointer dataPtr;
+    std::memcpy(&dataPtr.val, raw.data(), 8);
+    if (!db.little) {
+        ByteSwap::Swap8(&dataPtr.val);
+    }
+    if (!dataPtr.val) {
+        return false;
+    }
+    const FileBlockHead *dataBlock = FindBlockExactAddress(dataPtr, db, elem);
+    if (dataBlock == nullptr) {
+        for (const FileBlockHead &e : db.entries) {
+            if (e.address.val == dataPtr.val && e.size >= elem) {
+                dataBlock = &e;
+                break;
+            }
+        }
+    }
+    if (dataBlock == nullptr) {
+        return false;
+    }
+    std::vector<uint8_t> payload;
+    if (!ReadBlockBytes(*dataBlock, db, payload) || payload.size() < elem) {
+        return false;
+    }
+    out.data.assign(payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(elem));
+    out.size = 1;
     return true;
 }
 
@@ -202,7 +262,7 @@ bool LoadAttributesFromStorage(const Mesh &mesh, const FileDatabase &db, std::ve
     if (mesh.attribute_dna_num <= 0 || !mesh.attribute_dna_ptr.val) {
         return false;
     }
-    const size_t attrStride = 24; // blender::Attribute DNA
+    const size_t attrStride = kBlendAttrDnaSize; // blender::Attribute (DNA_attribute_types.h)
     const size_t want = static_cast<size_t>(mesh.attribute_dna_num) * attrStride;
     const FileBlockHead *attrsBlock = FindBlockExactAddress(mesh.attribute_dna_ptr, db, want);
     if (attrsBlock == nullptr) {
@@ -260,21 +320,30 @@ bool LoadAttributesFromStorage(const Mesh &mesh, const FileDatabase &db, std::ve
             }
         }
 
-        if (attr.storage == BlendAttrStorageType::Array && dataPtr.val) {
-            int64_t preferred = -1;
-            if (attr.domain == BlendAttrDomain::Point) {
-                preferred = mesh.totvert;
-            } else if (attr.domain == BlendAttrDomain::Corner) {
-                preferred = mesh.totloop;
-            } else if (attr.domain == BlendAttrDomain::Face) {
-                preferred = mesh.totpoly;
-            } else if (attr.domain == BlendAttrDomain::Edge) {
-                preferred = mesh.totedge;
-            }
-            const uint64_t hint = mesh.attribute_dna_ptr.val ? mesh.attribute_dna_ptr.val : mesh.poly_offset_ptr.val;
+        if (!dataPtr.val) {
+            continue;
+        }
+        int64_t preferred = -1;
+        if (attr.domain == BlendAttrDomain::Point) {
+            preferred = mesh.totvert;
+        } else if (attr.domain == BlendAttrDomain::Corner) {
+            preferred = mesh.totloop;
+        } else if (attr.domain == BlendAttrDomain::Face) {
+            preferred = mesh.totpoly;
+        } else if (attr.domain == BlendAttrDomain::Edge) {
+            preferred = mesh.totedge;
+        }
+        const uint64_t hint = mesh.attribute_dna_ptr.val ? mesh.attribute_dna_ptr.val : mesh.poly_offset_ptr.val;
+        if (attr.storage == BlendAttrStorageType::Array) {
             if (!LoadAttributeArrayPayload(dataPtr, attr.data_type, db, attr, preferred, hint)) {
                 continue;
             }
+        } else if (attr.storage == BlendAttrStorageType::Single) {
+            if (!LoadAttributeSinglePayload(dataPtr, attr.data_type, db, attr)) {
+                continue;
+            }
+        } else {
+            continue;
         }
         out.push_back(std::move(attr));
     }
@@ -303,7 +372,8 @@ bool HydrateMeshFromAttributeStorage(Mesh &mesh, const FileDatabase &db) {
         return false;
     }
 
-    // Face offsets: Mesh.poly_offset_indices (totpoly+1 ints)
+    // Face offsets: Mesh.face_offset_indices (DNA rename of poly_offset_indices), length faces_num+1.
+    // See DNA_mesh_types.h and dna_rename_defs.h.
     if (needPolys && mesh.poly_offset_indices.size() < static_cast<size_t>(mesh.totpoly) + 1) {
         if (mesh.poly_offset_ptr.val) {
             std::vector<int> offsets;
@@ -329,20 +399,39 @@ bool HydrateMeshFromAttributeStorage(Mesh &mesh, const FileDatabase &db) {
 
     if (needVerts) {
         const RawAttr *pos = FindAttr(attrs, "position", BlendAttrDomain::Point, BlendAttrType::Float3);
-        if (pos == nullptr || pos->size < mesh.totvert || pos->data.size() < static_cast<size_t>(mesh.totvert) * 12) {
+        const bool posSingle = pos && pos->storage == BlendAttrStorageType::Single && pos->size == 1 &&
+                pos->data.size() >= 12;
+        const bool posArray = pos && pos->size >= mesh.totvert &&
+                pos->data.size() >= static_cast<size_t>(mesh.totvert) * 12;
+        if (pos == nullptr || (!posSingle && !posArray)) {
             ASSIMP_LOG_WARN("BLEND: missing position attr for hydrate (attrs=", attrs.size(),
                     " pos=", (pos ? pos->size : -1), " totvert=", mesh.totvert, ")");
             clearPartial();
             return false;
         }
         mesh.mvert.resize(static_cast<size_t>(mesh.totvert));
+        float singleCo[3] = {0.f, 0.f, 0.f};
+        if (posSingle) {
+            std::memcpy(singleCo, pos->data.data(), 12);
+            if (!db.little) {
+                ByteSwap::Swap4(&singleCo[0]);
+                ByteSwap::Swap4(&singleCo[1]);
+                ByteSwap::Swap4(&singleCo[2]);
+            }
+        }
         for (int i = 0; i < mesh.totvert; ++i) {
             float co[3];
-            std::memcpy(co, pos->data.data() + static_cast<size_t>(i) * 12, 12);
-            if (!db.little) {
-                ByteSwap::Swap4(&co[0]);
-                ByteSwap::Swap4(&co[1]);
-                ByteSwap::Swap4(&co[2]);
+            if (posSingle) {
+                co[0] = singleCo[0];
+                co[1] = singleCo[1];
+                co[2] = singleCo[2];
+            } else {
+                std::memcpy(co, pos->data.data() + static_cast<size_t>(i) * 12, 12);
+                if (!db.little) {
+                    ByteSwap::Swap4(&co[0]);
+                    ByteSwap::Swap4(&co[1]);
+                    ByteSwap::Swap4(&co[2]);
+                }
             }
             mesh.mvert[i].co[0] = co[0];
             mesh.mvert[i].co[1] = co[1];
@@ -354,6 +443,7 @@ bool HydrateMeshFromAttributeStorage(Mesh &mesh, const FileDatabase &db) {
     }
 
     if (needLoops && mesh.totloop > 0) {
+        // .corner_vert is always an array in Mesh DNA (AttrDomain::Corner); Single is unused.
         const RawAttr *cv = FindAttr(attrs, ".corner_vert", BlendAttrDomain::Corner, BlendAttrType::Int32);
         if (cv == nullptr || cv->size < mesh.totloop || cv->data.size() < static_cast<size_t>(mesh.totloop) * 4) {
             ASSIMP_LOG_WARN("BLEND: missing .corner_vert attr for hydrate (attrs=", attrs.size(),
