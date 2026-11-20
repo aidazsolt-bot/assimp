@@ -145,22 +145,26 @@ void ObjFileMtlImporter::load() {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->ambient);
+                        mModel->mCurrentMaterial->has_ambient = true;
                     }
                 } else if (*mDataIt == 'd') {
                     // Diffuse color
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->diffuse);
+                        mModel->mCurrentMaterial->has_diffuse = true;
                     }
                 } else if (*mDataIt == 's') {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->specular);
+                        mModel->mCurrentMaterial->has_specular = true;
                     }
                 } else if (*mDataIt == 'e') {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->emissive);
+                        mModel->mCurrentMaterial->has_emissive = true;
                     }
                 }
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
@@ -172,6 +176,7 @@ void ObjFileMtlImporter::load() {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->transparent);
+                        mModel->mCurrentMaterial->has_transparent = true;
                     }
                 } else if (*mDataIt == 'r')  {
                     // Material transmission alpha value
@@ -180,6 +185,7 @@ void ObjFileMtlImporter::load() {
                     getFloatValue(d);
                     if (mModel->mCurrentMaterial != nullptr) {
                         mModel->mCurrentMaterial->alpha = static_cast<ai_real>(1.0) - d;
+                        mModel->mCurrentMaterial->has_alpha = true;
                     }
                 }
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
@@ -193,6 +199,7 @@ void ObjFileMtlImporter::load() {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getFloatValue(mModel->mCurrentMaterial->alpha);
+                        mModel->mCurrentMaterial->has_alpha = true;
                     }
                     mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
                 }
@@ -206,12 +213,14 @@ void ObjFileMtlImporter::load() {
                         ++mDataIt;
                         if (mModel->mCurrentMaterial != nullptr) {
                             getFloatValue(mModel->mCurrentMaterial->shineness);
+                            mModel->mCurrentMaterial->has_shineness = true;
                         }
                         break;
                     case 'i': // Index Of refraction
                         ++mDataIt;
                         if (mModel->mCurrentMaterial != nullptr) {
                             getFloatValue(mModel->mCurrentMaterial->ior);
+                            mModel->mCurrentMaterial->has_ior = true;
                         }
                         break;
                     case 'e': // New material
@@ -285,6 +294,7 @@ void ObjFileMtlImporter::load() {
                 mDataIt = getNextToken<DataArrayIt>(mDataIt, mDataItEnd);
                 if (mModel->mCurrentMaterial != nullptr) {
                     getIlluminationModel(mModel->mCurrentMaterial->illumination_model);
+                    mModel->mCurrentMaterial->has_illumination_model = true;
                 }
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
             } break;
