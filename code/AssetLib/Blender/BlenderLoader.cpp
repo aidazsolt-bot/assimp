@@ -2300,20 +2300,23 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         ThrowException("Number of faces is larger than the corresponding array");
     }
 
-    // Blender 5+: classic *mvert/*mloop/*mpoly may be empty; hydrate from AttributeStorage.
+    // Classic *mvert/*mloop may be empty depending on Blender file version:
+    // CustomData generic attrs (~2.90-4.x) or AttributeStorage (~4.5+/5.x).
     if (static_cast<size_t>(mesh->totvert) > mesh->mvert.size() ||
             (mesh->totloop > 0 && static_cast<size_t>(mesh->totloop) > mesh->mloop.size()) ||
             (mesh->totpoly > 0 && static_cast<size_t>(mesh->totpoly) > mesh->mpoly.size())) {
         Mesh *mutableMesh = const_cast<Mesh *>(mesh);
-        if (!HydrateMeshFromAttributeStorage(*mutableMesh, conv_data.db)) {
+        if (!HydrateMeshGeometry(*mutableMesh, conv_data.db)) {
             LogWarn("mesh '", mesh->id.name + 2,
-                    "' has no classic arrays and AttributeStorage hydrate failed "
-                    "(totvert=", mesh->totvert, " mvert=", mesh->mvert.size(),
+                    "' has no classic arrays and geometry hydrate failed "
+                    "(file_version=", conv_data.db.blender_file_version,
+                    " totvert=", mesh->totvert, " mvert=", mesh->mvert.size(),
                     " totloop=", mesh->totloop, " mloop=", mesh->mloop.size(), ")");
             return;
         }
         LogInfo("hydrated mesh '", mesh->id.name + 2,
-                "' from AttributeStorage (verts=", mesh->mvert.size(),
+                "' (file_version=", conv_data.db.blender_file_version,
+                " verts=", mesh->mvert.size(),
                 " loops=", mesh->mloop.size(), " polys=", mesh->mpoly.size(), ")");
     }
     if (static_cast<size_t>(mesh->totvert) > mesh->mvert.size() ||

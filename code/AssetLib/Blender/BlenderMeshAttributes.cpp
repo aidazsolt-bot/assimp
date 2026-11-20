@@ -7,10 +7,12 @@ Copyright (c) 2006-2026, assimp team
 /** @file BlenderMeshAttributes.cpp */
 
 #include "BlenderMeshAttributes.h"
+#include "BlenderCustomData.h"
 #include "BlenderDNA.h"
 #include "BlenderScene.h"
 
 #include <assimp/ByteSwapper.h>
+#include <assimp/LogAux.h>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -536,6 +538,272 @@ bool HydrateMeshFromAttributeStorage(Mesh &mesh, const FileDatabase &db) {
         }
     }
     return true;
+}
+
+namespace {
+
+struct ActiveIdScopeGuard {
+    const FileDatabase &db;
+    Pointer prev;
+    bool armed;
+    ActiveIdScopeGuard(const FileDatabase &d, const Pointer &id) :
+            db(d), prev(d.active_id_scope), armed(false) {
+        if (id.val) {
+            db.active_id_scope = id;
+            armed = true;
+        }
+    }
+    ~ActiveIdScopeGuard() {
+        if (armed) {
+            db.active_id_scope = prev;
+        }
+    }
+};
+
+bool LoadRawLayerBytes(const CustomDataLayer &layer, size_t expectCount, size_t stride,
+        const FileDatabase &db, std::vector<uint8_t> &out) {
+    if (stride == 0 || expectCount == 0) {
+        return false;
+    }
+    if (layer.data) {
+        const RawCustomData *raw = static_cast<const RawCustomData *>(layer.data.get());
+        if (raw && raw->stride == stride && raw->count >= expectCount &&
+                raw->bytes.size() >= expectCount * stride) {
+            out.assign(raw->bytes.begin(),
+                    raw->bytes.begin() + static_cast<std::ptrdiff_t>(expectCount * stride));
+            return true;
+        }
+    }
+    if (!layer.data_ptr.val) {
+        return false;
+    }
+    const size_t want = expectCount * stride;
+    const FileBlockHead *block = nullptr;
+    for (const FileBlockHead &e : db.entries) {
+        if (e.address.val != layer.data_ptr.val) {
+            continue;
+        }
+        if (db.active_id_scope.val && e.owner_id.val != db.active_id_scope.val) {
+            continue;
+        }
+        if (e.size < want) {
+            continue;
+        }
+        block = &e;
+        break;
+    }
+    if (!block) {
+        return false;
+    }
+    out.resize(want);
+    const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+    db.reader->SetCurrentPos(block->start);
+    db.reader->CopyAndAdvance(out.data(), want);
+    db.reader->SetCurrentPos(pold);
+    return true;
+}
+
+} // namespace
+
+bool HydrateMeshFromCustomData(Mesh &mesh, const FileDatabase &db) {
+    if (mesh.totvert <= 0) {
+        return false;
+    }
+    const bool needVerts = mesh.mvert.size() < static_cast<size_t>(mesh.totvert);
+    const bool needLoops = mesh.totloop > 0 && mesh.mloop.size() < static_cast<size_t>(mesh.totloop);
+    const bool needPolys = mesh.totpoly > 0 && mesh.mpoly.size() < static_cast<size_t>(mesh.totpoly);
+    if (!needVerts && !needLoops && !needPolys) {
+        return false;
+    }
+
+    ActiveIdScopeGuard scope_guard(db, mesh.blend_id_address);
+
+    // Blender 4.x: position in vert_data / vdata, .corner_vert in corner_data / ldata,
+    // face_offset_indices on Mesh (DNA rename from poly_offset_indices).
+    if (needPolys && mesh.poly_offset_indices.size() < static_cast<size_t>(mesh.totpoly) + 1) {
+        if (mesh.poly_offset_ptr.val) {
+            std::vector<int> offsets;
+            if (ReadIntArrayAtPointer(mesh.poly_offset_ptr, static_cast<size_t>(mesh.totpoly) + 1, db, offsets)) {
+                mesh.poly_offset_indices.assign(offsets.begin(), offsets.end());
+            }
+        }
+    }
+
+    auto clearPartial = [&mesh]() {
+        mesh.mvert.clear();
+        mesh.mloop.clear();
+        mesh.mpoly.clear();
+        mesh.poly_offset_indices.clear();
+    };
+
+    if (needVerts) {
+        std::shared_ptr<CustomDataLayer> posLayer =
+                getCustomDataLayer(mesh.vdata, CD_PROP_FLOAT3, "position");
+        if (!posLayer) {
+            posLayer = getCustomDataLayerByName(mesh.vdata, "position");
+        }
+        // Legacy: CD_MVERT layer still present on some 2.8/2.9 writes.
+        if (!posLayer) {
+            posLayer = getCustomDataLayer(mesh.vdata, CD_MVERT, "");
+            for (const auto &L : mesh.vdata.layers) {
+                if (L && L->type == CD_MVERT) {
+                    posLayer = L;
+                    break;
+                }
+            }
+        }
+        if (!posLayer) {
+            ASSIMP_LOG_WARN("BLEND: CustomData missing position layer (file_version=",
+                    db.blender_file_version, " totvert=", mesh.totvert, ")");
+            return false;
+        }
+
+        if (posLayer->type == CD_MVERT && posLayer->data) {
+            const MVert *mv = static_cast<const MVert *>(posLayer->data.get());
+            mesh.mvert.resize(static_cast<size_t>(mesh.totvert));
+            for (int i = 0; i < mesh.totvert; ++i) {
+                mesh.mvert[static_cast<size_t>(i)] = mv[i];
+            }
+        } else {
+            std::vector<uint8_t> bytes;
+            if (!LoadRawLayerBytes(*posLayer, static_cast<size_t>(mesh.totvert), 12, db, bytes)) {
+                ASSIMP_LOG_WARN("BLEND: CustomData position payload unreadable");
+                return false;
+            }
+            mesh.mvert.resize(static_cast<size_t>(mesh.totvert));
+            for (int i = 0; i < mesh.totvert; ++i) {
+                float co[3];
+                std::memcpy(co, bytes.data() + static_cast<size_t>(i) * 12, 12);
+                if (!db.little) {
+                    ByteSwap::Swap4(&co[0]);
+                    ByteSwap::Swap4(&co[1]);
+                    ByteSwap::Swap4(&co[2]);
+                }
+                mesh.mvert[static_cast<size_t>(i)].co[0] = co[0];
+                mesh.mvert[static_cast<size_t>(i)].co[1] = co[1];
+                mesh.mvert[static_cast<size_t>(i)].co[2] = co[2];
+                mesh.mvert[static_cast<size_t>(i)].no[0] = 0.f;
+                mesh.mvert[static_cast<size_t>(i)].no[1] = 0.f;
+                mesh.mvert[static_cast<size_t>(i)].no[2] = 1.f;
+            }
+        }
+    }
+
+    if (needLoops && mesh.totloop > 0) {
+        std::shared_ptr<CustomDataLayer> cv =
+                getCustomDataLayer(mesh.ldata, CD_PROP_INT32, ".corner_vert");
+        if (!cv) {
+            cv = getCustomDataLayerByName(mesh.ldata, ".corner_vert");
+        }
+        if (!cv) {
+            // BMesh-era: CD_MLOOP array
+            for (const auto &L : mesh.ldata.layers) {
+                if (L && L->type == CD_MLOOP && L->data) {
+                    const MLoop *ml = static_cast<const MLoop *>(L->data.get());
+                    mesh.mloop.resize(static_cast<size_t>(mesh.totloop));
+                    for (int i = 0; i < mesh.totloop; ++i) {
+                        mesh.mloop[static_cast<size_t>(i)] = ml[i];
+                    }
+                    cv.reset();
+                    break;
+                }
+            }
+        }
+        if (mesh.mloop.size() < static_cast<size_t>(mesh.totloop)) {
+            if (!cv) {
+                ASSIMP_LOG_WARN("BLEND: CustomData missing .corner_vert (file_version=",
+                        db.blender_file_version, " totloop=", mesh.totloop, ")");
+                clearPartial();
+                return false;
+            }
+            std::vector<uint8_t> bytes;
+            if (!LoadRawLayerBytes(*cv, static_cast<size_t>(mesh.totloop), 4, db, bytes)) {
+                ASSIMP_LOG_WARN("BLEND: CustomData .corner_vert payload unreadable");
+                clearPartial();
+                return false;
+            }
+            mesh.mloop.resize(static_cast<size_t>(mesh.totloop));
+            for (int i = 0; i < mesh.totloop; ++i) {
+                int v = 0;
+                std::memcpy(&v, bytes.data() + static_cast<size_t>(i) * 4, 4);
+                if (!db.little) {
+                    ByteSwap::Swap4(&v);
+                }
+                mesh.mloop[static_cast<size_t>(i)].v = v;
+                mesh.mloop[static_cast<size_t>(i)].e = 0;
+            }
+        }
+    }
+
+    if (needPolys && mesh.totpoly > 0 &&
+            mesh.poly_offset_indices.size() >= static_cast<size_t>(mesh.totpoly) + 1) {
+        mesh.mpoly.resize(static_cast<size_t>(mesh.totpoly));
+        for (int i = 0; i < mesh.totpoly; ++i) {
+            const int start = mesh.poly_offset_indices[static_cast<size_t>(i)];
+            const int end = mesh.poly_offset_indices[static_cast<size_t>(i) + 1];
+            mesh.mpoly[static_cast<size_t>(i)].loopstart = start;
+            mesh.mpoly[static_cast<size_t>(i)].totloop = end - start;
+            mesh.mpoly[static_cast<size_t>(i)].mat_nr = 0;
+        }
+    } else if (needPolys && mesh.totpoly > 0) {
+        // BMesh CD_MPOLY layer
+        for (const auto &L : mesh.pdata.layers) {
+            if (L && L->type == CD_MPOLY && L->data) {
+                const MPoly *mp = static_cast<const MPoly *>(L->data.get());
+                mesh.mpoly.resize(static_cast<size_t>(mesh.totpoly));
+                for (int i = 0; i < mesh.totpoly; ++i) {
+                    mesh.mpoly[static_cast<size_t>(i)] = mp[i];
+                }
+                break;
+            }
+        }
+    }
+
+    if (mesh.mvert.size() < static_cast<size_t>(mesh.totvert) ||
+            (mesh.totloop > 0 && mesh.mloop.size() < static_cast<size_t>(mesh.totloop)) ||
+            (mesh.totpoly > 0 && mesh.mpoly.size() < static_cast<size_t>(mesh.totpoly))) {
+        clearPartial();
+        return false;
+    }
+    for (int i = 0; i < mesh.totloop; ++i) {
+        if (mesh.mloop[static_cast<size_t>(i)].v < 0 ||
+                mesh.mloop[static_cast<size_t>(i)].v >= mesh.totvert) {
+            ASSIMP_LOG_WARN("BLEND: CustomData loop index out of range; discarding");
+            clearPartial();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool HydrateMeshGeometry(Mesh &mesh, const FileDatabase &db) {
+    if (mesh.totvert <= 0) {
+        return false;
+    }
+    const bool needVerts = mesh.mvert.size() < static_cast<size_t>(mesh.totvert);
+    const bool needLoops = mesh.totloop > 0 && mesh.mloop.size() < static_cast<size_t>(mesh.totloop);
+    const bool needPolys = mesh.totpoly > 0 && mesh.mpoly.size() < static_cast<size_t>(mesh.totpoly);
+    if (!needVerts && !needLoops && !needPolys) {
+        return true;
+    }
+
+    const int ver = db.blender_file_version;
+    // AttributeStorage: DNA from ~4.5 (ver>=450) / 5.x (ver>=500). Also try when
+    // Convert already saw attribute_storage fields (dna_num>0).
+    const bool tryAttrStorage = (ver >= kBlendVer_AttributeStorage) || (mesh.attribute_dna_num > 0);
+    if (tryAttrStorage) {
+        if (HydrateMeshFromAttributeStorage(mesh, db)) {
+            return true;
+        }
+    }
+    // CustomData generic attrs: CD_PROP_FLOAT3 era (~2.90+) through 4.x, and as
+    // fallback when AttributeStorage is absent/empty on newer files.
+    if (ver >= kBlendVer_CustomDataGenericAttrs || ver == 0) {
+        if (HydrateMeshFromCustomData(mesh, db)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace Blender
