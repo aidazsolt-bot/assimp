@@ -51,6 +51,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderBMesh.h"
 #include "BlenderCustomData.h"
 #include "BlenderIntermediate.h"
+#include "BlenderMeshAttributes.h"
 #include "BlenderModifier.h"
 #include <assimp/StringUtils.h>
 #include <assimp/commonMetaData.h>
@@ -2274,18 +2275,24 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         ThrowException("Number of faces is larger than the corresponding array");
     }
 
-    // Blender 5+ often keeps totvert/totloop but stores positions/topology in
-    // CustomData layers instead of classic *mvert/*mloop arrays. Container/format
-    // v1 is already parsed; full CD_PROP_FLOAT3 mesh convert is a follow-up.
-    // Skip this mesh honestly instead of aborting the whole file.
+    // Blender 5+: classic *mvert/*mloop/*mpoly may be empty; hydrate from AttributeStorage.
     if (static_cast<size_t>(mesh->totvert) > mesh->mvert.size() ||
-            static_cast<size_t>(mesh->totloop) > mesh->mloop.size()) {
-        LogWarn("BLEND: mesh '", mesh->id.name + 2,
-                "' uses non-classic vertex/loop storage (Blender 5+ attributes); "
-                "skipping geometry convert (totvert=", mesh->totvert,
-                " mvert=", mesh->mvert.size(),
-                " totloop=", mesh->totloop,
-                " mloop=", mesh->mloop.size(), ")");
+            (mesh->totloop > 0 && static_cast<size_t>(mesh->totloop) > mesh->mloop.size()) ||
+            (mesh->totpoly > 0 && static_cast<size_t>(mesh->totpoly) > mesh->mpoly.size())) {
+        Mesh *mutableMesh = const_cast<Mesh *>(mesh);
+        if (!HydrateMeshFromAttributeStorage(*mutableMesh, conv_data.db)) {
+            LogWarn("mesh '", mesh->id.name + 2,
+                    "' has no classic arrays and AttributeStorage hydrate failed "
+                    "(totvert=", mesh->totvert, " mvert=", mesh->mvert.size(),
+                    " totloop=", mesh->totloop, " mloop=", mesh->mloop.size(), ")");
+            return;
+        }
+        LogInfo("hydrated mesh '", mesh->id.name + 2,
+                "' from AttributeStorage (verts=", mesh->mvert.size(),
+                " loops=", mesh->mloop.size(), " polys=", mesh->mpoly.size(), ")");
+    }
+    if (static_cast<size_t>(mesh->totvert) > mesh->mvert.size() ||
+            (mesh->totloop > 0 && static_cast<size_t>(mesh->totloop) > mesh->mloop.size())) {
         return;
     }
 
@@ -2333,11 +2340,14 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         // of the material entry within the list of resolved materials.
         if (mesh->mat) {
 
-            if (static_cast<size_t>(it.first) >= mesh->mat.size()) {
-                ThrowException("Material index is out of range");
+            std::shared_ptr<Material> mat;
+            if (it.first >= 0 && static_cast<size_t>(it.first) < mesh->mat.size()) {
+                mat = mesh->mat[it.first];
+            } else {
+                LogWarn("mesh '", mesh->id.name + 2,
+                        "' material index ", it.first, " out of range (mat.size=",
+                        mesh->mat.size(), "); using default");
             }
-
-            std::shared_ptr<Material> mat = mesh->mat[it.first];
             if (!mat) {
                 out->mMaterialIndex = static_cast<unsigned int>(-1);
             } else {
@@ -2461,8 +2471,14 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         for (int j = 0; j < mf.totloop; ++j) {
             const MLoop &loop = mesh->mloop[mf.loopstart + j];
 
-            if (loop.v >= mesh->totvert) {
-                ThrowException("Vertex index out of range");
+            if (loop.v < 0 || loop.v >= mesh->totvert) {
+                LogWarn("mesh '", mesh->id.name + 2,
+                        "' has out-of-range corner vertex index; skipping mesh");
+                while (temp->size() > old) {
+                    delete temp->back();
+                    temp->pop_back();
+                }
+                return;
             }
 
             const MVert &v = mesh->mvert[loop.v];
