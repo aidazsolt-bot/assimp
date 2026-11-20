@@ -1175,7 +1175,9 @@ void Structure::Convert<CustomDataLayer>(
     ReadField<ErrorPolicy_Warn>(dest.active_mask, "active_mask", db);
     ReadField<ErrorPolicy_Warn>(dest.uid, "uid", db);
     ReadFieldArray<ErrorPolicy_Warn>(dest.name, "name", db);
-    ReadCustomDataPtr<ErrorPolicy_Fail>(dest.data, dest.type, "*data", db);
+    // Keep *data address; Igno: unknown/newer CD types must not abort Mesh convert.
+    ReadField<ErrorPolicy_Igno>(dest.data_ptr, "*data", db);
+    ReadCustomDataPtr<ErrorPolicy_Igno>(dest.data, dest.type, "*data", db);
 
     db.reader->IncPtr(size);
 }

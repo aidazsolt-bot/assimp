@@ -5,13 +5,21 @@ Copyright (c) 2006-2026, assimp team
 ----------------------------------------------------------------------
 */
 /** @file BlenderMeshAttributes.h
- *  Blender 5+ AttributeStorage -> classic mvert/mloop/mpoly hydration.
+ *  Version-aware mesh geometry hydrate for Blender .blend files.
  *
- *  DNA layouts and enums are taken from blender.git:
- *  - source/blender/makesdna/DNA_attribute_types.h
- *  - source/blender/blenkernel/BKE_attribute_enums.hh
- *  - source/blender/makesdna/DNA_mesh_types.h (face_offset_indices / attribute_storage)
- *  - source/blender/makesdna/intern/dna_rename_defs.h (poly_offset_indices -> face_offset_indices, etc.)
+ *  File header version (`FileDatabase::blender_file_version`):
+ *    v0: 3 digits (e.g. 403 = Blender 4.03)
+ *    v1: 4 digits (e.g. 500 = Blender 5.00)
+ *
+ *  Geometry on disk (from blender.git DNA / mesh_blend_write):
+ *    classic *mvert / *mloop / *mpoly - early / forward-compat pointers
+ *    CustomData CD_PROP_FLOAT3
+ *      "position" + CD_PROP_INT32 ".corner_vert"
+ *      + face_offset_indices          - ~2.90+ through 4.x (no AttributeStorage in 4.3)
+ *    AttributeStorage                  - ~4.5+ / 5.x (DNA_attribute_types.h)
+ *
+ *  DNA refs: DNA_customdata_types.h, DNA_attribute_types.h, DNA_mesh_types.h,
+ *  dna_rename_defs.h, BKE_attribute_enums.hh
  */
 #pragma once
 
@@ -59,39 +67,22 @@ enum class BlendAttrStorageType : std::int8_t {
     Single = 1
 };
 
-/**
- * blender::Attribute DNA (DNA_attribute_types.h), 64-bit:
- *   +0  char *name
- *   +8  int16_t data_type
- *  +10  int8_t domain
- *  +11  int8_t storage_type
- *  +12  char _pad[4]
- *  +16  void *data   (AttributeArray* or AttributeSingle*)
- *  size 24
- */
 static constexpr std::size_t kBlendAttrDnaSize = 24;
-
-/**
- * blender::AttributeArray DNA (DNA_attribute_types.h), 64-bit:
- *   +0  void *data
- *   +8  ImplicitSharingInfoHandle *sharing_info
- *  +16  int64_t size
- *  +24  int8_t is_single   (absent in early 5.0 DNA -> struct size 24)
- *  +25  char _pad[7]
- *  size 32 (current blender.git)
- */
 static constexpr std::size_t kBlendAttrArrayDnaSizeMin = 24;
 static constexpr std::size_t kBlendAttrArrayDnaSize = 32;
-
-/**
- * blender::AttributeSingle DNA (DNA_attribute_types.h), 64-bit:
- *   +0  void *data
- *   +8  ImplicitSharingInfoHandle *sharing_info
- *  size 16
- */
 static constexpr std::size_t kBlendAttrSingleDnaSize = 16;
 
-/** Byte size of one AttrType element; 0 if unsupported. Matches CPPType sizes used by Blender. */
+/**
+ * Blender file-version cutovers for mesh geometry paths.
+ * Compared against FileDatabase::blender_file_version (header digits).
+ */
+enum BlendMeshGeomEra : int {
+    /** CD_PROP_FLOAT3 / named generic attrs appear (~Blender 2.90). */
+    kBlendVer_CustomDataGenericAttrs = 290,
+    /** AttributeStorage DNA on Mesh (~Blender 4.5+; dominant in 5.x). */
+    kBlendVer_AttributeStorage = 450
+};
+
 inline std::size_t BlendAttrTypeSize(BlendAttrType t) {
     switch (t) {
     case BlendAttrType::Bool:
@@ -107,17 +98,19 @@ inline std::size_t BlendAttrTypeSize(BlendAttrType t) {
     case BlendAttrType::Quaternion: return 16;
     case BlendAttrType::ColorByte: return 4;
     case BlendAttrType::Float4x4: return 64;
-    case BlendAttrType::String: return 0; // MStringProperty - not needed for mesh hydrate
+    case BlendAttrType::String: return 0;
     default: return 0;
     }
 }
 
-/**
- * If Mesh lacks classic mvert/mloop/mpoly but has AttributeStorage
- * (position / .corner_vert / face_offset_indices), fill the classic arrays
- * so ConvertMesh can run. Returns true if hydration produced usable topology.
- */
 bool HydrateMeshFromAttributeStorage(Mesh &mesh, const FileDatabase &db);
+bool HydrateMeshFromCustomData(Mesh &mesh, const FileDatabase &db);
+
+/**
+ * Fill classic mvert/mloop/mpoly when missing, choosing the path by
+ * blender_file_version (and DNA presence). Returns true if topology is usable.
+ */
+bool HydrateMeshGeometry(Mesh &mesh, const FileDatabase &db);
 
 } // namespace Blender
 } // namespace Assimp
