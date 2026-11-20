@@ -570,6 +570,8 @@ struct Mesh final : ElemBase {
     vector<int> poly_offset_indices;
     Pointer attribute_dna_ptr;
     int attribute_dna_num = 0;
+    // ME block `old` (FileDatabase::active_id_scope during Convert) for per-ID DATA lookup.
+    Pointer blend_id_address;
 };
 
 /** DNA subset of blender::AttributeStorage (DNA_attribute_types.h, file read only). */

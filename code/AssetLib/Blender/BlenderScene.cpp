@@ -721,6 +721,10 @@ void Structure ::Convert<Mesh>(
         Mesh &dest,
         const FileDatabase &db) const {
 
+    // Capture owning ME `old` for AttributeStorage hydrate (ConvertMesh runs later,
+    // after ResolvePointer restored active_id_scope).
+    dest.blend_id_address = db.active_id_scope;
+
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
     // dna_rename_defs.h: totface->totface_legacy, totedge->edges_num, totvert->verts_num,
     // totloop->corners_num, totpoly->faces_num. File DNA uses whichever name was written.
