@@ -1038,17 +1038,22 @@ namespace Assimp {
                 aiColor4D clrOut;
                 aiMaterial *pcHelper = new aiMaterial();
 
-                // build the diffuse material color
-                GetMaterialColor((*i).alProperties, aaiPositions[0], aaiTypes[0], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_DIFFUSE);
-
-                // build the specular material color
-                GetMaterialColor((*i).alProperties, aaiPositions[1], aaiTypes[1], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_SPECULAR);
-
-                // build the ambient material color
-                GetMaterialColor((*i).alProperties, aaiPositions[2], aaiTypes[2], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_AMBIENT);
+                // Emit only channels present in the material element - no invented black/zeros.
+                auto channelAuthored = [](const unsigned int positions[4]) {
+                    return positions[0] != NotSet || positions[1] != NotSet || positions[2] != NotSet;
+                };
+                if (channelAuthored(aaiPositions[0])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[0], aaiTypes[0], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_DIFFUSE);
+                }
+                if (channelAuthored(aaiPositions[1])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[1], aaiTypes[1], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_SPECULAR);
+                }
+                if (channelAuthored(aaiPositions[2])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[2], aaiTypes[2], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_AMBIENT);
+                }
 
                 // handle phong power and shading mode
                 int iMode = aiShadingMode_Gouraud;
@@ -1069,7 +1074,7 @@ namespace Assimp {
 
                 // handle opacity
                 if (0xFFFFFFFF != iOpacity) {
-                    ai_real fOpacity = PropertyInstance::ConvertTo<ai_real>(GetProperty((*i).alProperties, iPhong).avList.front(), eOpacity);
+                    ai_real fOpacity = PropertyInstance::ConvertTo<ai_real>(GetProperty((*i).alProperties, iOpacity).avList.front(), eOpacity);
                     pcHelper->AddProperty<ai_real>(&fOpacity, 1, AI_MATKEY_OPACITY);
                 }
 
@@ -1101,42 +1106,48 @@ namespace Assimp {
             // generate a default material
             aiMaterial *pcHelper = new aiMaterial();
 
-            // fill in a default material
-            int iMode = aiShadingMode_Gouraud;
-            pcHelper->AddProperty<int>(&iMode, 1, AI_MATKEY_SHADING_MODEL);
-
-            // generate white material most 3D engine just multiply ambient / diffuse color with actual ambient / light color
-            aiColor3D clr;
-            clr.b = clr.g = clr.r = 1.0f;
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_SPECULAR);
-
-            clr.b = clr.g = clr.r = 1.0f;
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_AMBIENT);
-
-            // The face order is absolutely undefined for PLY, so we have to
-            // use two-sided rendering to be sure it's ok.
-            if (!pointsOnly) {
-                const int two_sided = 1;
-                pcHelper->AddProperty(&two_sided, 1, AI_MATKEY_TWOSIDED);
-            }
-
-            // default texture
-            if (!defaultTexture.empty()) {
-                const aiString name(defaultTexture.c_str());
-                pcHelper->AddProperty(&name, _AI_MATKEY_TEXTURE_BASE, aiTextureType_DIFFUSE, 0);
-            } else {
+            // GS / splat PLY: name only - do not invent white Kd/Ks/Ka (color lives on aiGaussianSplat).
+            if (mGaussianActive) {
                 const aiString name(AI_DEFAULT_MATERIAL_NAME);
                 pcHelper->AddProperty(&name, AI_MATKEY_NAME);
-            }
+                if (pointsOnly) {
+                    constexpr int wireframe = 1;
+                    pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
+                }
+                pvOut->push_back(pcHelper);
+            } else {
+                // Classic mesh PLY: keep historical white defaults for ValidateDS.
+                int iMode = aiShadingMode_Gouraud;
+                pcHelper->AddProperty<int>(&iMode, 1, AI_MATKEY_SHADING_MODEL);
 
-            // set to wireframe, so when using this material info we can switch to points rendering
-            if (pointsOnly) {
-                constexpr int wireframe = 1;
-                pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
-            }
+                aiColor3D clr;
+                clr.b = clr.g = clr.r = 1.0f;
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_SPECULAR);
 
-            pvOut->push_back(pcHelper);
+                clr.b = clr.g = clr.r = 1.0f;
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_AMBIENT);
+
+                if (!pointsOnly) {
+                    const int two_sided = 1;
+                    pcHelper->AddProperty(&two_sided, 1, AI_MATKEY_TWOSIDED);
+                }
+
+                if (!defaultTexture.empty()) {
+                    const aiString name(defaultTexture.c_str());
+                    pcHelper->AddProperty(&name, _AI_MATKEY_TEXTURE_BASE, aiTextureType_DIFFUSE, 0);
+                } else {
+                    const aiString name(AI_DEFAULT_MATERIAL_NAME);
+                    pcHelper->AddProperty(&name, AI_MATKEY_NAME);
+                }
+
+                if (pointsOnly) {
+                    constexpr int wireframe = 1;
+                    pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
+                }
+
+                pvOut->push_back(pcHelper);
+            }
         }
     }
 
