@@ -1563,6 +1563,22 @@ void BlenderImporter::ParseBlendFile(FileDatabase &out, std::shared_ptr<IOStream
         ThrowException("SDNA not found");
     }
 
+    // Tag DATA blocks with their owning ID (file order), matching Blender's
+    // read_data_into_datamap: DATA following an ID belongs to that ID until the
+    // next non-DATA block. Required because `old` addresses can collide across IDs.
+    {
+        Pointer owner;
+        owner.val = 0;
+        for (FileBlockHead &e : out.entries) {
+            if (e.id != "DATA") {
+                owner = e.address;
+                e.owner_id.val = 0;
+            } else {
+                e.owner_id = owner;
+            }
+        }
+    }
+
     std::sort(out.entries.begin(), out.entries.end());
 }
 
@@ -1593,7 +1609,10 @@ void BlenderImporter::ExtractScene(Scene &out, const FileDatabase &file) {
     }
 
     file.reader->SetCurrentPos(block->start);
+    // Scene Convert is not entered via ResolvePointer - set ID datamap scope.
+    file.active_id_scope = block->address;
     ss.Convert(out, file);
+    file.active_id_scope.val = 0;
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
     ASSIMP_LOG_INFO(
@@ -1622,6 +1641,11 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
         }
     }
     root->mNumChildren = static_cast<unsigned int>(root_objects.size() + root_children.size());
+    // ValidateDataStructure requires nullptr when empty (not new aiNode*[0]).
+    if (root->mNumChildren == 0) {
+        root->mChildren = nullptr;
+        return;
+    }
     root->mChildren = new aiNode *[root->mNumChildren]();
 
     for (unsigned int i = 0; i < static_cast<unsigned int>(root_objects.size()); ++i) {
@@ -1632,11 +1656,12 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
     // For each subcollection create a new node to represent it
     unsigned int iterator = static_cast<unsigned int>(root_objects.size());
     for (std::shared_ptr<CollectionChild> cur = std::static_pointer_cast<CollectionChild>(collection->children.first); cur; cur = cur->next) {
-        if (cur->collection) {
-            root->mChildren[iterator] = new aiNode(cur->collection->id.name + 2); // skip over the name prefix 'OB'
-            root->mChildren[iterator]->mParent = root;
-            ParseSubCollection(in, root->mChildren[iterator], cur->collection, conv_data);
+        if (!cur->collection) {
+            continue;
         }
+        root->mChildren[iterator] = new aiNode(cur->collection->id.name + 2); // skip over the name prefix 'OB'
+        root->mChildren[iterator]->mParent = root;
+        ParseSubCollection(in, root->mChildren[iterator], cur->collection, conv_data);
         iterator += 1;
     }
 }
