@@ -1088,17 +1088,22 @@ namespace Assimp {
                 aiColor4D clrOut;
                 aiMaterial *pcHelper = new aiMaterial();
 
-                // build the diffuse material color
-                GetMaterialColor((*i).alProperties, aaiPositions[0], aaiTypes[0], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_DIFFUSE);
-
-                // build the specular material color
-                GetMaterialColor((*i).alProperties, aaiPositions[1], aaiTypes[1], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_SPECULAR);
-
-                // build the ambient material color
-                GetMaterialColor((*i).alProperties, aaiPositions[2], aaiTypes[2], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_AMBIENT);
+                // Emit only channels present in the material element - no invented black/zeros.
+                auto channelAuthored = [](const unsigned int positions[4]) {
+                    return positions[0] != NotSet || positions[1] != NotSet || positions[2] != NotSet;
+                };
+                if (channelAuthored(aaiPositions[0])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[0], aaiTypes[0], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_DIFFUSE);
+                }
+                if (channelAuthored(aaiPositions[1])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[1], aaiTypes[1], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_SPECULAR);
+                }
+                if (channelAuthored(aaiPositions[2])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[2], aaiTypes[2], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_AMBIENT);
+                }
 
                 // handle phong power and shading mode
                 int iMode = aiShadingMode_Gouraud;
@@ -1117,9 +1122,9 @@ namespace Assimp {
                 }
                 pcHelper->AddProperty<int>(&iMode, 1, AI_MATKEY_SHADING_MODEL);
 
-                // handle opacity
+                // handle opacity (authored property only)
                 if (0xFFFFFFFF != iOpacity) {
-                    ai_real fOpacity = PropertyInstance::ConvertTo<ai_real>(GetProperty((*i).alProperties, iPhong).avList.front(), eOpacity);
+                    ai_real fOpacity = PropertyInstance::ConvertTo<ai_real>(GetProperty((*i).alProperties, iOpacity).avList.front(), eOpacity);
                     pcHelper->AddProperty<ai_real>(&fOpacity, 1, AI_MATKEY_OPACITY);
                 }
 
