@@ -2757,6 +2757,175 @@ aiLight *BlenderImporter::ConvertLight(const Scene & /*in*/, const Object *obj, 
     return out.release();
 }
 
+namespace {
+
+// Minimal Blender-layout mat3/mat4 helpers (column-major, translation in mat[3]).
+void BlendZeroM3(float m[3][3]) {
+    for (unsigned int i = 0; i < 3; ++i) {
+        for (unsigned int j = 0; j < 3; ++j) {
+            m[i][j] = 0.f;
+        }
+    }
+}
+
+void BlendIdentityM4(float m[4][4]) {
+    for (unsigned int i = 0; i < 4; ++i) {
+        for (unsigned int j = 0; j < 4; ++j) {
+            m[i][j] = (i == j) ? 1.f : 0.f;
+        }
+    }
+}
+
+void BlendMulM3(float r[3][3], const float a[3][3], const float b[3][3]) {
+    float t[3][3];
+    for (unsigned int i = 0; i < 3; ++i) {
+        for (unsigned int j = 0; j < 3; ++j) {
+            t[i][j] = a[0][j] * b[i][0] + a[1][j] * b[i][1] + a[2][j] * b[i][2];
+        }
+    }
+    for (unsigned int i = 0; i < 3; ++i) {
+        for (unsigned int j = 0; j < 3; ++j) {
+            r[i][j] = t[i][j];
+        }
+    }
+}
+
+void BlendMulM4(float r[4][4], const float a[4][4], const float b[4][4]) {
+    float t[4][4];
+    for (unsigned int i = 0; i < 4; ++i) {
+        for (unsigned int j = 0; j < 4; ++j) {
+            t[i][j] = a[0][j] * b[i][0] + a[1][j] * b[i][1] + a[2][j] * b[i][2] + a[3][j] * b[i][3];
+        }
+    }
+    for (unsigned int i = 0; i < 4; ++i) {
+        for (unsigned int j = 0; j < 4; ++j) {
+            r[i][j] = t[i][j];
+        }
+    }
+}
+
+void BlendSizeToMat3(float m[3][3], const float size[3]) {
+    BlendZeroM3(m);
+    m[0][0] = size[0];
+    m[1][1] = size[1];
+    m[2][2] = size[2];
+}
+
+void BlendQuatToMat3(float m[3][3], const float q[4]) {
+    // Blender quat = (w, x, y, z)
+    const float w = q[0], x = q[1], y = q[2], z = q[3];
+    const float n = std::sqrt(w * w + x * x + y * y + z * z);
+    const float s = (n > 1e-20f) ? (2.f / (n * n)) : 0.f;
+    const float xx = x * x * s, yy = y * y * s, zz = z * z * s;
+    const float xy = x * y * s, xz = x * z * s, yz = y * z * s;
+    const float wx = w * x * s, wy = w * y * s, wz = w * z * s;
+    m[0][0] = 1.f - (yy + zz);
+    m[0][1] = xy - wz;
+    m[0][2] = xz + wy;
+    m[1][0] = xy + wz;
+    m[1][1] = 1.f - (xx + zz);
+    m[1][2] = yz - wx;
+    m[2][0] = xz - wy;
+    m[2][1] = yz + wx;
+    m[2][2] = 1.f - (xx + yy);
+}
+
+void BlendAxisAngleToMat3(float m[3][3], const float axis[3], float angle) {
+    const float len = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    float ax = axis[0], ay = axis[1], az = axis[2];
+    if (len > 1e-20f) {
+        ax /= len;
+        ay /= len;
+        az /= len;
+    }
+    const float c = std::cos(angle), s = std::sin(angle), t = 1.f - c;
+    m[0][0] = t * ax * ax + c;
+    m[0][1] = t * ax * ay - s * az;
+    m[0][2] = t * ax * az + s * ay;
+    m[1][0] = t * ax * ay + s * az;
+    m[1][1] = t * ay * ay + c;
+    m[1][2] = t * ay * az - s * ax;
+    m[2][0] = t * ax * az - s * ay;
+    m[2][1] = t * ay * az + s * ax;
+    m[2][2] = t * az * az + c;
+}
+
+void BlendEulXYZToMat3(float m[3][3], const float eul[3]) {
+    // XYZ intrinsic (Blender ROT_MODE_XYZ / default EUL). Other eul orders approximated as XYZ.
+    float Rx[3][3], Ry[3][3], Rz[3][3], t[3][3];
+    const float cx = std::cos(eul[0]), sx = std::sin(eul[0]);
+    const float cy = std::cos(eul[1]), sy = std::sin(eul[1]);
+    const float cz = std::cos(eul[2]), sz = std::sin(eul[2]);
+    BlendZeroM3(Rx);
+    Rx[0][0] = 1.f;
+    Rx[1][1] = cx;
+    Rx[1][2] = -sx;
+    Rx[2][1] = sx;
+    Rx[2][2] = cx;
+    BlendZeroM3(Ry);
+    Ry[0][0] = cy;
+    Ry[0][2] = sy;
+    Ry[1][1] = 1.f;
+    Ry[2][0] = -sy;
+    Ry[2][2] = cy;
+    BlendZeroM3(Rz);
+    Rz[0][0] = cz;
+    Rz[0][1] = -sz;
+    Rz[1][0] = sz;
+    Rz[1][1] = cz;
+    Rz[2][2] = 1.f;
+    BlendMulM3(t, Ry, Rx);
+    BlendMulM3(m, Rz, t);
+}
+
+/** BKE_object_to_mat4 subset: local object matrix from loc/rot/scale (+ deltas). */
+void BlendObjectToMat4(const Object &ob, float r_mat[4][4]) {
+    float smat[3][3], rmat[3][3], dmat[3][3], tmat[3][3];
+    float size[3] = {
+            ob.scale[0] * ob.dscale[0],
+            ob.scale[1] * ob.dscale[1],
+            ob.scale[2] * ob.dscale[2]
+    };
+    BlendSizeToMat3(smat, size);
+
+    // rotmode: >0 euler, -1 axis-angle, 0 quaternion (DNA_action_types.h).
+    if (ob.rotmode > 0) {
+        BlendEulXYZToMat3(rmat, ob.rot);
+        BlendEulXYZToMat3(dmat, ob.drot);
+        BlendMulM3(rmat, dmat, rmat);
+    } else if (ob.rotmode == -1) {
+        BlendAxisAngleToMat3(rmat, ob.rotAxis, ob.rotAngle);
+        BlendAxisAngleToMat3(dmat, ob.drotAxis, ob.drotAngle);
+        BlendMulM3(rmat, dmat, rmat);
+    } else {
+        BlendQuatToMat3(rmat, ob.quat);
+        BlendQuatToMat3(dmat, ob.dquat);
+        BlendMulM3(rmat, dmat, rmat);
+    }
+
+    BlendMulM3(tmat, rmat, smat);
+    BlendIdentityM4(r_mat);
+    for (unsigned int i = 0; i < 3; ++i) {
+        for (unsigned int j = 0; j < 3; ++j) {
+            r_mat[i][j] = tmat[i][j];
+        }
+    }
+    r_mat[3][0] = ob.loc[0] + ob.dloc[0];
+    r_mat[3][1] = ob.loc[1] + ob.dloc[1];
+    r_mat[3][2] = ob.loc[2] + ob.dloc[2];
+}
+
+void BlendCopyMat4ToAi(aiMatrix4x4 &out, const float m[4][4]) {
+    // Same transpose as historic obmat → aiNode path.
+    for (unsigned int x = 0; x < 4; ++x) {
+        for (unsigned int y = 0; y < 4; ++y) {
+            out[y][x] = m[x][y];
+        }
+    }
+}
+
+} // namespace
+
 // ------------------------------------------------------------------------------------------------
 aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, ConversionData &conv_data, const aiMatrix4x4 &parentTransform) {
     std::deque<const Object *> children;
@@ -2834,16 +3003,26 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
         }
     }
 
-    for (unsigned int x = 0; x < 4; ++x) {
-        for (unsigned int y = 0; y < 4; ++y) {
-            node->mTransformation[y][x] = obj->obmat[x][y];
+    if (obj->has_world_matrix) {
+        // DNA world matrix (`obmat` / `object_to_world`): convert to parent-local.
+        BlendCopyMat4ToAi(node->mTransformation, obj->obmat);
+        aiMatrix4x4 m = parentTransform;
+        m = m.Inverse();
+        node->mTransformation = m * node->mTransformation;
+    } else {
+        // Blender >=4.1: world matrix is runtime-only. Compose local from loc/rot/scale
+        // and apply parentinv (BKE_object_to_mat4 + parentinv), already parent-local.
+        static bool sWarnedMissingObmat = false;
+        if (!sWarnedMissingObmat) {
+            LogWarn("Object DNA has no obmat/object_to_world (Blender >=4.1); "
+                    "composing node transforms from loc/rot/scale + parentinv");
+            sWarnedMissingObmat = true;
         }
+        float local[4][4], out[4][4];
+        BlendObjectToMat4(*obj, local);
+        BlendMulM4(out, obj->parentinv, local);
+        BlendCopyMat4ToAi(node->mTransformation, out);
     }
-
-    aiMatrix4x4 m = parentTransform;
-    m = m.Inverse();
-
-    node->mTransformation = m * node->mTransformation;
 
     if (children.size()) {
         node->mNumChildren = static_cast<unsigned int>(children.size());

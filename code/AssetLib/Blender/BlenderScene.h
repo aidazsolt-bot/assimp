@@ -896,8 +896,28 @@ struct Object final : ElemBase {
     };
 
     Type type FAIL;
+    /** World matrix when present in file DNA (`obmat` / `object_to_world`).
+     *  Absent from DNA since Blender 4.1 (runtime-only); see has_world_matrix. */
     float obmat[4][4] WARN;
     float parentinv[4][4] WARN;
+
+    // Local authored transform (DNA; used when has_world_matrix is false).
+    float loc[3] WARN;
+    float dloc[3] WARN;
+    float scale[3] WARN;
+    float dscale[3] WARN;
+    float rot[3] WARN;
+    float drot[3] WARN;
+    float quat[4] WARN;
+    float dquat[4] WARN;
+    float rotAxis[3] WARN;
+    float drotAxis[3] WARN;
+    float rotAngle WARN;
+    float drotAngle WARN;
+    short rotmode WARN;
+    /** True if `obmat` or `object_to_world` existed in the file SDNA. */
+    bool has_world_matrix;
+
     char parsubstr[32] WARN;
 
     Object *parent WARN;
@@ -914,8 +934,27 @@ struct Object final : ElemBase {
     std::shared_ptr<RigidBodyCon> rigidbody_constraint;
 
     Object() :
-            type(Type_EMPTY), parent(nullptr) {
-        // empty
+            type(Type_EMPTY),
+            rotAngle(0.f),
+            drotAngle(0.f),
+            rotmode(1), // ROT_MODE_EUL / XYZ
+            has_world_matrix(false),
+            parent(nullptr) {
+        // Identity parentinv / unit scale / unit quat (Blender defaults).
+        for (unsigned int i = 0; i < 4; ++i) {
+            for (unsigned int j = 0; j < 4; ++j) {
+                obmat[i][j] = (i == j) ? 1.f : 0.f;
+                parentinv[i][j] = (i == j) ? 1.f : 0.f;
+            }
+        }
+        for (unsigned int i = 0; i < 3; ++i) {
+            loc[i] = dloc[i] = rot[i] = drot[i] = 0.f;
+            scale[i] = dscale[i] = 1.f;
+            rotAxis[i] = drotAxis[i] = (i == 1) ? 1.f : 0.f;
+        }
+        quat[0] = dquat[0] = 1.f;
+        quat[1] = quat[2] = quat[3] = 0.f;
+        dquat[1] = dquat[2] = dquat[3] = 0.f;
     }
 };
 
