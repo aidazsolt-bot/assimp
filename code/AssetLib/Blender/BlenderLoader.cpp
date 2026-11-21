@@ -1974,30 +1974,16 @@ void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const M
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::AddSentinelTexture(aiMaterial *out, const Material *mat, const MTex *tex, ConversionData &conv_data) {
-    (void)mat;
-    (void)tex;
-    (void)conv_data;
-
-    aiString name;
-    name.length = ai_snprintf(name.data, AI_MAXLEN, "Procedural,num=%i,type=%s", conv_data.sentinel_cnt++,
-            GetTextureTypeDisplayString(tex->tex->type));
-    out->AddProperty(&name, AI_MATKEY_TEXTURE_DIFFUSE(
-                                    conv_data.next_texture[aiTextureType_DIFFUSE]++));
-}
-
-// ------------------------------------------------------------------------------------------------
 void BlenderImporter::ResolveTexture(aiMaterial *out, const Material *mat, const MTex *tex, ConversionData &conv_data) {
     const Tex *rtex = tex->tex.get();
     if (!rtex || !rtex->type) {
         return;
     }
 
-    // We can't support most of the texture types because they're mostly procedural.
-    // These are substituted by a dummy texture.
-    const char *dispnam = "";
+    // Only Type_IMAGE becomes a real $tex.file / embedded aiTexture.
+    // Procedural BI types (EnvMap, Clouds, ...) are not inventable paths (presence):
+    // skip the slot and record honesty in skipped[].
     switch (rtex->type) {
-        // these are listed in blender's UI
     case Tex::Type_CLOUDS:
     case Tex::Type_WOOD:
     case Tex::Type_MARBLE:
@@ -2010,14 +1996,16 @@ void BlenderImporter::ResolveTexture(aiMaterial *out, const Material *mat, const
     case Tex::Type_VORONOI:
     case Tex::Type_DISTNOISE:
     case Tex::Type_ENVMAP:
-
-        // these do no appear in the UI, why?
     case Tex::Type_POINTDENSITY:
-    case Tex::Type_VOXELDATA:
-
-        LogWarn("Encountered a texture with an unsupported type: ", dispnam);
-        AddSentinelTexture(out, mat, tex, conv_data);
+    case Tex::Type_VOXELDATA: {
+        const char *disp = GetTextureTypeDisplayString(rtex->type);
+        LogWarn("BLEND: skipping procedural texture type ", disp,
+                " (no Image datablock; not inventing $tex.file)");
+        std::string sk = "BLEND_texture_procedural_";
+        sk += disp;
+        conv_data.skippedCategories.push_back(sk);
         break;
+    }
 
     case Tex::Type_IMAGE:
         if (!rtex->ima) {
@@ -2034,33 +2022,27 @@ void BlenderImporter::ResolveTexture(aiMaterial *out, const Material *mat, const
 
 // ------------------------------------------------------------------------------------------------
 void BlenderImporter::BuildDefaultMaterial(Blender::ConversionData &conv_data) {
-    // add a default material if necessary
+    // Assimp DefaultMaterial policy (BaseImporter / ScenePreprocessor):
+    // name AI_DEFAULT_MATERIAL_NAME + diffuse (0.6,0.6,0.6). Needed here because
+    // ScenePreprocessor only injects when mNumMaterials==0; Blender often has other
+    // mats while some meshes still lack a slot.
     unsigned int index = static_cast<unsigned int>(-1);
     for (aiMesh *mesh : conv_data.meshes.get()) {
         if (mesh->mMaterialIndex == static_cast<unsigned int>(-1)) {
 
             if (index == static_cast<unsigned int>(-1)) {
-                // Setup a default material.
                 std::shared_ptr<Material> p(new Material());
                 const size_t len = ::strlen(AI_DEFAULT_MATERIAL_NAME);
                 ai_assert(len < sizeof(p->id.name) - 2);
                 memcpy(p->id.name + 2, AI_DEFAULT_MATERIAL_NAME, len);
 
                 // Note: MSVC11 does not zero-initialize Material here, although it should.
-                // Thus all relevant fields should be explicitly initialized. We cannot add
-                // a default constructor to Material since the DNA codegen does not support
-                // parsing it.
+                // Marker stub only - BuildMaterials emits Assimp-minimal keys (no blend.* invent).
                 p->r = p->g = p->b = 0.6f;
-                p->specr = p->specg = p->specb = 0.6f;
-                p->ambr = p->ambg = p->ambb = 0.0f;
-                p->mirr = p->mirg = p->mirb = 0.0f;
-                p->emit = 0.f;
-                p->alpha = 0.f;
-                p->har = 0;
 
                 index = static_cast<unsigned int>(conv_data.materials_raw.size());
                 conv_data.materials_raw.push_back(p);
-                LogInfo("Adding default material");
+                LogInfo("Adding Assimp default material '", AI_DEFAULT_MATERIAL_NAME, "'");
             }
             mesh->mMaterialIndex = index;
         }
@@ -2077,8 +2059,7 @@ void BlenderImporter::AddBlendParams(aiMaterial *result, const Material *source)
     int diffuseShader = source->diff_shader;
     result->AddProperty(&diffuseShader, 1, "$mat.blend.diffuse.shader", 0, 0);
 
-    int diffuseRamp = 0;
-    result->AddProperty(&diffuseRamp, 1, "$mat.blend.diffuse.ramp", 0, 0);
+    // No invent for missing DNA ramp fields (presence).
 
     aiColor3D specularColor(source->specr, source->specg, source->specb);
     result->AddProperty(&specularColor, 1, "$mat.blend.specular.color", 0, 0);
@@ -2088,9 +2069,6 @@ void BlenderImporter::AddBlendParams(aiMaterial *result, const Material *source)
 
     int specularShader = source->spec_shader;
     result->AddProperty(&specularShader, 1, "$mat.blend.specular.shader", 0, 0);
-
-    int specularRamp = 0;
-    result->AddProperty(&specularRamp, 1, "$mat.blend.specular.ramp", 0, 0);
 
     int specularHardness = source->har;
     result->AddProperty(&specularHardness, 1, "$mat.blend.specular.hardness", 0, 0);
@@ -2193,11 +2171,19 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
 
         aiMaterial *mout = new aiMaterial();
         conv_data.materials->push_back(mout);
-        // For any new material field handled here, the default material above must be updated with an appropriate default value.
 
         // set material name
         aiString name = aiString(mat->id.name + 2); // skip over the name prefix 'MA'
         mout->AddProperty(&name, AI_MATKEY_NAME);
+
+        // Assimp DefaultMaterial policy (ScenePreprocessor): name + diffuse 0.6 only.
+        // Do not invent $mat.blend.* / Ka / Ks / procedural $tex.file for this placeholder.
+        if (std::strcmp(mat->id.name + 2, AI_DEFAULT_MATERIAL_NAME) == 0) {
+            aiColor3D clr(0.6f, 0.6f, 0.6f);
+            mout->AddProperty(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
+            conv_data.materialSidecarJson.emplace_back();
+            continue;
+        }
 
         // C6: flatten active Principled/Glass/Glossy/Diffuse/Emission + follow Image Tex links.
         const BlendShaderFlat flat = BlendFlattenMaterialNodes(*mat);
