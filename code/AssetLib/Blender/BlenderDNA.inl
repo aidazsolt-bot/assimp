@@ -665,15 +665,23 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
 //--------------------------------------------------------------------------------
 const FileBlockHead* Structure::LocateFileBlockForAddress(const Pointer &ptrval, 
 		const FileDatabase &db) const {
-    // Blender (readfile.cc): DATA pointers resolve through a per-ID datamap that
-    // is filled from the DATA blocks immediately following that ID and cleared
-    // before the next ID. The same `old` address can legally appear on DATA of
-    // different IDs (heap reuse when writing; stable pointer IDs fix this in
-    // newer Blender). Prefer the block owned by active_id_scope.
+    // Blender pointer remap (blender.git):
+    //   source/blender/blenloader/intern/readfile.cc
+    //   - read_data_into_datamap() fills FileData::datamap (old heap -> file DATA)
+    //   - newdataadr() / oldnewmap_lookup_and_inc() return nullptr when `old`
+    //     is missing from the map (lookup_ptr == nullptr)
+    //   - readfile.hh: FileData::datamap is cleared per ID; FileData::libmap
+    //     holds cross-ID / library addresses
     //
-    // Pointers that miss every block (dangling / freed heap leftovers still
-    // written into DNA) must become nullptr like Blender's
-    // BLO_read_get_new_data_address - not abort the whole import.
+    // Why dangling pointers appear in .blend DNA:
+    //   On write, structs still contain raw session heap addresses. Only live,
+    //   serialized pointees become BHeads. Runtime/cache/UI/temp pointers (or
+    //   already-freed heap) can remain as non-zero bytes without a matching
+    //   block. Blender maps those to nullptr; we must too (not DeadlyImportError).
+    //
+    // Assimp: prefer blocks owned by active_id_scope (per-ID datamap). Same
+    // `old` may legally appear on DATA of different IDs (heap reuse / format-v1
+    // generated IDs). Fall through to the global address list for cross-ID refs.
     if (db.active_id_scope.val) {
         const FileBlockHead *scoped = nullptr;
         for (const FileBlockHead &e : db.entries) {
