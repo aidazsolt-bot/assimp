@@ -375,11 +375,25 @@ void Structure ::Convert<FluidDomainSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<FluidFlowSettings>(
+        FluidFlowSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.density, "density", db);
+    ReadField<ErrorPolicy_Igno>(dest.fuel_amount, "fuel_amount", db);
+    ReadField<ErrorPolicy_Igno>(dest.temperature, "temperature", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.behavior, "behavior", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<FluidModifierData>(
         FluidModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.domain, "*domain", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.flow, "*flow", db);
     ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
     ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
     db.reader->IncPtr(size);
@@ -426,8 +440,35 @@ template <>
 void Structure ::Convert<RigidBodyCon>(
         RigidBodyCon &dest,
         const FileDatabase &db) const {
+    {
+        std::shared_ptr<Object> ob1;
+        ReadFieldPtr<ErrorPolicy_Igno>(ob1, "*ob1", db);
+        dest.ob1 = ob1.get();
+    }
+    {
+        std::shared_ptr<Object> ob2;
+        ReadFieldPtr<ErrorPolicy_Igno>(ob2, "*ob2", db);
+        dest.ob2 = ob2.get();
+    }
     ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
     ReadField<ErrorPolicy_Igno>(dest.breaking_threshold, "breaking_threshold", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_x_lower, "limit_lin_x_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_x_upper, "limit_lin_x_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_y_lower, "limit_lin_y_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_y_upper, "limit_lin_y_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_z_lower, "limit_lin_z_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_z_upper, "limit_lin_z_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_x_lower, "limit_ang_x_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_x_upper, "limit_ang_x_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_y_lower, "limit_ang_y_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_y_upper, "limit_ang_y_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_z_lower, "limit_ang_z_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_z_upper, "limit_ang_z_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.motor_lin_target_velocity, "motor_lin_target_velocity", db);
+    ReadField<ErrorPolicy_Igno>(dest.motor_ang_target_velocity, "motor_ang_target_velocity", db);
+    ReadField<ErrorPolicy_Igno>(dest.motor_lin_max_impulse, "motor_lin_max_impulse", db);
+    ReadField<ErrorPolicy_Igno>(dest.motor_ang_max_impulse, "motor_ang_max_impulse", db);
     db.reader->IncPtr(size);
 }
 
@@ -1437,6 +1478,7 @@ void DNA::RegisterConverters() {
     converters["SubsurfModifierData"] = DNA::FactoryPair(&Structure::Allocate<SubsurfModifierData>, &Structure::Convert<SubsurfModifierData>);
     converters["FluidModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidModifierData>, &Structure::Convert<FluidModifierData>);
     converters["FluidDomainSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidDomainSettings>, &Structure::Convert<FluidDomainSettings>);
+    converters["FluidFlowSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidFlowSettings>, &Structure::Convert<FluidFlowSettings>);
     converters["ClothModifierData"] = DNA::FactoryPair(&Structure::Allocate<ClothModifierData>, &Structure::Convert<ClothModifierData>);
     converters["ClothSimSettings"] = DNA::FactoryPair(&Structure::Allocate<ClothSimSettings>, &Structure::Convert<ClothSimSettings>);
     converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
