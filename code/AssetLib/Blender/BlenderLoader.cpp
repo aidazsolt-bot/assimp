@@ -410,12 +410,13 @@ void BlendCopyUvName(char out[64], const char *src) {
     out[63] = '\0';
 }
 
-/** Match UV layer name to aiMesh texture-coord index (prefer meshes using matIndex). */
+/** Match UV layer to aiMesh texcoord index (Blender: name, or default/render when empty).
+ *  CollectMeshUVLayers promotes CustomData active_rnd (render/default UV) to Assimp set 0.
+ *  Returns -1 when unresolved - callers must not invent UVWSRC 0. */
 int BlendFindUvIndex(const Assimp::Blender::ConversionData &conv_data, unsigned matIndex, const char *uvname) {
-    if (uvname == nullptr || uvname[0] == '\0') {
-        return 0;
-    }
-    auto matchMesh = [&](const aiMesh *mesh) -> int {
+    const bool wantDefault = (uvname == nullptr || uvname[0] == '\0');
+
+    auto matchNamed = [&](const aiMesh *mesh) -> int {
         if (mesh == nullptr) {
             return -1;
         }
@@ -430,21 +431,35 @@ int BlendFindUvIndex(const Assimp::Blender::ConversionData &conv_data, unsigned 
         }
         return -1;
     };
-    for (const aiMesh *mesh : conv_data.meshes.get()) {
-        if (mesh && mesh->mMaterialIndex == matIndex) {
-            const int hit = matchMesh(mesh);
+    auto matchDefault = [&](const aiMesh *mesh) -> int {
+        // After active_rnd promote, Assimp set 0 is Blender default/render UV.
+        if (mesh != nullptr && mesh->HasTextureCoords(0)) {
+            return 0;
+        }
+        return -1;
+    };
+
+    auto scan = [&](bool requireMat) -> int {
+        for (const aiMesh *mesh : conv_data.meshes.get()) {
+            if (mesh == nullptr) {
+                continue;
+            }
+            if (requireMat && mesh->mMaterialIndex != matIndex) {
+                continue;
+            }
+            const int hit = wantDefault ? matchDefault(mesh) : matchNamed(mesh);
             if (hit >= 0) {
                 return hit;
             }
         }
+        return -1;
+    };
+
+    const int onMat = scan(true);
+    if (onMat >= 0) {
+        return onMat;
     }
-    for (const aiMesh *mesh : conv_data.meshes.get()) {
-        const int hit = matchMesh(mesh);
-        if (hit >= 0) {
-            return hit;
-        }
-    }
-    return 0;
+    return scan(false);
 }
 
 unsigned BlendMaterialRawIndex(const Assimp::Blender::ConversionData &conv_data, const Assimp::Blender::Material *mat) {
@@ -460,7 +475,7 @@ unsigned BlendMaterialRawIndex(const Assimp::Blender::ConversionData &conv_data,
 }
 
 void BlendEmitUvWsrc(aiMaterial *mout, aiTextureType type, unsigned slot, int uvIndex) {
-    if (mout == nullptr) {
+    if (mout == nullptr || uvIndex < 0) {
         return;
     }
     mout->AddProperty(&uvIndex, 1, AI_MATKEY_UVWSRC(type, slot));
@@ -977,6 +992,7 @@ void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::
             const bNode *src = BlendCastNode(l->fromnode.get());
             for (int depth = 0; src != nullptr && depth < 12; ++depth) {
                 if (BlendNodeIsUVMap(*src)) {
+                    // Named uv_map, or empty = Blender default/render UV (CD_AUTO_FROM_NAME "").
                     if (src->storage && src->storage->dna_type != nullptr &&
                             std::strcmp(src->storage->dna_type, "NodeShaderUVMap") == 0) {
                         const auto *st = static_cast<const NodeShaderUVMap *>(src->storage.get());
@@ -985,7 +1001,7 @@ void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::
                     return;
                 }
                 if (BlendNodeIsTexCoord(*src)) {
-                    // Active render UV -> Assimp set 0 (CollectMeshUVLayers may promote active_rnd).
+                    // TexCoord.UV uses default/render UV (empty name -> BlendFindUvIndex default).
                     return;
                 }
                 // Passthrough vector manipulators: Reroute / Mapping (keep following Vector/input).
