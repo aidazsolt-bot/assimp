@@ -47,6 +47,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "BlenderDNA.h"
 
+#include <cstring>
+#include <string>
+
 namespace Assimp::Blender {
 
 // Minor parts of this file are extracts from blender data structures,
@@ -837,6 +840,7 @@ struct Object final : ElemBase {
     std::shared_ptr<Object> proxy, proxy_from, proxy_group WARN;
     std::shared_ptr<Group> dup_group WARN;
     std::shared_ptr<ElemBase> data FAIL;
+    std::shared_ptr<struct AnimData> adt WARN; // object animation (Actions / NLA)
 
     ListBase modifiers;
 
@@ -1113,6 +1117,68 @@ struct MTex final : ElemBase {
     //float zenupfac, zendownfac, blendfac;
 
     MTex() = default;
+};
+
+// -------------------------------------------------------------------------------
+/** DNA BezTriple - FCurve key (vec[1] is the keyframe time/value). */
+struct BezTriple final : ElemBase {
+    float vec[3][3];
+    char ipo;
+
+    BezTriple() :
+            ipo(0) {
+        memset(vec, 0, sizeof vec);
+    }
+};
+
+/** DNA FCurve - one animated RNA path component. */
+struct FCurve final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    int totvert;
+    int array_index;
+    std::string rna_path; // from char *rna_path
+    vector<BezTriple> bezt;
+
+    FCurve() :
+            totvert(0),
+            array_index(0) {}
+};
+
+/** DNA bAction - named Action with FCurve list. */
+struct bAction final : ElemBase {
+    ID id;
+    ListBase curves;
+};
+
+/** DNA NlaStrip - references a bAction on a track. */
+struct NlaStrip final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<bAction> act;
+    char name[64];
+    float start, end;
+
+    NlaStrip() :
+            start(0.f),
+            end(0.f) {
+        memset(name, 0, sizeof name);
+    }
+};
+
+/** DNA NlaTrack - list of strips. */
+struct NlaTrack final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    ListBase strips;
+    char name[64];
+
+    NlaTrack() {
+        memset(name, 0, sizeof name);
+    }
+};
+
+/** DNA AnimData - Object.adt / ID animation wrapper. */
+struct AnimData final : ElemBase {
+    std::shared_ptr<bAction> action;
+    ListBase nla_tracks;
 };
 
 } // namespace Assimp::Blender

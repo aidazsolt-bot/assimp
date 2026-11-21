@@ -60,12 +60,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/MemoryIOWrapper.h>
 #include <assimp/StreamReader.h>
 #include <assimp/StringComparison.h>
+#include <assimp/anim.h>
+#include <assimp/camera.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <map>
+#include <set>
 #include <string>
 #include <memory>
 #include <utility>
@@ -458,6 +463,207 @@ void BlendEmitUvWsrc(aiMaterial *mout, aiTextureType type, unsigned slot, int uv
         return;
     }
     mout->AddProperty(&uvIndex, 1, AI_MATKEY_UVWSRC(type, slot));
+}
+
+/** Sample FCurve at keyframe points (BezTriple.vec[1] = time, value). Linear between keys. */
+float BlendEvalFCurve(const Assimp::Blender::FCurve &fc, float time) {
+    if (fc.bezt.empty()) {
+        return 0.f;
+    }
+    const auto &keys = fc.bezt;
+    if (time <= keys.front().vec[1][0]) {
+        return keys.front().vec[1][1];
+    }
+    if (time >= keys.back().vec[1][0]) {
+        return keys.back().vec[1][1];
+    }
+    for (size_t i = 1; i < keys.size(); ++i) {
+        const float t0 = keys[i - 1].vec[1][0];
+        const float t1 = keys[i].vec[1][0];
+        if (time <= t1) {
+            const float v0 = keys[i - 1].vec[1][1];
+            const float v1 = keys[i].vec[1][1];
+            const float u = (t1 > t0) ? ((time - t0) / (t1 - t0)) : 0.f;
+            return v0 + (v1 - v0) * u;
+        }
+    }
+    return keys.back().vec[1][1];
+}
+
+const Assimp::Blender::FCurve *BlendCastFCurve(const Assimp::Blender::ElemBase *e) {
+    using namespace Assimp::Blender;
+    if (e == nullptr) {
+        return nullptr;
+    }
+    if (e->dna_type != nullptr && std::strcmp(e->dna_type, "FCurve") != 0) {
+        return nullptr;
+    }
+    return static_cast<const FCurve *>(e);
+}
+
+/** Build aiNodeAnim TRS from Action FCurves (location / rotation_euler), Assimp-usual like MD5 camera. */
+aiNodeAnim *BlendBuildCameraNodeAnim(const Assimp::Blender::Object &obj, const Assimp::Blender::bAction &act) {
+    using namespace Assimp::Blender;
+    const FCurve *loc[3] = { nullptr, nullptr, nullptr };
+    const FCurve *rot[3] = { nullptr, nullptr, nullptr };
+    const FCurve *scl[3] = { nullptr, nullptr, nullptr };
+
+    for (std::shared_ptr<ElemBase> cur = act.curves.first; cur;) {
+        const FCurve *fc = BlendCastFCurve(cur.get());
+        if (fc == nullptr) {
+            break;
+        }
+        if (fc->array_index >= 0 && fc->array_index < 3) {
+            if (fc->rna_path == "location") {
+                loc[fc->array_index] = fc;
+            } else if (fc->rna_path == "rotation_euler") {
+                rot[fc->array_index] = fc;
+            } else if (fc->rna_path == "scale") {
+                scl[fc->array_index] = fc;
+            }
+        }
+        cur = fc->next;
+    }
+
+    if (!loc[0] && !loc[1] && !loc[2] && !rot[0] && !rot[1] && !rot[2]) {
+        return nullptr;
+    }
+
+    std::set<float> times;
+    auto collect = [&](const FCurve *fc) {
+        if (!fc) {
+            return;
+        }
+        for (const BezTriple &b : fc->bezt) {
+            times.insert(b.vec[1][0]);
+        }
+    };
+    for (int i = 0; i < 3; ++i) {
+        collect(loc[i]);
+        collect(rot[i]);
+        collect(scl[i]);
+    }
+    if (times.empty()) {
+        return nullptr;
+    }
+
+    std::unique_ptr<aiNodeAnim> nd(new aiNodeAnim());
+    nd->mNodeName.Set(obj.id.name + 2);
+    nd->mNumPositionKeys = nd->mNumRotationKeys = nd->mNumScalingKeys = static_cast<unsigned int>(times.size());
+    nd->mPositionKeys = new aiVectorKey[nd->mNumPositionKeys];
+    nd->mRotationKeys = new aiQuatKey[nd->mNumRotationKeys];
+    nd->mScalingKeys = new aiVectorKey[nd->mNumScalingKeys];
+
+    unsigned int i = 0;
+    for (float t : times) {
+        aiVector3D p(obj.loc[0], obj.loc[1], obj.loc[2]);
+        aiVector3D r(obj.rot[0], obj.rot[1], obj.rot[2]);
+        aiVector3D s(obj.scale[0], obj.scale[1], obj.scale[2]);
+        for (int a = 0; a < 3; ++a) {
+            if (loc[a]) {
+                (&p.x)[a] = BlendEvalFCurve(*loc[a], t);
+            }
+            if (rot[a]) {
+                (&r.x)[a] = BlendEvalFCurve(*rot[a], t);
+            }
+            if (scl[a]) {
+                (&s.x)[a] = BlendEvalFCurve(*scl[a], t);
+            }
+        }
+        // Blender EULER_XYZ (radians) -> aiQuaternion via eul_to_mat3 XYZ.
+        const float cx = std::cos(r.x), sx = std::sin(r.x);
+        const float cy = std::cos(r.y), sy = std::sin(r.y);
+        const float cz = std::cos(r.z), sz = std::sin(r.z);
+        aiMatrix3x3 mat;
+        mat.a1 = cy * cz;
+        mat.a2 = -cy * sz;
+        mat.a3 = sy;
+        mat.b1 = cz * sx * sy + cx * sz;
+        mat.b2 = cx * cz - sx * sy * sz;
+        mat.b3 = -cy * sx;
+        mat.c1 = -cx * cz * sy + sx * sz;
+        mat.c2 = cz * sx + cx * sy * sz;
+        mat.c3 = cx * cy;
+
+        nd->mPositionKeys[i].mTime = t;
+        nd->mPositionKeys[i].mValue = p;
+        nd->mRotationKeys[i].mTime = t;
+        nd->mRotationKeys[i].mValue = aiQuaternion(mat);
+        nd->mScalingKeys[i].mTime = t;
+        nd->mScalingKeys[i].mValue = s;
+        ++i;
+    }
+    return nd.release();
+}
+
+void BlendPushCameraActionAnim(std::vector<aiAnimation *> &anims, const Assimp::Blender::Object &obj,
+        const Assimp::Blender::bAction &act) {
+    aiNodeAnim *channel = BlendBuildCameraNodeAnim(obj, act);
+    if (channel == nullptr) {
+        return;
+    }
+    aiAnimation *anim = new aiAnimation();
+    anim->mName.Set(act.id.name[0] ? act.id.name + 2 : (obj.id.name + 2));
+    anim->mTicksPerSecond = 24.0; // Blender default FPS when Scene.r not wired
+    anim->mNumChannels = 1;
+    anim->mChannels = new aiNodeAnim *[1];
+    anim->mChannels[0] = channel;
+    double tmax = 0.0;
+    for (unsigned int k = 0; k < channel->mNumPositionKeys; ++k) {
+        tmax = std::max(tmax, channel->mPositionKeys[k].mTime);
+    }
+    anim->mDuration = tmax;
+    anims.push_back(anim);
+}
+
+void BlendConvertCameraAnimations(aiScene *out, Assimp::Blender::ConversionData &conv_data) {
+    using namespace Assimp::Blender;
+    if (out == nullptr || conv_data.camera_objects.empty()) {
+        return;
+    }
+    std::vector<aiAnimation *> anims;
+    std::set<std::pair<const Object *, const bAction *>> seen;
+    for (const Object *obj : conv_data.camera_objects) {
+        if (obj == nullptr || !obj->adt) {
+            continue;
+        }
+        auto tryAct = [&](const std::shared_ptr<bAction> &act) {
+            if (!act || !seen.insert({ obj, act.get() }).second) {
+                return;
+            }
+            BlendPushCameraActionAnim(anims, *obj, *act);
+        };
+        // Active Action (when assigned).
+        tryAct(obj->adt->action);
+        // NLA strips (tiger cameras stash clips here; adt.action is often null).
+        for (std::shared_ptr<ElemBase> tcur = obj->adt->nla_tracks.first; tcur;) {
+            const NlaTrack *track = nullptr;
+            if (tcur->dna_type == nullptr || std::strcmp(tcur->dna_type, "NlaTrack") == 0) {
+                track = static_cast<const NlaTrack *>(tcur.get());
+            }
+            if (track == nullptr) {
+                break;
+            }
+            for (std::shared_ptr<ElemBase> scur = track->strips.first; scur;) {
+                const NlaStrip *strip = nullptr;
+                if (scur->dna_type == nullptr || std::strcmp(scur->dna_type, "NlaStrip") == 0) {
+                    strip = static_cast<const NlaStrip *>(scur.get());
+                }
+                if (strip == nullptr) {
+                    break;
+                }
+                tryAct(strip->act);
+                scur = strip->next;
+            }
+            tcur = track->next;
+        }
+    }
+    if (anims.empty()) {
+        return;
+    }
+    out->mNumAnimations = static_cast<unsigned int>(anims.size());
+    out->mAnimations = new aiAnimation *[out->mNumAnimations];
+    std::copy(anims.begin(), anims.end(), out->mAnimations);
 }
 
 /** Prefer legacy Image.packedfile; else first ImagePackedFile in packedfiles. */
@@ -1703,6 +1909,9 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         conv.textures.dismiss();
     }
 
+    // Camera Actions (location / rotation_euler) -> aiNodeAnim, Assimp-usual (cf. MD5 camera / LWS).
+    BlendConvertCameraAnimations(out, conv);
+
     // acknowledge that the scene might come out incomplete
     // by Assimp's definition of `complete`: blender scenes
     // can consist of thousands of cameras or lights with
@@ -2790,6 +2999,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 
             if (mesh) {
                 conv_data.cameras->push_back(mesh);
+                conv_data.camera_objects.push_back(obj);
             }
         } break;
 

@@ -110,8 +110,107 @@ void Structure ::Convert<Object>(
     ReadFieldPtr<ErrorPolicy_Warn>(dest.proxy_group, "*proxy_group", db);
     ReadFieldPtr<ErrorPolicy_Warn>(dest.dup_group, "*dup_group", db);
     ReadFieldPtr<ErrorPolicy_Fail>(dest.data, "*data", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.adt, "*adt", db);
     ReadField<ErrorPolicy_Igno>(dest.modifiers, "modifiers", db);
 
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<BezTriple>(
+        BezTriple &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray2<ErrorPolicy_Igno>(dest.vec, "vec", db);
+    ReadField<ErrorPolicy_Igno>(dest.ipo, "ipo", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<FCurve>(
+        FCurve &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadField<ErrorPolicy_Igno>(dest.totvert, "totvert", db);
+    ReadField<ErrorPolicy_Igno>(dest.array_index, "array_index", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.bezt, "*bezt", db);
+
+    // char *rna_path -> C string in a DATA block
+    dest.rna_path.clear();
+    try {
+        const Field &f = (*this)["*rna_path"];
+        const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+        db.reader->IncPtr(f.offset);
+        Pointer ptrval;
+        Convert(ptrval, db);
+        db.reader->SetCurrentPos(old);
+        if (ptrval.val) {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            if (block) {
+                const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                for (;;) {
+                    const char c = static_cast<char>(db.reader->GetI1());
+                    if (c == '\0') {
+                        break;
+                    }
+                    dest.rna_path.push_back(c);
+                    if (dest.rna_path.size() > 512) {
+                        break;
+                    }
+                }
+                db.reader->SetCurrentPos(pold);
+            }
+        }
+    } catch (const Error &) {
+        dest.rna_path.clear();
+    }
+
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<bAction>(
+        bAction &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
+    ReadField<ErrorPolicy_Igno>(dest.curves, "curves", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<NlaStrip>(
+        NlaStrip &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.act, "*act", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadField<ErrorPolicy_Igno>(dest.start, "start", db);
+    ReadField<ErrorPolicy_Igno>(dest.end, "end", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<NlaTrack>(
+        NlaTrack &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadField<ErrorPolicy_Igno>(dest.strips, "strips", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<AnimData>(
+        AnimData &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.action, "*action", db);
+    ReadField<ErrorPolicy_Igno>(dest.nla_tracks, "nla_tracks", db);
     db.reader->IncPtr(size);
 }
 
@@ -1086,6 +1185,12 @@ void Structure::Convert<CustomDataLayer>(
 void DNA::RegisterConverters() {
 
     converters["Object"] = DNA::FactoryPair(&Structure::Allocate<Object>, &Structure::Convert<Object>);
+    converters["BezTriple"] = DNA::FactoryPair(&Structure::Allocate<BezTriple>, &Structure::Convert<BezTriple>);
+    converters["FCurve"] = DNA::FactoryPair(&Structure::Allocate<FCurve>, &Structure::Convert<FCurve>);
+    converters["bAction"] = DNA::FactoryPair(&Structure::Allocate<bAction>, &Structure::Convert<bAction>);
+    converters["NlaStrip"] = DNA::FactoryPair(&Structure::Allocate<NlaStrip>, &Structure::Convert<NlaStrip>);
+    converters["NlaTrack"] = DNA::FactoryPair(&Structure::Allocate<NlaTrack>, &Structure::Convert<NlaTrack>);
+    converters["AnimData"] = DNA::FactoryPair(&Structure::Allocate<AnimData>, &Structure::Convert<AnimData>);
     converters["Group"] = DNA::FactoryPair(&Structure::Allocate<Group>, &Structure::Convert<Group>);
     converters["MTex"] = DNA::FactoryPair(&Structure::Allocate<MTex>, &Structure::Convert<MTex>);
     converters["TFace"] = DNA::FactoryPair(&Structure::Allocate<TFace>, &Structure::Convert<TFace>);

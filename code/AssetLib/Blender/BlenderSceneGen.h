@@ -308,6 +308,42 @@ template <> void Structure :: Convert<Image> (
     ) const
 ;
 
+template <> void Structure :: Convert<BezTriple> (
+    BezTriple& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<FCurve> (
+    FCurve& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<bAction> (
+    bAction& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<NlaStrip> (
+    NlaStrip& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<NlaTrack> (
+    NlaTrack& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<AnimData> (
+    AnimData& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure::Convert<CustomData>(
     CustomData& dest,
     const FileDatabase& db
