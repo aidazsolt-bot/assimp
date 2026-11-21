@@ -356,6 +356,28 @@ bool BlendNodeIsMixColor(const Assimp::Blender::bNode &n) {
     return n.type == 75;
 }
 
+bool BlendNodeIsSeparateColor(const Assimp::Blender::bNode &n) {
+    // glTF-style ORM/rough packs: Image -> Separate Color (G/B) -> Roughness/Metallic.
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeSeparateColor") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeSeparateRGB") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeSeparateXYZ") == 0;
+    }
+    // Legacy SH_NODE_SEPRGB / SEPXUZ
+    return n.type == 120 || n.type == 122;
+}
+
+bool BlendNodeIsMath(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeMath") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeVectorMath") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeMapRange") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeClamp") == 0;
+    }
+    // Legacy SH_NODE_MATH
+    return n.type == 117;
+}
+
 bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0') {
         return std::strcmp(n.idname, "ShaderNodeGroup") == 0 ||
@@ -384,14 +406,18 @@ bool BlendNodeIsPassthrough(const Assimp::Blender::bNode &n) {
                 std::strcmp(n.idname, "ShaderNodeBump") == 0 ||
                 std::strcmp(n.idname, "ShaderNodeHueSaturation") == 0 ||
                 std::strcmp(n.idname, "ShaderNodeRGBToBW") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeGamma") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeBrightContrast") == 0 ||
                 std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
                 std::strcmp(n.idname, "ShaderNodeMixRGB") == 0) {
             return true;
         }
     }
+    if (BlendNodeIsSeparateColor(n) || BlendNodeIsMath(n) || BlendNodeIsMixColor(n)) {
+        return true;
+    }
     return n.type == kSH_NODE_REROUTE || n.type == kSH_NODE_INVERT ||
-           n.type == kSH_NODE_NORMAL_MAP || n.type == kSH_NODE_BUMP ||
-           BlendNodeIsMixColor(n);
+           n.type == kSH_NODE_NORMAL_MAP || n.type == kSH_NODE_BUMP;
 }
 
 bool BlendNodeIsFlattenable(const Assimp::Blender::bNode &n) {
@@ -806,12 +832,30 @@ struct BlendNodeGraph {
                 }
             }
         }
+        // Separate Color/RGB/XYZ: upstream Image is on Color / Vector.
+        if (BlendNodeIsSeparateColor(*n)) {
+            for (const char *want : { "Color", "Vector", "Image" }) {
+                if (const bNode *hit = trySock(want)) {
+                    return hit;
+                }
+            }
+        }
+        // Math / Map Range / Clamp: follow first linked Value* input toward a Tex Image.
+        if (BlendNodeIsMath(*n)) {
+            for (const char *want : { "Value", "Value_001", "Value_002", "From Min", "From Max",
+                         "To Min", "To Max", "Steps", "Vector" }) {
+                if (const bNode *hit = trySock(want)) {
+                    return hit;
+                }
+            }
+        }
         for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
             const bNodeSocket *sock = BlendCastSocket(cur.get());
             if (sock == nullptr) {
                 break;
             }
-            if (BlendSockNameIsAny(*sock, { "Color", "Height", "Image", "Normal", "A", "B" })) {
+            if (BlendSockNameIsAny(*sock, { "Color", "Height", "Image", "Normal", "A", "B", "Value",
+                        "Vector" })) {
                 const bNodeLink *l = FindLinkToSocket(*sock);
                 if (l) {
                     const bNode *hit = FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1);
@@ -821,6 +865,23 @@ struct BlendNodeGraph {
                 }
             }
             cur = sock->next;
+        }
+        // Last resort for Math-like nodes: any linked input (socket names vary by Blender ver).
+        if (BlendNodeIsMath(*n) || BlendNodeIsSeparateColor(*n)) {
+            for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+                const bNodeSocket *sock = BlendCastSocket(cur.get());
+                if (sock == nullptr) {
+                    break;
+                }
+                const bNodeLink *l = FindLinkToSocket(*sock);
+                if (l) {
+                    const bNode *hit = FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1);
+                    if (hit) {
+                        return hit;
+                    }
+                }
+                cur = sock->next;
+            }
         }
         return nullptr;
     }
