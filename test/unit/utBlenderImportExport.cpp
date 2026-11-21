@@ -120,8 +120,8 @@ TEST(utBlenderImporter, importBlenderDefault250Compressed) {
 TEST(utBlenderImporter, importBlenderDefault262) {
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/BLEND/BlenderDefault_262.blend", aiProcess_ValidateDataStructure);
-    // FIXME: this is probably not right, loading this should succeed
-    ASSERT_EQ(nullptr, scene);
+    // Previously aborted on dangling DNA pointers; now treated as null like Blender.
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
 }
 
 TEST(utBlenderImporter, importBlenderDefault269) {
