@@ -998,7 +998,8 @@ unsigned CollectMeshUVLayers(const Mesh &mesh, const FileDatabase &db, std::vect
         PushUvLayer(found, "UVMap", std::move(uv), expect);
     }
 
-    // Promote CustomData render-active UV (active_rnd) to Assimp set 0 when not already first.
+    // Blender default/render UV (CustomData active_rnd / Mesh::default_uv_map_name) -> Assimp set 0.
+    // Empty ShaderNodeUVMap / TexCoord.UV / unlinked Image Vector resolve to this set.
     if (cdUvActiveRnd >= 0 && static_cast<size_t>(cdUvActiveRnd) < cdUvFoundIdx.size()) {
         const size_t want = cdUvFoundIdx[static_cast<size_t>(cdUvActiveRnd)];
         if (want > 0 && want < found.size()) {

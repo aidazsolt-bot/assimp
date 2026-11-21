@@ -346,16 +346,6 @@ bool BlendNodeIsBump(const Assimp::Blender::bNode &n) {
     return n.type == kSH_NODE_BUMP;
 }
 
-bool BlendNodeIsMixColor(const Assimp::Blender::bNode &n) {
-    // Splash / Texture-Paint graphs: Image Texture -> ShaderNodeMix -> Principled Base Color.
-    if (n.idname[0] != '\0') {
-        return std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
-               std::strcmp(n.idname, "ShaderNodeMixRGB") == 0;
-    }
-    // Legacy SH_NODE_MIX_RGB
-    return n.type == 75;
-}
-
 bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0') {
         return std::strcmp(n.idname, "ShaderNodeGroup") == 0 ||
@@ -363,6 +353,30 @@ bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
     }
     // Legacy NODE_GROUP
     return n.type == 2;
+}
+
+bool BlendNodeIsMixColor(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeMixRGB") == 0;
+    }
+    return n.type == 75; // SH_NODE_MIX_RGB_LEGACY
+}
+
+bool BlendNodeIsGroupOutput(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "NodeGroupOutput") == 0;
+    }
+    // NODE_GROUP_OUTPUT
+    return n.type == 3;
+}
+
+bool BlendNodeIsGroupInput(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "NodeGroupInput") == 0;
+    }
+    // NODE_GROUP_INPUT
+    return n.type == 7;
 }
 
 const Assimp::Blender::bNodeTree *BlendNodeGroupTree(const Assimp::Blender::bNode &n) {
@@ -376,27 +390,38 @@ const Assimp::Blender::bNodeTree *BlendNodeGroupTree(const Assimp::Blender::bNod
     return static_cast<const bNodeTree *>(n.id.get());
 }
 
-bool BlendNodeIsPassthrough(const Assimp::Blender::bNode &n) {
-    if (n.idname[0] != '\0') {
-        if (std::strcmp(n.idname, "NodeReroute") == 0 ||
-                std::strcmp(n.idname, "ShaderNodeInvert") == 0 ||
-                std::strcmp(n.idname, "ShaderNodeNormalMap") == 0 ||
-                std::strcmp(n.idname, "ShaderNodeBump") == 0 ||
-                std::strcmp(n.idname, "ShaderNodeHueSaturation") == 0 ||
-                std::strcmp(n.idname, "ShaderNodeRGBToBW") == 0 ||
-                std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
-                std::strcmp(n.idname, "ShaderNodeMixRGB") == 0) {
-            return true;
-        }
-    }
-    return n.type == kSH_NODE_REROUTE || n.type == kSH_NODE_INVERT ||
-           n.type == kSH_NODE_NORMAL_MAP || n.type == kSH_NODE_BUMP ||
-           BlendNodeIsMixColor(n);
-}
-
 bool BlendNodeIsFlattenable(const Assimp::Blender::bNode &n) {
     return BlendNodeIsPrincipled(n) || BlendNodeIsGlass(n) || BlendNodeIsGlossy(n) ||
            BlendNodeIsDiffuse(n) || BlendNodeIsEmission(n);
+}
+
+/** Nodes that end a Tex-Image upstream walk (shader roots / mix), not image filters. */
+bool BlendNodeIsTexWalkBarrier(const Assimp::Blender::bNode &n) {
+    return BlendNodeIsFlattenable(n) || BlendNodeIsOutput(n) || BlendNodeIsMixShader(n);
+}
+
+/** Higher = try first when several inputs are linked (Fac/Scale last). */
+int BlendSockTexWalkPriority(const Assimp::Blender::bNodeSocket &sock) {
+    if (BlendSockNameIsAny(sock, { "Fac", "Factor", "Scale", "Strength", "Distance",
+                "Epsilon", "Weight", "Roughness", "Detail", "Dimension", "Lacunarity",
+                "Offset", "Gain", "Gamma", "From Max", "From Min", "To Max", "To Min",
+                "Steps", "Interpolation Type" })) {
+        return 0;
+    }
+    if (BlendSockNameIsAny(sock, { "Color", "Image", "Height", "Normal" })) {
+        return 100;
+    }
+    if (BlendSockNameIsAny(sock, { "B", "Color2", "ColorB" })) {
+        return 90;
+    }
+    if (BlendSockNameIsAny(sock, { "A", "Color1", "ColorA" })) {
+        return 80;
+    }
+    if (BlendSockNameIsAny(sock, { "Value", "Vector" })) {
+        return 70;
+    }
+    // Unknown socket name: still follow if linked (Blender versions rename sockets).
+    return 40;
 }
 
 const Assimp::Blender::bNodeLink *BlendCastLink(const Assimp::Blender::ElemBase *e) {
@@ -433,12 +458,13 @@ void BlendCopyUvName(char out[64], const char *src) {
     out[63] = '\0';
 }
 
-/** Match UV layer name to aiMesh texture-coord index (prefer meshes using matIndex). */
+/** Match UV layer to aiMesh texcoord index (Blender: name, or default/render when empty).
+ *  CollectMeshUVLayers promotes CustomData active_rnd (render/default UV) to Assimp set 0.
+ *  Returns -1 when unresolved - callers must not invent UVWSRC 0. */
 int BlendFindUvIndex(const Assimp::Blender::ConversionData &conv_data, unsigned matIndex, const char *uvname) {
-    if (uvname == nullptr || uvname[0] == '\0') {
-        return 0;
-    }
-    auto matchMesh = [&](const aiMesh *mesh) -> int {
+    const bool wantDefault = (uvname == nullptr || uvname[0] == '\0');
+
+    auto matchNamed = [&](const aiMesh *mesh) -> int {
         if (mesh == nullptr) {
             return -1;
         }
@@ -453,21 +479,35 @@ int BlendFindUvIndex(const Assimp::Blender::ConversionData &conv_data, unsigned 
         }
         return -1;
     };
-    for (const aiMesh *mesh : conv_data.meshes.get()) {
-        if (mesh && mesh->mMaterialIndex == matIndex) {
-            const int hit = matchMesh(mesh);
+    auto matchDefault = [&](const aiMesh *mesh) -> int {
+        // After active_rnd promote, Assimp set 0 is Blender default/render UV.
+        if (mesh != nullptr && mesh->HasTextureCoords(0)) {
+            return 0;
+        }
+        return -1;
+    };
+
+    auto scan = [&](bool requireMat) -> int {
+        for (const aiMesh *mesh : conv_data.meshes.get()) {
+            if (mesh == nullptr) {
+                continue;
+            }
+            if (requireMat && mesh->mMaterialIndex != matIndex) {
+                continue;
+            }
+            const int hit = wantDefault ? matchDefault(mesh) : matchNamed(mesh);
             if (hit >= 0) {
                 return hit;
             }
         }
+        return -1;
+    };
+
+    const int onMat = scan(true);
+    if (onMat >= 0) {
+        return onMat;
     }
-    for (const aiMesh *mesh : conv_data.meshes.get()) {
-        const int hit = matchMesh(mesh);
-        if (hit >= 0) {
-            return hit;
-        }
-    }
-    return 0;
+    return scan(false);
 }
 
 unsigned BlendMaterialRawIndex(const Assimp::Blender::ConversionData &conv_data, const Assimp::Blender::Material *mat) {
@@ -483,7 +523,7 @@ unsigned BlendMaterialRawIndex(const Assimp::Blender::ConversionData &conv_data,
 }
 
 void BlendEmitUvWsrc(aiMaterial *mout, aiTextureType type, unsigned slot, int uvIndex) {
-    if (mout == nullptr) {
+    if (mout == nullptr || uvIndex < 0) {
         return;
     }
     mout->AddProperty(&uvIndex, 1, AI_MATKEY_UVWSRC(type, slot));
@@ -740,6 +780,9 @@ const char *BlendImageDisplayPath(const Assimp::Blender::Image *img) {
     return img->name;
 }
 
+struct BlendNodeGraph;
+BlendNodeGraph BlendBuildGraph(const Assimp::Blender::bNodeTree &tree);
+
 struct BlendNodeGraph {
     std::vector<const Assimp::Blender::bNode *> nodes;
     std::vector<const Assimp::Blender::bNodeLink *> links;
@@ -757,7 +800,22 @@ struct BlendNodeGraph {
         return nullptr;
     }
 
-    const Assimp::Blender::bNode *FollowToTexImage(const Assimp::Blender::bNode *n, int depth = 0) const {
+    /** Stack frame while inside a ShaderNodeGroup: host graph owns the instance node. */
+    struct GroupWalkFrame {
+        const BlendNodeGraph *host = nullptr;
+        const Assimp::Blender::bNode *instance = nullptr;
+    };
+
+    /** Walk bNodeLink upstream until ShaderNodeTexImage. No filename name-score.
+     *  Barriers: BSDF / Material Output / Mix Shader. Group: enter nodetree via
+     *  NodeGroupOutput matching fromsock; NodeGroupInput continues on the outer
+     *  group instance inputs (host graph).
+     *  Mix Color/RGB (Blender ramp_blend): result starts as Color1; Color2 blended by Fac.
+     *  Fac~0 -> Color1 only; Fac~1 -> Color2 only; else Color1 first (accumulator base).
+     *  Mix never treats Fac as the color/normal source (Fac is a mask only). */
+    const Assimp::Blender::bNode *FollowToTexImage(const Assimp::Blender::bNode *n, int depth = 0,
+            const Assimp::Blender::bNodeSocket *fromOutputSock = nullptr,
+            std::vector<GroupWalkFrame> *groupStack = nullptr) const {
         using namespace Assimp::Blender;
         if (n == nullptr || depth > 24) {
             return nullptr;
@@ -765,62 +823,243 @@ struct BlendNodeGraph {
         if (BlendNodeIsTexImage(*n)) {
             return n;
         }
-        if (!BlendNodeIsPassthrough(*n)) {
+        if (BlendNodeIsTexWalkBarrier(*n)) {
             return nullptr;
         }
-        // Normal Map: Color is the tangent-space map. Bump: prefer Normal chain, then Height.
-        auto trySock = [&](const char *want) -> const bNode * {
+
+        auto followLink = [&](const bNodeLink *l) -> const bNode * {
+            if (!l) {
+                return nullptr;
+            }
+            const bNodeSocket *outSock = BlendCastSocket(l->fromsock.get());
+            return FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1, outSock, groupStack);
+        };
+        auto tryFromSock = [&](const bNodeSocket &sock) -> const bNode * {
+            return followLink(FindLinkToSocket(sock));
+        };
+        auto sockNameHit = [](const bNodeSocket &a, const bNodeSocket &b) -> bool {
+            if (BlendSockNameIs(a, b.name) || BlendSockNameIs(b, a.name)) {
+                return true;
+            }
+            if (a.identifier[0] != '\0' && b.identifier[0] != '\0' &&
+                    std::strcmp(a.identifier, b.identifier) == 0) {
+                return true;
+            }
+            if (a.identifier[0] != '\0' &&
+                    (BlendSockNameIs(b, a.identifier) || std::strcmp(b.name, a.identifier) == 0)) {
+                return true;
+            }
+            if (b.identifier[0] != '\0' &&
+                    (BlendSockNameIs(a, b.identifier) || std::strcmp(a.name, b.identifier) == 0)) {
+                return true;
+            }
+            return false;
+        };
+
+        // NodeGroupInput: continue on the enclosing ShaderNodeGroup's matching input.
+        if (BlendNodeIsGroupInput(*n)) {
+            if (groupStack == nullptr || groupStack->empty() || fromOutputSock == nullptr) {
+                return nullptr;
+            }
+            const GroupWalkFrame frame = groupStack->back();
+            if (frame.host == nullptr || frame.instance == nullptr) {
+                return nullptr;
+            }
+            for (std::shared_ptr<ElemBase> cur = frame.instance->inputs.first; cur;) {
+                const bNodeSocket *is = BlendCastSocket(cur.get());
+                if (is == nullptr) {
+                    break;
+                }
+                if (!sockNameHit(*is, *fromOutputSock)) {
+                    cur = is->next;
+                    continue;
+                }
+                const bNodeLink *il = frame.host->FindLinkToSocket(*is);
+                if (!il) {
+                    return nullptr;
+                }
+                groupStack->pop_back();
+                const bNode *hit = frame.host->FollowToTexImage(BlendCastNode(il->fromnode.get()),
+                        depth + 1, BlendCastSocket(il->fromsock.get()), groupStack);
+                groupStack->push_back(frame);
+                return hit;
+            }
+            return nullptr;
+        }
+
+        // ShaderNodeGroup: resolve inside the group tree from the matching Group Output input.
+        if (BlendNodeIsGroup(*n)) {
+            const bNodeTree *gt = BlendNodeGroupTree(*n);
+            if (gt == nullptr || fromOutputSock == nullptr) {
+                return nullptr;
+            }
+            const BlendNodeGraph gg = BlendBuildGraph(*gt);
+            std::vector<GroupWalkFrame> localStack;
+            std::vector<GroupWalkFrame> *st = groupStack ? groupStack : &localStack;
+            st->push_back({ this, n });
+            auto followInGroup = [&](const bNodeLink *il) -> const bNode * {
+                if (!il) {
+                    return nullptr;
+                }
+                return gg.FollowToTexImage(BlendCastNode(il->fromnode.get()), depth + 1,
+                        BlendCastSocket(il->fromsock.get()), st);
+            };
+            for (const bNode *gn : gg.nodes) {
+                if (gn == nullptr || !BlendNodeIsGroupOutput(*gn)) {
+                    continue;
+                }
+                for (std::shared_ptr<ElemBase> cur = gn->inputs.first; cur;) {
+                    const bNodeSocket *is = BlendCastSocket(cur.get());
+                    if (is == nullptr) {
+                        break;
+                    }
+                    if (!sockNameHit(*is, *fromOutputSock)) {
+                        cur = is->next;
+                        continue;
+                    }
+                    if (const bNode *hit = followInGroup(gg.FindLinkToSocket(*is))) {
+                        st->pop_back();
+                        return hit;
+                    }
+                    cur = is->next;
+                }
+            }
+            // Fallback: linked Group Output inputs, Color/Image before Fac (socket rename safe).
+            struct GCand {
+                int prio;
+                const bNodeLink *link;
+            };
+            std::vector<GCand> gcands;
+            for (const bNode *gn : gg.nodes) {
+                if (gn == nullptr || !BlendNodeIsGroupOutput(*gn)) {
+                    continue;
+                }
+                for (std::shared_ptr<ElemBase> cur = gn->inputs.first; cur;) {
+                    const bNodeSocket *is = BlendCastSocket(cur.get());
+                    if (is == nullptr) {
+                        break;
+                    }
+                    if (const bNodeLink *il = gg.FindLinkToSocket(*is)) {
+                        gcands.push_back({ BlendSockTexWalkPriority(*is), il });
+                    }
+                    cur = is->next;
+                }
+            }
+            std::stable_sort(gcands.begin(), gcands.end(),
+                    [](const GCand &a, const GCand &b) { return a.prio > b.prio; });
+            for (const GCand &c : gcands) {
+                if (const bNode *hit = followInGroup(c.link)) {
+                    st->pop_back();
+                    return hit;
+                }
+            }
+            st->pop_back();
+            return nullptr;
+        }
+
+        // MixRGB / ShaderNodeMix: Color1 is ramp_blend accumulator; Color2 is blend-in (Fac).
+        // ShaderNodeMix (type 713) exposes parallel A/B/Factor sockets per datatype
+        // (Float/Vector/Color/Rotation). Prefer Color (and non-Vector Factor); never keep
+        // the last homonym (A_Rotation) or Fac walks miss Image Texture links.
+        if (BlendNodeIsMixColor(*n)) {
+            const bNodeSocket *sockA = nullptr;
+            const bNodeSocket *sockB = nullptr;
+            const bNodeSocket *sockFac = nullptr;
+            auto mixIdentOk = [](const bNodeSocket &sock, const char *colorTag) -> bool {
+                if (sock.identifier[0] == '\0') {
+                    return true; // legacy MixRGB: identifier often empty
+                }
+                if (std::strcmp(sock.identifier, sock.name) == 0) {
+                    return true;
+                }
+                return std::strstr(sock.identifier, colorTag) != nullptr;
+            };
             for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
                 const bNodeSocket *sock = BlendCastSocket(cur.get());
                 if (sock == nullptr) {
                     break;
                 }
-                if (BlendSockNameIs(*sock, want)) {
-                    const bNodeLink *l = FindLinkToSocket(*sock);
-                    if (l) {
-                        return FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1);
-                    }
+                if (BlendSockNameIsAny(*sock, { "Color1", "ColorA" }) ||
+                        (BlendSockNameIs(*sock, "A") && mixIdentOk(*sock, "Color"))) {
+                    sockA = sock;
+                } else if (BlendSockNameIsAny(*sock, { "Color2", "ColorB" }) ||
+                           (BlendSockNameIs(*sock, "B") && mixIdentOk(*sock, "Color"))) {
+                    sockB = sock;
+                } else if (BlendSockNameIsAny(*sock, { "Fac", "Factor" }) &&
+                           (sock->identifier[0] == '\0' || std::strstr(sock->identifier, "Vector") == nullptr)) {
+                    sockFac = sock;
                 }
                 cur = sock->next;
             }
-            return nullptr;
-        };
-        if (BlendNodeIsNormalMap(*n)) {
-            if (const bNode *hit = trySock("Color")) {
-                return hit;
-            }
-        }
-        if (BlendNodeIsBump(*n)) {
-            if (const bNode *hit = trySock("Normal")) {
-                return hit;
-            }
-            if (const bNode *hit = trySock("Height")) {
-                return hit;
-            }
-        }
-        // ShaderNodeMix / MixRGB: Image often on B (or Color2); try B then A.
-        if (BlendNodeIsMixColor(*n)) {
-            for (const char *want : { "B", "A", "Color2", "Color1", "ColorB", "ColorA", "Color" }) {
-                if (const bNode *hit = trySock(want)) {
-                    return hit;
+            // Fac from DNA only - never invent 0.5 when default_value is unread.
+            bool haveFac = false;
+            float fac = 0.f;
+            if (sockFac) {
+                if (BlendReadSocketFloat(*sockFac, fac)) {
+                    haveFac = true;
+                }
+                const bNodeLink *fl = FindLinkToSocket(*sockFac);
+                if (fl) {
+                    float linked = 0.f;
+                    if (ReadConstantFloat(BlendCastNode(fl->fromnode.get()), linked)) {
+                        fac = linked;
+                        haveFac = true;
+                    }
                 }
             }
+            // MA_RAMP_BLEND extremes: only one side contributes (requires real Fac).
+            const bool blendMode = (n->custom1 == 0);
+            if (haveFac && blendMode && fac <= 1e-4f) {
+                if (sockA) {
+                    if (const bNode *hit = tryFromSock(*sockA)) {
+                        return hit;
+                    }
+                }
+            } else if (haveFac && blendMode && fac >= 1.f - 1e-4f) {
+                if (sockB) {
+                    if (const bNode *hit = tryFromSock(*sockB)) {
+                        return hit;
+                    }
+                }
+            } else {
+                // Mid Fac, unknown Fac, or Multiply/Overlay/...: Color1 first, then Color2.
+                if (sockA) {
+                    if (const bNode *hit = tryFromSock(*sockA)) {
+                        return hit;
+                    }
+                }
+                if (sockB) {
+                    if (const bNode *hit = tryFromSock(*sockB)) {
+                        return hit;
+                    }
+                }
+            }
+            // Do not fall through to Fac / other sockets: Fac is a mask, not the map.
+            return nullptr;
         }
+
+        struct Cand {
+            int prio;
+            const bNodeLink *link;
+        };
+        std::vector<Cand> cands;
         for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
             const bNodeSocket *sock = BlendCastSocket(cur.get());
             if (sock == nullptr) {
                 break;
             }
-            if (BlendSockNameIsAny(*sock, { "Color", "Height", "Image", "Normal", "A", "B" })) {
-                const bNodeLink *l = FindLinkToSocket(*sock);
-                if (l) {
-                    const bNode *hit = FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1);
-                    if (hit) {
-                        return hit;
-                    }
-                }
+            if (const bNodeLink *l = FindLinkToSocket(*sock)) {
+                cands.push_back({ BlendSockTexWalkPriority(*sock), l });
             }
             cur = sock->next;
+        }
+        std::stable_sort(cands.begin(), cands.end(),
+                [](const Cand &a, const Cand &b) { return a.prio > b.prio; });
+
+        for (const Cand &c : cands) {
+            if (const bNode *hit = followLink(c.link)) {
+                return hit;
+            }
         }
         return nullptr;
     }
@@ -854,19 +1093,30 @@ struct BlendNodeGraph {
                 return true;
             }
         }
-        if (BlendNodeIsPassthrough(*n) && !BlendNodeIsNormalMap(*n) && !BlendNodeIsBump(*n)) {
+        // Follow linked inputs (same priority as Tex walk) until an RGB/Value node.
+        if (!BlendNodeIsTexWalkBarrier(*n) && !BlendNodeIsNormalMap(*n) && !BlendNodeIsBump(*n) &&
+                !BlendNodeIsTexImage(*n)) {
+            struct Cand {
+                int prio;
+                const bNodeLink *link;
+            };
+            std::vector<Cand> cands;
             for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
                 const bNodeSocket *sock = BlendCastSocket(cur.get());
                 if (sock == nullptr) {
                     break;
                 }
-                if (BlendSockNameIsAny(*sock, { "Color", "Fac", "Value" })) {
-                    const bNodeLink *l = FindLinkToSocket(*sock);
-                    if (l && ReadConstantColor(BlendCastNode(l->fromnode.get()), out, depth + 1)) {
-                        return true;
-                    }
+                if (const bNodeLink *l = FindLinkToSocket(*sock)) {
+                    cands.push_back({ BlendSockTexWalkPriority(*sock), l });
                 }
                 cur = sock->next;
+            }
+            std::stable_sort(cands.begin(), cands.end(),
+                    [](const Cand &a, const Cand &b) { return a.prio > b.prio; });
+            for (const Cand &c : cands) {
+                if (ReadConstantColor(BlendCastNode(c.link->fromnode.get()), out, depth + 1)) {
+                    return true;
+                }
             }
         }
         return false;
@@ -905,16 +1155,14 @@ struct BlendNodeGraph {
                 score += 3;
             }
             if (BlendSockNameIsAny(*sock, { "Base Color", "BaseColor", "Color" })) {
-                float c[4] = { 0.8f, 0.8f, 0.8f, 1.f };
-                BlendReadSocketColor(*sock, c);
-                if (std::fabs(c[0] - 0.8f) > 0.02f || std::fabs(c[1] - 0.8f) > 0.02f || std::fabs(c[2] - 0.8f) > 0.02f) {
+                float c[4]{};
+                if (BlendReadSocketColor(*sock, c)) {
                     score += 5;
                 }
             }
             if (BlendSockNameIs(*sock, "Roughness")) {
-                float r = 0.5f;
-                BlendReadSocketFloat(*sock, r);
-                if (std::fabs(r - 0.5f) > 0.02f) {
+                float r = 0.f;
+                if (BlendReadSocketFloat(*sock, r)) {
                     score += 4;
                 }
             }
@@ -1015,6 +1263,7 @@ void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::
             const bNode *src = BlendCastNode(l->fromnode.get());
             for (int depth = 0; src != nullptr && depth < 12; ++depth) {
                 if (BlendNodeIsUVMap(*src)) {
+                    // Named uv_map, or empty = Blender default/render UV (CD_AUTO_FROM_NAME "").
                     if (src->storage && src->storage->dna_type != nullptr &&
                             std::strcmp(src->storage->dna_type, "NodeShaderUVMap") == 0) {
                         const auto *st = static_cast<const NodeShaderUVMap *>(src->storage.get());
@@ -1023,7 +1272,7 @@ void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::
                     return;
                 }
                 if (BlendNodeIsTexCoord(*src)) {
-                    // Active render UV -> Assimp set 0 (CollectMeshUVLayers may promote active_rnd).
+                    // TexCoord.UV uses default/render UV (empty name -> BlendFindUvIndex default).
                     return;
                 }
                 // Passthrough vector manipulators: Reroute / Mapping (keep following Vector/input).
@@ -1085,7 +1334,7 @@ bool BlendReadLinkedOrDefaultFloat(const BlendNodeGraph &g, const Assimp::Blende
         return got;
     }
     const bNode *src = BlendCastNode(l->fromnode.get());
-    const bNode *tex = g.FollowToTexImage(src);
+    const bNode *tex = g.FollowToTexImage(src, 0, BlendCastSocket(l->fromsock.get()));
     if (tex && mapOut) {
         BlendFillTexMap(g, tex, *mapOut);
     }
@@ -1106,7 +1355,7 @@ bool BlendReadLinkedOrDefaultColor(const BlendNodeGraph &g, const Assimp::Blende
         return got;
     }
     const bNode *src = BlendCastNode(l->fromnode.get());
-    const bNode *tex = g.FollowToTexImage(src);
+    const bNode *tex = g.FollowToTexImage(src, 0, BlendCastSocket(l->fromsock.get()));
     if (tex && mapOut) {
         BlendFillTexMap(g, tex, *mapOut);
     }
@@ -1192,7 +1441,8 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
             } else if (BlendSockNameIs(sock, "Normal")) {
                 const bNodeLink *l = g.FindLinkToSocket(sock);
                 if (l) {
-                    const bNode *tex = g.FollowToTexImage(BlendCastNode(l->fromnode.get()));
+                    const bNode *src = BlendCastNode(l->fromnode.get());
+                    const bNode *tex = g.FollowToTexImage(src, 0, BlendCastSocket(l->fromsock.get()));
                     if (tex) {
                         BlendFillTexMap(g, tex, flat.mapNormal);
                     }
@@ -1280,6 +1530,10 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
                     flat.baseColor[3] = tmp[3];
                     flat.hasBaseColor = true;
                     flat.hasEmissionColor = true;
+                    // Splash / toon Emission surfaces: same Image is the visible albedo.
+                    if (flat.mapEmission) {
+                        flat.mapBaseColor = flat.mapEmission;
+                    }
                 }
             } else if (BlendSockNameIs(sock, "Strength")) {
                 if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
@@ -1291,82 +1545,6 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
     }
 
     return flat;
-}
-
-static void BlendLowerAscii(std::string &s) {
-    for (char &c : s) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-}
-
-/** Collect packed Images from a shader tree, descending into ShaderNodeGroup. */
-static void BlendCollectPackedImages(const Assimp::Blender::bNodeTree &tree,
-        std::vector<const Assimp::Blender::Image *> &out, int depth = 0) {
-    using namespace Assimp::Blender;
-    if (depth > 6) {
-        return;
-    }
-    const BlendNodeGraph g = BlendBuildGraph(tree);
-    for (const bNode *n : g.nodes) {
-        if (BlendNodeIsTexImage(*n)) {
-            const Image *img = BlendNodeImage(*n);
-            if (img != nullptr && BlendImageGetPacked(img) != nullptr) {
-                out.push_back(img);
-            }
-        }
-        if (const bNodeTree *gt = BlendNodeGroupTree(*n)) {
-            BlendCollectPackedImages(*gt, out, depth + 1);
-        }
-    }
-}
-
-/** When Principled Base Color is a group input / Mix chain we cannot follow, pick a packed
- *  paint map (splash layer_*_base.png) by material name; else first *_base / first packed. */
-static void BlendFallbackPackedBaseColor(const Assimp::Blender::Material &mat, BlendShaderFlat &flat) {
-    using namespace Assimp::Blender;
-    if (flat.mapBaseColor || !mat.nodetree) {
-        return;
-    }
-    std::vector<const Image *> imgs;
-    BlendCollectPackedImages(*mat.nodetree, imgs);
-    if (imgs.empty()) {
-        return;
-    }
-
-    std::string matKey = mat.id.name + 2;
-    BlendLowerAscii(matKey);
-    // Drop trailing .001 style suffixes for matching layer names.
-    const size_t dot = matKey.find('.');
-    if (dot != std::string::npos && dot + 1 < matKey.size() && std::isdigit(static_cast<unsigned char>(matKey[dot + 1]))) {
-        matKey.resize(dot);
-    }
-
-    const Image *best = nullptr;
-    int bestScore = -1;
-    for (const Image *img : imgs) {
-        std::string path = BlendImageDisplayPath(img);
-        BlendLowerAscii(path);
-        int score = 1;
-        if (path.find("_base") != std::string::npos || path.find("layer_") != std::string::npos) {
-            score += 5;
-        }
-        if (!matKey.empty() && path.find(matKey) != std::string::npos) {
-            score += 20;
-        }
-        // Watersurface / water mats prefer water maps.
-        if (matKey.find("water") != std::string::npos && path.find("water") != std::string::npos) {
-            score += 15;
-        }
-        if (score > bestScore) {
-            bestScore = score;
-            best = img;
-        }
-    }
-    if (best != nullptr) {
-        flat.mapBaseColor.img = best;
-        BlendCopyUvName(flat.mapBaseColor.uvname, nullptr);
-        flat.ok = true;
-    }
 }
 
 BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) {
@@ -1454,8 +1632,7 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
         }
     }
 
-    // Paint maps linked via group inputs / Mix we could not follow: name-match packed Images.
-    BlendFallbackPackedBaseColor(mat, flat);
+    // Presence: only Image Tex maps reached via bNodeLink (same as Blender). No name-guess.
     return flat;
 }
 
@@ -2310,45 +2487,58 @@ void BlenderImporter::ExtractScene(Scene &out, const FileDatabase &file) {
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root, const std::shared_ptr<Collection>& collection, ConversionData &conv_data) {
-
-    std::deque<Object *> root_objects;
-    // Count number of objects
-    for (std::shared_ptr<CollectionObject> cur = std::static_pointer_cast<CollectionObject>(collection->gobject.first); cur; cur = cur->next) {
+/** Gather Object* from a Collection and nested children (Blender 2.8+ view layer). */
+static void BlendCollectCollectionObjects(const std::shared_ptr<Collection> &collection,
+        std::vector<Object *> &out) {
+    if (!collection) {
+        return;
+    }
+    for (std::shared_ptr<CollectionObject> cur =
+                    std::static_pointer_cast<CollectionObject>(collection->gobject.first);
+            cur;
+            cur = cur->next) {
         if (cur->ob) {
-            root_objects.push_back(cur->ob);
+            out.push_back(cur->ob);
         }
     }
-    std::deque<Collection *> root_children;
-    // Count number of child nodes
-    for (std::shared_ptr<CollectionChild> cur = std::static_pointer_cast<CollectionChild>(collection->children.first); cur; cur = cur->next) {
+    for (std::shared_ptr<CollectionChild> cur =
+                    std::static_pointer_cast<CollectionChild>(collection->children.first);
+            cur;
+            cur = cur->next) {
         if (cur->collection) {
-            root_children.push_back(cur->collection.get());
+            BlendCollectCollectionObjects(cur->collection, out);
         }
     }
-    root->mNumChildren = static_cast<unsigned int>(root_objects.size() + root_children.size());
-    // ValidateDataStructure requires nullptr when empty (not new aiNode*[0]).
+}
+
+// ------------------------------------------------------------------------------------------------
+void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
+        const std::shared_ptr<Collection> &collection, ConversionData &conv_data) {
+    // Kept for API stability: build Object.parent hierarchy from all objects in this
+    // collection tree (same as ConvertBlendFile master_collection path).
+    std::vector<Object *> all;
+    BlendCollectCollectionObjects(collection, all);
+    std::set<const Object *> allSet(all.begin(), all.end());
+    std::deque<const Object *> no_parents;
+    for (Object *ob : all) {
+        if (ob == nullptr) {
+            continue;
+        }
+        if (ob->parent != nullptr && allSet.count(ob->parent) != 0) {
+            conv_data.objects.insert(ob);
+        } else {
+            no_parents.push_back(ob);
+        }
+    }
+    root->mNumChildren = static_cast<unsigned int>(no_parents.size());
     if (root->mNumChildren == 0) {
         root->mChildren = nullptr;
         return;
     }
     root->mChildren = new aiNode *[root->mNumChildren]();
-
-    for (unsigned int i = 0; i < static_cast<unsigned int>(root_objects.size()); ++i) {
-        root->mChildren[i] = ConvertNode(in, root_objects[i], conv_data, aiMatrix4x4());
+    for (unsigned int i = 0; i < root->mNumChildren; ++i) {
+        root->mChildren[i] = ConvertNode(in, no_parents[i], conv_data, aiMatrix4x4());
         root->mChildren[i]->mParent = root;
-    }
-
-    // For each subcollection create a new node to represent it
-    unsigned int iterator = static_cast<unsigned int>(root_objects.size());
-    for (std::shared_ptr<CollectionChild> cur = std::static_pointer_cast<CollectionChild>(collection->children.first); cur; cur = cur->next) {
-        if (!cur->collection) {
-            continue;
-        }
-        root->mChildren[iterator] = new aiNode(cur->collection->id.name + 2); // skip over the name prefix 'OB'
-        root->mChildren[iterator]->mParent = root;
-        ParseSubCollection(in, root->mChildren[iterator], cur->collection, conv_data);
-        iterator += 1;
     }
 }
 
@@ -2358,8 +2548,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     ConversionData conv(file);
 
     aiNode *root = out->mRootNode = new aiNode("<BlenderRoot>");
-    // Iterate over all objects directly under master_collection,
-    // If in.master_collection == null, then we're parsing something older.
+    // Blender 2.8+: objects live in master_collection. Hierarchy must follow Object.parent
+    // (glTF/exporter style) - not flat Collection membership.
     if (in.master_collection) {
         ParseSubCollection(in, root, in.master_collection, conv);
     } else {
@@ -2939,6 +3129,21 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
             }
 
             ResolveTexture(mout, mat.get(), mat->mtex[i].get(), conv_data);
+        }
+
+        // Grease Pencil materials: DNA Material.gp_style -> fill/stroke Images (often packed).
+        if (mat->gp_style) {
+            const unsigned matIndex = static_cast<unsigned>(matRawIndex);
+            BlendTexMap gpMap;
+            if (mat->gp_style->ima) {
+                gpMap.img = mat->gp_style->ima.get();
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_BASE_COLOR, conv_data, matIndex);
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_DIFFUSE, conv_data, matIndex);
+            }
+            if (mat->gp_style->sima) {
+                gpMap.img = mat->gp_style->sima.get();
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_DIFFUSE, conv_data, matIndex);
+            }
         }
 
         AddBlendParams(mout, mat.get());
@@ -3676,6 +3881,27 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
                 conv_data.camera_objects.push_back(obj);
             }
         } break;
+
+            // Grease Pencil 3 (bpy 'GREASEPENCIL' / OB_GREASE_PENCIL): no stroke mesh yet,
+            // but register DNA materials so packed fill/stroke / node images embed+assign.
+        case Object ::Type_GREASE_PENCIL: {
+            CheckActualType(obj->data.get(), "GreasePencil");
+            const GreasePencil *gp = static_cast<const GreasePencil *>(obj->data.get());
+            for (const std::shared_ptr<Material> &mat : gp->material_array) {
+                if (!mat) {
+                    continue;
+                }
+                const auto has = std::find(conv_data.materials_raw.begin(), conv_data.materials_raw.end(), mat);
+                if (has == conv_data.materials_raw.end()) {
+                    conv_data.materials_raw.push_back(mat);
+                }
+            }
+        } break;
+
+            // Legacy GP (bpy 'GPENCIL' / OB_GPENCIL_LEGACY): data is bGPdata (unsupported).
+        case Object ::Type_GPENCIL_LEGACY:
+            NotSupportedObjectType(obj, "GPencil");
+            break;
 
             // unsupported object types / log, but do not break
         case Object ::Type_CURVE:
