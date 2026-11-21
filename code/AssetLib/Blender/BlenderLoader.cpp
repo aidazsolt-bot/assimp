@@ -1913,23 +1913,16 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
     BlendCollectCollectionObjects(collection, all);
     std::set<const Object *> allSet(all.begin(), all.end());
     std::deque<const Object *> no_parents;
-    unsigned parented = 0, orphanParent = 0;
     for (Object *ob : all) {
         if (ob == nullptr) {
             continue;
         }
         if (ob->parent != nullptr && allSet.count(ob->parent) != 0) {
             conv_data.objects.insert(ob);
-            ++parented;
         } else {
-            if (ob->parent != nullptr) {
-                ++orphanParent;
-            }
             no_parents.push_back(ob);
         }
     }
-    std::fprintf(stderr, "BLEND DBG hierarchy all=%zu parented=%u orphanParent=%u roots=%zu\n",
-            all.size(), parented, orphanParent, no_parents.size());
     root->mNumChildren = static_cast<unsigned int>(no_parents.size());
     if (root->mNumChildren == 0) {
         root->mChildren = nullptr;
