@@ -610,7 +610,30 @@ void Structure ::Convert<Material>(
     ReadField<ErrorPolicy_Igno>(dest.use_nodes, "use_nodes", db);
     ReadField<ErrorPolicy_Igno>(dest.metallic, "metallic", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.nodetree, "*nodetree", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.gp_style, "*gp_style", db);
 
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<MaterialGPencilStyle>(
+        MaterialGPencilStyle &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.sima, "*sima", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.ima, "*ima", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<GreasePencil>(
+        GreasePencil &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
+    // DNA: Material **material_array - same ResolvePointer(vector) path as Mesh::mat.
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.material_array, "**material_array", db);
+    ReadField<ErrorPolicy_Igno>(dest.material_array_size, "material_array_size", db);
     db.reader->IncPtr(size);
 }
 
@@ -1254,6 +1277,8 @@ void DNA::RegisterConverters() {
     converters["Base"] = DNA::FactoryPair(&Structure::Allocate<Base>, &Structure::Convert<Base>);
     converters["MTFace"] = DNA::FactoryPair(&Structure::Allocate<MTFace>, &Structure::Convert<MTFace>);
     converters["Material"] = DNA::FactoryPair(&Structure::Allocate<Material>, &Structure::Convert<Material>);
+    converters["MaterialGPencilStyle"] = DNA::FactoryPair(&Structure::Allocate<MaterialGPencilStyle>, &Structure::Convert<MaterialGPencilStyle>);
+    converters["GreasePencil"] = DNA::FactoryPair(&Structure::Allocate<GreasePencil>, &Structure::Convert<GreasePencil>);
     converters["bNodeStack"] = DNA::FactoryPair(&Structure::Allocate<bNodeStack>, &Structure::Convert<bNodeStack>);
     converters["bNodeSocketValueFloat"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueFloat>, &Structure::Convert<bNodeSocketValueFloat>);
     converters["bNodeSocketValueRGBA"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueRGBA>, &Structure::Convert<bNodeSocketValueRGBA>);
