@@ -23,14 +23,24 @@ Copyright (c) 2006-2026, assimp team
  */
 #pragma once
 
+#include <assimp/mesh.h>
+
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace Assimp {
 namespace Blender {
 
 struct Mesh;
 class FileDatabase;
+
+/** One named UV map (corner-domain), uv.size() == 2 * totloop. */
+struct BlendUVLayer {
+    std::string name;
+    std::vector<float> uv;
+};
 
 /** blender::bke::AttrType (BKE_attribute_enums.hh) */
 enum class BlendAttrType : std::int16_t {
@@ -111,6 +121,17 @@ bool HydrateMeshFromCustomData(Mesh &mesh, const FileDatabase &db);
  * blender_file_version (and DNA presence). Returns true if topology is usable.
  */
 bool HydrateMeshGeometry(Mesh &mesh, const FileDatabase &db);
+
+/**
+ * Collect named UV maps from CustomData (CD_MLOOPUV / CD_PROP_FLOAT2) and
+ * AttributeStorage (corner float2). Caps at maxLayers (default
+ * AI_MAX_NUMBER_OF_TEXTURECOORDS).
+ * Logs a warning when more than one map exists, and when truncating.
+ * Returns number of layers written to out.
+ */
+unsigned CollectMeshUVLayers(const Mesh &mesh, const FileDatabase &db,
+        std::vector<BlendUVLayer> &out,
+        unsigned maxLayers = AI_MAX_NUMBER_OF_TEXTURECOORDS);
 
 } // namespace Blender
 } // namespace Assimp

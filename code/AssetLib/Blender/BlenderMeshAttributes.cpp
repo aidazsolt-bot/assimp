@@ -13,7 +13,10 @@ Copyright (c) 2006-2026, assimp team
 
 #include <assimp/ByteSwapper.h>
 #include <assimp/LogAux.h>
+#include <assimp/mesh.h>
+#include <cstdio>
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -804,6 +807,206 @@ bool HydrateMeshGeometry(Mesh &mesh, const FileDatabase &db) {
         }
     }
     return false;
+}
+
+namespace {
+
+bool IsPublicUvName(const std::string &name) {
+    // Blender internal attributes use a leading '.'; public UV maps do not.
+    return name.empty() || name[0] != '.';
+}
+
+std::string UniqueUvName(const std::string &raw, const std::vector<BlendUVLayer> &have) {
+    const std::string base = raw.empty() ? "UVMap" : raw;
+    auto taken = [&](const std::string &n) {
+        for (const BlendUVLayer &L : have) {
+            if (L.name == n) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (!taken(base)) {
+        return base;
+    }
+    for (unsigned i = 1; i < 1000; ++i) {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "%s.%03u", base.c_str(), i);
+        if (!taken(buf)) {
+            return std::string(buf);
+        }
+    }
+    return base + ".x";
+}
+
+bool PushUvLayer(std::vector<BlendUVLayer> &out, const std::string &name, std::vector<float> &&uv,
+        size_t expectFloats) {
+    if (uv.size() < expectFloats) {
+        return false;
+    }
+    if (uv.size() > expectFloats) {
+        uv.resize(expectFloats);
+    }
+    BlendUVLayer layer;
+    layer.name = UniqueUvName(name, out);
+    layer.uv = std::move(uv);
+    out.push_back(std::move(layer));
+    return true;
+}
+
+bool ReadFloat2LayerUv(const CustomDataLayer &layer, size_t totloop, const FileDatabase &db,
+        std::vector<float> &uv) {
+    std::vector<uint8_t> bytes;
+    if (!LoadRawLayerBytes(layer, totloop, 8, db, bytes)) {
+        return false;
+    }
+    uv.resize(totloop * 2);
+    for (size_t i = 0; i < totloop; ++i) {
+        float uv2[2];
+        std::memcpy(uv2, bytes.data() + i * 8, 8);
+        if (!db.little) {
+            ByteSwap::Swap4(&uv2[0]);
+            ByteSwap::Swap4(&uv2[1]);
+        }
+        uv[i * 2 + 0] = uv2[0];
+        uv[i * 2 + 1] = uv2[1];
+    }
+    return true;
+}
+
+bool ReadMLoopUvLayer(const CustomDataLayer &layer, size_t totloop, std::vector<float> &uv) {
+    if (!layer.data) {
+        return false;
+    }
+    const MLoopUV *arr = dynamic_cast<const MLoopUV *>(layer.data.get());
+    if (!arr) {
+        // shared_ptr holds MLoopUV[] via ElemBase* - dynamic_cast on first element works
+        // when Create allocated MLoopUV[]. Fallback: static_cast if type matches.
+        arr = static_cast<const MLoopUV *>(layer.data.get());
+    }
+    if (!arr) {
+        return false;
+    }
+    uv.resize(totloop * 2);
+    for (size_t i = 0; i < totloop; ++i) {
+        uv[i * 2 + 0] = arr[i].uv[0];
+        uv[i * 2 + 1] = arr[i].uv[1];
+    }
+    return true;
+}
+
+} // namespace
+
+unsigned CollectMeshUVLayers(const Mesh &mesh, const FileDatabase &db, std::vector<BlendUVLayer> &out,
+        unsigned maxLayers) {
+    out.clear();
+    if (maxLayers == 0 || mesh.totloop <= 0) {
+        return 0;
+    }
+    if (maxLayers > AI_MAX_NUMBER_OF_TEXTURECOORDS) {
+        maxLayers = AI_MAX_NUMBER_OF_TEXTURECOORDS;
+    }
+
+    ActiveIdScopeGuard scope_guard(db, mesh.blend_id_address);
+    std::vector<BlendUVLayer> found;
+    const size_t expect = static_cast<size_t>(mesh.totloop) * 2;
+
+    // 1) CustomData corner layers: CD_MLOOPUV (legacy) + CD_PROP_FLOAT2 (modern UV maps)
+    for (const auto &layerPtr : mesh.ldata.layers) {
+        if (!layerPtr) {
+            continue;
+        }
+        const CustomDataLayer &layer = *layerPtr;
+        const std::string lname = layer.name;
+        if (!IsPublicUvName(lname)) {
+            continue;
+        }
+        std::vector<float> uv;
+        if (layer.type == CD_MLOOPUV) {
+            if (!ReadMLoopUvLayer(layer, static_cast<size_t>(mesh.totloop), uv)) {
+                continue;
+            }
+        } else if (layer.type == CD_PROP_FLOAT2) {
+            if (!ReadFloat2LayerUv(layer, static_cast<size_t>(mesh.totloop), db, uv)) {
+                continue;
+            }
+        } else {
+            continue;
+        }
+        PushUvLayer(found, lname, std::move(uv), expect);
+    }
+
+    // 2) AttributeStorage corner float2 (Blender ~4.5+ / 5.x)
+    if (mesh.attribute_dna_num > 0 && mesh.attribute_dna_ptr.val) {
+        std::vector<RawAttr> attrs;
+        if (LoadAttributesFromStorage(mesh, db, attrs)) {
+            for (const RawAttr &a : attrs) {
+                if (a.domain != BlendAttrDomain::Corner || a.data_type != BlendAttrType::Float2) {
+                    continue;
+                }
+                if (!IsPublicUvName(a.name)) {
+                    continue;
+                }
+                if (a.data.size() < expect) {
+                    continue;
+                }
+                // Skip if name already collected from CustomData
+                bool haveName = false;
+                for (const BlendUVLayer &L : found) {
+                    if (L.name == a.name) {
+                        haveName = true;
+                        break;
+                    }
+                }
+                if (haveName) {
+                    continue;
+                }
+                std::vector<float> uv(expect);
+                for (size_t i = 0; i < static_cast<size_t>(mesh.totloop); ++i) {
+                    float uv2[2];
+                    std::memcpy(uv2, a.data.data() + i * 8, 8);
+                    if (!db.little) {
+                        ByteSwap::Swap4(&uv2[0]);
+                        ByteSwap::Swap4(&uv2[1]);
+                    }
+                    uv[i * 2 + 0] = uv2[0];
+                    uv[i * 2 + 1] = uv2[1];
+                }
+                PushUvLayer(found, a.name, std::move(uv), expect);
+            }
+        }
+    }
+
+    // 3) Classic *mloopuv mirror pointer (active/default UV only)
+    if (found.empty() && mesh.mloopuv.size() >= static_cast<size_t>(mesh.totloop)) {
+        std::vector<float> uv(expect);
+        for (int i = 0; i < mesh.totloop; ++i) {
+            uv[static_cast<size_t>(i) * 2 + 0] = mesh.mloopuv[static_cast<size_t>(i)].uv[0];
+            uv[static_cast<size_t>(i) * 2 + 1] = mesh.mloopuv[static_cast<size_t>(i)].uv[1];
+        }
+        PushUvLayer(found, "UVMap", std::move(uv), expect);
+    }
+
+    const char *meshName = (mesh.id.name[0] && mesh.id.name[1]) ? mesh.id.name + 2 : mesh.id.name;
+    if (found.size() > 1) {
+        std::ostringstream names;
+        for (size_t i = 0; i < found.size(); ++i) {
+            if (i) {
+                names << ", ";
+            }
+            names << '"' << found[i].name << '"';
+        }
+        ASSIMP_LOG_WARN("BLEND: mesh '", meshName, "' has ", found.size(),
+                " UV maps (Assimp delivers up to ", maxLayers, "): ", names.str());
+    }
+    if (found.size() > maxLayers) {
+        ASSIMP_LOG_WARN("BLEND: mesh '", meshName, "' truncating UV maps from ", found.size(),
+                " to ", maxLayers);
+        found.resize(maxLayers);
+    }
+
+    out = std::move(found);
+    return static_cast<unsigned>(out.size());
 }
 
 } // namespace Blender
