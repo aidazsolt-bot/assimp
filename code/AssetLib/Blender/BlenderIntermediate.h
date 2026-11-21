@@ -170,7 +170,7 @@ namespace Blender {
         unsigned int next_texture[aiTextureType_UNKNOWN+1];
 
         // Dedupe embedded aiTexture by Blender Image* (packedfiles / packedfile).
-        std::unordered_map<const void *, unsigned int> embeddedImageTexIndex;
+        std::unordered_map<const Image *, unsigned int> embeddedImageTexIndex;
 
         // original file data
         const FileDatabase& db;
