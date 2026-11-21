@@ -2272,6 +2272,11 @@ void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const M
 
     out->AddProperty(&name, AI_MATKEY_TEXTURE(texture_type,
                                     conv_data.next_texture[texture_type]++));
+    // Typed PBR slot: BI COL maps are also BASE_COLOR for Host Looks.
+    if ((map_type & MTex::MapType_COL) != 0) {
+        out->AddProperty(&name, AI_MATKEY_TEXTURE(aiTextureType_BASE_COLOR,
+                                        conv_data.next_texture[aiTextureType_BASE_COLOR]++));
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
