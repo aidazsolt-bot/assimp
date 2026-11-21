@@ -52,6 +52,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <deque>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <assimp/material.h>
 
@@ -170,6 +171,9 @@ namespace Blender {
 
         // next texture ID for each texture type, respectively
         unsigned int next_texture[aiTextureType_UNKNOWN+1];
+
+        // Dedupe embedded aiTexture by Blender Image* (packedfiles / packedfile).
+        std::unordered_map<const void *, unsigned int> embeddedImageTexIndex;
 
         // original file data
         const FileDatabase& db;

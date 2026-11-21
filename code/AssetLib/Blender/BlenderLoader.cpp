@@ -316,6 +316,36 @@ bool BlendNodeIsBump(const Assimp::Blender::bNode &n) {
     return n.type == kSH_NODE_BUMP;
 }
 
+bool BlendNodeIsMixColor(const Assimp::Blender::bNode &n) {
+    // Splash / Texture-Paint graphs: Image Texture -> ShaderNodeMix -> Principled Base Color.
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeMixRGB") == 0;
+    }
+    // Legacy SH_NODE_MIX_RGB
+    return n.type == 75;
+}
+
+bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeGroup") == 0 ||
+               std::strcmp(n.idname, "NodeGroup") == 0;
+    }
+    // Legacy NODE_GROUP
+    return n.type == 2;
+}
+
+const Assimp::Blender::bNodeTree *BlendNodeGroupTree(const Assimp::Blender::bNode &n) {
+    using namespace Assimp::Blender;
+    if (!BlendNodeIsGroup(n) || !n.id) {
+        return nullptr;
+    }
+    if (n.id->dna_type != nullptr && std::strcmp(n.id->dna_type, "bNodeTree") != 0) {
+        return nullptr;
+    }
+    return static_cast<const bNodeTree *>(n.id.get());
+}
+
 bool BlendNodeIsPassthrough(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0') {
         if (std::strcmp(n.idname, "NodeReroute") == 0 ||
@@ -323,12 +353,15 @@ bool BlendNodeIsPassthrough(const Assimp::Blender::bNode &n) {
                 std::strcmp(n.idname, "ShaderNodeNormalMap") == 0 ||
                 std::strcmp(n.idname, "ShaderNodeBump") == 0 ||
                 std::strcmp(n.idname, "ShaderNodeHueSaturation") == 0 ||
-                std::strcmp(n.idname, "ShaderNodeRGBToBW") == 0) {
+                std::strcmp(n.idname, "ShaderNodeRGBToBW") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeMixRGB") == 0) {
             return true;
         }
     }
     return n.type == kSH_NODE_REROUTE || n.type == kSH_NODE_INVERT ||
-           n.type == kSH_NODE_NORMAL_MAP || n.type == kSH_NODE_BUMP;
+           n.type == kSH_NODE_NORMAL_MAP || n.type == kSH_NODE_BUMP ||
+           BlendNodeIsMixColor(n);
 }
 
 bool BlendNodeIsFlattenable(const Assimp::Blender::bNode &n) {
@@ -358,6 +391,56 @@ const Assimp::Blender::Image *BlendNodeImage(const Assimp::Blender::bNode &n) {
     return static_cast<const Image *>(n.id.get());
 }
 
+/** Prefer legacy Image.packedfile; else first ImagePackedFile in packedfiles. */
+const Assimp::Blender::PackedFile *BlendImageGetPacked(const Assimp::Blender::Image *img) {
+    using namespace Assimp::Blender;
+    if (img == nullptr) {
+        return nullptr;
+    }
+    if (img->packedfile) {
+        return img->packedfile.get();
+    }
+    for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
+        const ImagePackedFile *ipf = nullptr;
+        if (cur->dna_type == nullptr || std::strcmp(cur->dna_type, "ImagePackedFile") == 0) {
+            ipf = static_cast<const ImagePackedFile *>(cur.get());
+        }
+        if (ipf == nullptr) {
+            break;
+        }
+        if (ipf->packedfile) {
+            return ipf->packedfile.get();
+        }
+        cur = ipf->next;
+    }
+    return nullptr;
+}
+
+/** Path for format hint / logging: Image.filepath|name, else ImagePackedFile.filepath. */
+const char *BlendImageDisplayPath(const Assimp::Blender::Image *img) {
+    using namespace Assimp::Blender;
+    if (img == nullptr) {
+        return "";
+    }
+    if (img->name[0] != '\0') {
+        return img->name;
+    }
+    for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
+        const ImagePackedFile *ipf = nullptr;
+        if (cur->dna_type == nullptr || std::strcmp(cur->dna_type, "ImagePackedFile") == 0) {
+            ipf = static_cast<const ImagePackedFile *>(cur.get());
+        }
+        if (ipf == nullptr) {
+            break;
+        }
+        if (ipf->filepath[0] != '\0') {
+            return ipf->filepath;
+        }
+        cur = ipf->next;
+    }
+    return img->name;
+}
+
 struct BlendNodeGraph {
     std::vector<const Assimp::Blender::bNode *> nodes;
     std::vector<const Assimp::Blender::bNodeLink *> links;
@@ -377,7 +460,7 @@ struct BlendNodeGraph {
 
     const Assimp::Blender::bNode *FollowToTexImage(const Assimp::Blender::bNode *n, int depth = 0) const {
         using namespace Assimp::Blender;
-        if (n == nullptr || depth > 8) {
+        if (n == nullptr || depth > 24) {
             return nullptr;
         }
         if (BlendNodeIsTexImage(*n)) {
@@ -416,12 +499,20 @@ struct BlendNodeGraph {
                 return hit;
             }
         }
+        // ShaderNodeMix / MixRGB: Image often on B (or Color2); try B then A.
+        if (BlendNodeIsMixColor(*n)) {
+            for (const char *want : { "B", "A", "Color2", "Color1", "ColorB", "ColorA", "Color" }) {
+                if (const bNode *hit = trySock(want)) {
+                    return hit;
+                }
+            }
+        }
         for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
             const bNodeSocket *sock = BlendCastSocket(cur.get());
             if (sock == nullptr) {
                 break;
             }
-            if (BlendSockNameIsAny(*sock, { "Color", "Height", "Image", "Normal" })) {
+            if (BlendSockNameIsAny(*sock, { "Color", "Height", "Image", "Normal", "A", "B" })) {
                 const bNodeLink *l = FindLinkToSocket(*sock);
                 if (l) {
                     const bNode *hit = FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1);
@@ -824,6 +915,81 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
     return flat;
 }
 
+static void BlendLowerAscii(std::string &s) {
+    for (char &c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+}
+
+/** Collect packed Images from a shader tree, descending into ShaderNodeGroup. */
+static void BlendCollectPackedImages(const Assimp::Blender::bNodeTree &tree,
+        std::vector<const Assimp::Blender::Image *> &out, int depth = 0) {
+    using namespace Assimp::Blender;
+    if (depth > 6) {
+        return;
+    }
+    const BlendNodeGraph g = BlendBuildGraph(tree);
+    for (const bNode *n : g.nodes) {
+        if (BlendNodeIsTexImage(*n)) {
+            const Image *img = BlendNodeImage(*n);
+            if (img != nullptr && BlendImageGetPacked(img) != nullptr) {
+                out.push_back(img);
+            }
+        }
+        if (const bNodeTree *gt = BlendNodeGroupTree(*n)) {
+            BlendCollectPackedImages(*gt, out, depth + 1);
+        }
+    }
+}
+
+/** When Principled Base Color is a group input / Mix chain we cannot follow, pick a packed
+ *  paint map (splash layer_*_base.png) by material name; else first *_base / first packed. */
+static void BlendFallbackPackedBaseColor(const Assimp::Blender::Material &mat, BlendShaderFlat &flat) {
+    using namespace Assimp::Blender;
+    if (flat.mapBaseColor != nullptr || !mat.nodetree) {
+        return;
+    }
+    std::vector<const Image *> imgs;
+    BlendCollectPackedImages(*mat.nodetree, imgs);
+    if (imgs.empty()) {
+        return;
+    }
+
+    std::string matKey = mat.id.name + 2;
+    BlendLowerAscii(matKey);
+    // Drop trailing .001 style suffixes for matching layer names.
+    const size_t dot = matKey.find('.');
+    if (dot != std::string::npos && dot + 1 < matKey.size() && std::isdigit(static_cast<unsigned char>(matKey[dot + 1]))) {
+        matKey.resize(dot);
+    }
+
+    const Image *best = nullptr;
+    int bestScore = -1;
+    for (const Image *img : imgs) {
+        std::string path = BlendImageDisplayPath(img);
+        BlendLowerAscii(path);
+        int score = 1;
+        if (path.find("_base") != std::string::npos || path.find("layer_") != std::string::npos) {
+            score += 5;
+        }
+        if (!matKey.empty() && path.find(matKey) != std::string::npos) {
+            score += 20;
+        }
+        // Watersurface / water mats prefer water maps.
+        if (matKey.find("water") != std::string::npos && path.find("water") != std::string::npos) {
+            score += 15;
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            best = img;
+        }
+    }
+    if (best != nullptr) {
+        flat.mapBaseColor = best;
+        flat.ok = true;
+    }
+}
+
 BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) {
     using namespace Assimp::Blender;
     BlendShaderFlat flat;
@@ -876,12 +1042,41 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
             chosen = g.PickBest(chosen, BlendNodeIsFlattenable(*n) ? n : nullptr);
         }
     }
-    if (chosen == nullptr) {
-        return flat;
+
+    if (chosen != nullptr) {
+        flat = BlendFlattenFromNode(g, *chosen);
+        flat.mixedGraph = sawMix;
     }
 
-    flat = BlendFlattenFromNode(g, *chosen);
-    flat.mixedGraph = sawMix;
+    // Splash / toon setups: Principled often inside ShaderNodeGroup; flatten there with that graph.
+    if (!flat.mapBaseColor) {
+        for (const bNode *n : g.nodes) {
+            const bNodeTree *gt = BlendNodeGroupTree(*n);
+            if (gt == nullptr) {
+                continue;
+            }
+            const BlendNodeGraph gg = BlendBuildGraph(*gt);
+            const bNode *inner = nullptr;
+            for (const bNode *gn : gg.nodes) {
+                inner = gg.PickBest(inner, BlendNodeIsFlattenable(*gn) ? gn : nullptr);
+            }
+            if (inner == nullptr) {
+                continue;
+            }
+            BlendShaderFlat innerFlat = BlendFlattenFromNode(gg, *inner);
+            if (!flat.ok || (innerFlat.mapBaseColor != nullptr && flat.mapBaseColor == nullptr) ||
+                    (innerFlat.HasAnyFactor() && !flat.HasAnyFactor())) {
+                flat = innerFlat;
+                flat.mixedGraph = true;
+            }
+            if (flat.mapBaseColor != nullptr) {
+                break;
+            }
+        }
+    }
+
+    // Paint maps linked via group inputs / Mix we could not follow: name-match packed Images.
+    BlendFallbackPackedBaseColor(mat, flat);
     return flat;
 }
 
@@ -892,28 +1087,41 @@ void BlendAttachNodeImage(aiMaterial *mout, const Assimp::Blender::Image *img, a
         return;
     }
     aiString name;
-    if (img->packedfile) {
+    const PackedFile *packed = BlendImageGetPacked(img);
+    const char *dispPath = BlendImageDisplayPath(img);
+    if (packed != nullptr && packed->data && packed->size > 0) {
+        unsigned int texIndex = 0;
+        const auto found = conv_data.embeddedImageTexIndex.find(img);
+        if (found != conv_data.embeddedImageTexIndex.end()) {
+            texIndex = found->second;
+        } else {
+            texIndex = static_cast<unsigned int>(conv_data.textures->size());
+            conv_data.embeddedImageTexIndex.emplace(img, texIndex);
+            conv_data.textures->push_back(new aiTexture());
+            aiTexture *curTex = conv_data.textures->back();
+            const size_t nlen = std::strlen(dispPath);
+            const char *s = dispPath + nlen, *e = s;
+            while (s >= dispPath && *s != '.') {
+                --s;
+            }
+            curTex->achFormatHint[0] = s + 1 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[1])));
+            curTex->achFormatHint[1] = s + 2 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[2])));
+            curTex->achFormatHint[2] = s + 3 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[3])));
+            curTex->achFormatHint[3] = '\0';
+            curTex->mWidth = static_cast<unsigned int>(packed->size);
+            uint8_t *ch = new uint8_t[curTex->mWidth];
+            conv_data.db.reader->SetCurrentPos(static_cast<size_t>(packed->data->val));
+            conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
+            curTex->pcData = reinterpret_cast<aiTexel *>(ch);
+            if (dispPath[0] != '\0') {
+                curTex->mFilename = aiString(dispPath);
+            }
+        }
         name.data[0] = '*';
         name.length = 1 + Assimp::ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1),
-                static_cast<int32_t>(conv_data.textures->size()));
-        conv_data.textures->push_back(new aiTexture());
-        aiTexture *curTex = conv_data.textures->back();
-        const size_t nlen = strlen(img->name);
-        const char *s = img->name + nlen, *e = s;
-        while (s >= img->name && *s != '.') {
-            --s;
-        }
-        curTex->achFormatHint[0] = s + 1 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[1])));
-        curTex->achFormatHint[1] = s + 2 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[2])));
-        curTex->achFormatHint[2] = s + 3 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[3])));
-        curTex->achFormatHint[3] = '\0';
-        curTex->mWidth = img->packedfile->size;
-        uint8_t *ch = new uint8_t[curTex->mWidth];
-        conv_data.db.reader->SetCurrentPos(static_cast<size_t>(img->packedfile->data->val));
-        conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
-        curTex->pcData = reinterpret_cast<aiTexel *>(ch);
+                static_cast<int32_t>(texIndex));
     } else {
-        name = aiString(img->name);
+        name = aiString(dispPath);
     }
     mout->AddProperty(&name, AI_MATKEY_TEXTURE(type, conv_data.next_texture[type]++));
 }
@@ -1983,39 +2191,52 @@ void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const M
     (void)conv_data;
     aiString name;
 
+    const PackedFile *packed = BlendImageGetPacked(img);
+    const char *dispPath = BlendImageDisplayPath(img);
+
     // check if the file contents are bundled with the BLEND file
-    if (img->packedfile) {
-        name.data[0] = '*';
-        name.length = 1 + ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1), static_cast<int32_t>(conv_data.textures->size()));
+    if (packed != nullptr && packed->data && packed->size > 0) {
+        unsigned int texIndex = 0;
+        const auto found = conv_data.embeddedImageTexIndex.find(img);
+        if (found != conv_data.embeddedImageTexIndex.end()) {
+            texIndex = found->second;
+        } else {
+            texIndex = static_cast<unsigned int>(conv_data.textures->size());
+            conv_data.embeddedImageTexIndex.emplace(img, texIndex);
+            conv_data.textures->push_back(new aiTexture());
+            aiTexture *curTex = conv_data.textures->back();
 
-        conv_data.textures->push_back(new aiTexture());
-        aiTexture *curTex = conv_data.textures->back();
+            // usually dispPath is the original file name of the embedded textures,
+            // so we can extract the file extension from it.
+            const size_t nlen = strlen(dispPath);
+            const char *s = dispPath + nlen, *e = s;
+            while (s >= dispPath && *s != '.') {
+                --s;
+            }
 
-        // usually 'img->name' will be the original file name of the embedded textures,
-        // so we can extract the file extension from it.
-        const size_t nlen = strlen(img->name);
-        const char *s = img->name + nlen, *e = s;
-        while (s >= img->name && *s != '.') {
-            --s;
+            curTex->achFormatHint[0] = s + 1 > e ? '\0' : (char)::tolower((unsigned char)s[1]);
+            curTex->achFormatHint[1] = s + 2 > e ? '\0' : (char)::tolower((unsigned char)s[2]);
+            curTex->achFormatHint[2] = s + 3 > e ? '\0' : (char)::tolower((unsigned char)s[3]);
+            curTex->achFormatHint[3] = '\0';
+
+            // tex->mHeight = 0;
+            curTex->mWidth = static_cast<unsigned int>(packed->size);
+            uint8_t *ch = new uint8_t[curTex->mWidth];
+
+            conv_data.db.reader->SetCurrentPos(static_cast<size_t>(packed->data->val));
+            conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
+
+            curTex->pcData = reinterpret_cast<aiTexel *>(ch);
+            if (dispPath[0] != '\0') {
+                curTex->mFilename = aiString(dispPath);
+            }
+
+            LogInfo("Reading embedded texture, original file was ", dispPath);
         }
-
-        curTex->achFormatHint[0] = s + 1 > e ? '\0' : (char)::tolower((unsigned char)s[1]);
-        curTex->achFormatHint[1] = s + 2 > e ? '\0' : (char)::tolower((unsigned char)s[2]);
-        curTex->achFormatHint[2] = s + 3 > e ? '\0' : (char)::tolower((unsigned char)s[3]);
-        curTex->achFormatHint[3] = '\0';
-
-        // tex->mHeight = 0;
-        curTex->mWidth = img->packedfile->size;
-        uint8_t *ch = new uint8_t[curTex->mWidth];
-
-        conv_data.db.reader->SetCurrentPos(static_cast<size_t>(img->packedfile->data->val));
-        conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
-
-        curTex->pcData = reinterpret_cast<aiTexel *>(ch);
-
-        LogInfo("Reading embedded texture, original file was ", img->name);
+        name.data[0] = '*';
+        name.length = 1 + ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1), static_cast<int32_t>(texIndex));
     } else {
-        name = aiString(img->name);
+        name = aiString(dispPath);
     }
 
     aiTextureType texture_type = aiTextureType_UNKNOWN;
