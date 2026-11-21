@@ -175,6 +175,9 @@ namespace Blender {
         // Dedupe embedded aiTexture by Blender Image* (packedfiles / packedfile).
         std::unordered_map<const Image *, unsigned int> embeddedImageTexIndex;
 
+        // Camera objects (for Action -> aiNodeAnim), filled during ConvertNode.
+        std::vector<const Object *> camera_objects;
+
         // original file data
         const FileDatabase& db;
 
