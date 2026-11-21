@@ -86,6 +86,66 @@ template <> void Structure :: Convert<SubsurfModifierData> (
     ) const
 ;
 
+template <> void Structure :: Convert<GenericModifierData> (
+    GenericModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<FluidDomainSettings> (
+    FluidDomainSettings& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<FluidModifierData> (
+    FluidModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<SoftBody> (
+    SoftBody& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<RigidBodyOb> (
+    RigidBodyOb& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<RigidBodyCon> (
+    RigidBodyCon& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ClothSimSettings> (
+    ClothSimSettings& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ClothModifierData> (
+    ClothModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ParticleSettings> (
+    ParticleSettings& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ParticleSystem> (
+    ParticleSystem& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<MFace> (
     MFace& dest,
     const FileDatabase& db
@@ -196,6 +256,18 @@ template <> void Structure :: Convert<MDeformVert> (
 
 template <> void Structure :: Convert<World> (
     World& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<RenderData> (
+    RenderData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<UnitSettings> (
+    UnitSettings& dest,
     const FileDatabase& db
     ) const
 ;

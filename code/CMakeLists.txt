@@ -84,6 +84,7 @@ SET( PUBLIC_HEADERS
   ${HEADER_PATH}/quaternion.h
   ${HEADER_PATH}/quaternion.inl
   ${HEADER_PATH}/scene.h
+  ${HEADER_PATH}/sidecar.h
   ${HEADER_PATH}/metadata.h
   ${HEADER_PATH}/texture.h
   ${HEADER_PATH}/types.h
@@ -193,6 +194,7 @@ SET( Common_SRCS
   Common/SceneCombiner.cpp
   Common/ScenePreprocessor.cpp
   Common/ScenePreprocessor.h
+  Common/Sidecar.cpp
   Common/SkeletonMeshBuilder.cpp
   Common/StackAllocator.h
   Common/StackAllocator.inl

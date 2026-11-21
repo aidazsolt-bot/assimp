@@ -689,39 +689,7 @@ struct Lamp final : ElemBase {
 // -------------------------------------------------------------------------------
 struct ModifierData final : ElemBase {
     enum ModifierType {
-        eModifierType_None = 0,
-        eModifierType_Subsurf,
-        eModifierType_Lattice,
-        eModifierType_Curve,
-        eModifierType_Build,
-        eModifierType_Mirror,
-        eModifierType_Decimate,
-        eModifierType_Wave,
-        eModifierType_Armature,
-        eModifierType_Hook,
-        eModifierType_Softbody,
-        eModifierType_Boolean,
-        eModifierType_Array,
-        eModifierType_EdgeSplit,
-        eModifierType_Displace,
-        eModifierType_UVProject,
-        eModifierType_Smooth,
-        eModifierType_Cast,
-        eModifierType_MeshDeform,
-        eModifierType_ParticleSystem,
-        eModifierType_ParticleInstance,
-        eModifierType_Explode,
-        eModifierType_Cloth,
-        eModifierType_Collision,
-        eModifierType_Bevel,
-        eModifierType_Shrinkwrap,
-        eModifierType_Fluidsim,
-        eModifierType_Mask,
-        eModifierType_SimpleDeform,
-        eModifierType_Multires,
-        eModifierType_Surface,
-        eModifierType_Smoke,
-        eModifierType_ShapeKey
+#include "BlenderModifierEnum.inc"
     };
 
     std::shared_ptr<ElemBase> next WARN;
@@ -735,6 +703,152 @@ struct ModifierData final : ElemBase {
 // ------------------------------------------------------------------------------------------------
 struct SharedModifierData : ElemBase {
     ModifierData modifier;
+};
+
+// ------------------------------------------------------------------------------------------------
+/** Hull for every blender *ModifierData DNA type except Subsurf/Mirror/Fluid (specialized). */
+struct GenericModifierData final : SharedModifierData {};
+
+/** Subset of blender DNA FluidDomainSettings - cache paths for Host Flow/VDB. */
+struct FluidDomainSettings final : ElemBase {
+    int type WARN; // eFluidDomain_Type: gas/liquid
+    int cache_frame_start WARN;
+    int cache_frame_end WARN;
+    int cache_type WARN;
+    char cache_directory[1024] WARN;
+
+    FluidDomainSettings() :
+            type(0), cache_frame_start(1), cache_frame_end(250), cache_type(0) {
+        cache_directory[0] = '\0';
+    }
+};
+
+struct FluidModifierData final : SharedModifierData {
+    enum FluidModifierType {
+        MOD_FLUID_TYPE_DOMAIN = (1 << 0),
+        MOD_FLUID_TYPE_FLOW = (1 << 1),
+        MOD_FLUID_TYPE_EFFEC = (1 << 2)
+    };
+
+    std::shared_ptr<FluidDomainSettings> domain;
+    float time WARN;
+    int type WARN; // FluidModifierType bitflags
+
+    FluidModifierData() :
+            time(0.f), type(0) {}
+};
+
+/** Subset of DNA SoftBody (Object.soft). */
+struct SoftBody final : ElemBase {
+    float nodemass WARN;
+    float grav WARN;
+    float mediafrict WARN;
+    float goalspring WARN;
+    float goalfrict WARN;
+    float mingoal WARN;
+    float maxgoal WARN;
+    float defgoal WARN;
+    float inspring WARN;
+    float infrict WARN;
+
+    SoftBody() :
+            nodemass(1.f), grav(9.8f), mediafrict(0.5f), goalspring(0.5f), goalfrict(0.f),
+            mingoal(0.f), maxgoal(1.f), defgoal(0.7f), inspring(0.5f), infrict(0.5f) {}
+};
+
+/** Subset of DNA RigidBodyOb (Object.rigidbody_object). */
+struct RigidBodyOb final : ElemBase {
+    enum Type { Type_Active = 0, Type_Passive = 1 };
+    enum Shape {
+        Shape_Box = 0,
+        Shape_Sphere = 1,
+        Shape_Capsule = 2,
+        Shape_Cylinder = 3,
+        Shape_Cone = 4,
+        Shape_ConvexH = 5,
+        Shape_Trimesh = 6,
+        Shape_Compound = 7
+    };
+    enum Flag {
+        Flag_Kinematic = 1 << 0,
+        Flag_Disabled = 1 << 5
+    };
+
+    short type WARN;
+    short shape WARN;
+    int flag WARN;
+    int col_groups WARN;
+    float mass WARN;
+    float friction WARN;
+    float restitution WARN;
+    float margin WARN;
+    float lin_damping WARN;
+    float ang_damping WARN;
+
+    RigidBodyOb() :
+            type(Type_Active), shape(Shape_Box), flag(0), col_groups(0),
+            mass(1.f), friction(0.5f), restitution(0.f), margin(0.04f),
+            lin_damping(0.04f), ang_damping(0.1f) {}
+};
+
+/** Subset of DNA RigidBodyCon (Object.rigidbody_constraint). */
+struct RigidBodyCon final : ElemBase {
+    short type WARN;
+    float breaking_threshold WARN;
+
+    RigidBodyCon() :
+            type(0), breaking_threshold(10.f) {}
+};
+
+/** Subset of DNA ClothSimSettings (*ClothModifierData.sim_parms). */
+struct ClothSimSettings final : ElemBase {
+    float mass WARN;
+    float shear WARN;
+    float bending WARN;
+    float tension WARN;
+    float gravity[3] WARN;
+    float goalspring WARN;
+    float goalfrict WARN;
+    int stepsPerFrame WARN;
+
+    ClothSimSettings() :
+            mass(0.3f), shear(5.f), bending(0.5f), tension(15.f),
+            goalspring(1.f), goalfrict(0.f), stepsPerFrame(5) {
+        gravity[0] = 0.f;
+        gravity[1] = 0.f;
+        gravity[2] = -9.81f;
+    }
+};
+
+/** Cloth modifier with sim settings pointer (specialized vs Generic hull). */
+struct ClothModifierData final : SharedModifierData {
+    std::shared_ptr<ClothSimSettings> sim_parms;
+};
+
+/** Subset of DNA ParticleSettings. */
+struct ParticleSettings final : ElemBase {
+    ID id WARN;
+    int type WARN;
+    int totpart WARN;
+    float mass WARN;
+    float size WARN;
+    float lifetime WARN;
+    float sta WARN;
+    float end WARN;
+
+    ParticleSettings() :
+            type(0), totpart(0), mass(1.f), size(0.05f), lifetime(50.f), sta(1.f), end(200.f) {}
+};
+
+/** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
+struct ParticleSystem final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<ParticleSettings> part;
+    char name[64] WARN;
+
+    ParticleSystem() {
+        name[0] = '\0';
+    }
 };
 
 // -------------------------------------------------------------------------------
@@ -829,6 +943,10 @@ struct Object final : ElemBase {
     std::shared_ptr<ElemBase> data FAIL;
 
     ListBase modifiers;
+    ListBase particlesystem; // ParticleSystem
+    std::shared_ptr<SoftBody> soft;
+    std::shared_ptr<RigidBodyOb> rigidbody_object;
+    std::shared_ptr<RigidBodyCon> rigidbody_constraint;
 
     Object() :
             type(Type_EMPTY),
@@ -868,6 +986,27 @@ struct Base final : ElemBase {
 };
 
 // -------------------------------------------------------------------------------
+/** Subset of DNA RenderData - frame range / FPS for C0 scene sidecar. */
+struct RenderData final : ElemBase {
+    int sfra WARN; ///< Start frame
+    int efra WARN; ///< End frame
+    float frs_sec WARN; ///< Frames per second (numerator)
+    float frs_sec_base WARN; ///< Frames per second (denominator); 0 => treat as 1
+
+    RenderData() :
+            sfra(1), efra(250), frs_sec(24.f), frs_sec_base(1.f) {}
+};
+
+// -------------------------------------------------------------------------------
+/** Subset of DNA UnitSettings - scale_length for metersPerUnit mapping. */
+struct UnitSettings final : ElemBase {
+    float scale_length WARN;
+
+    UnitSettings() :
+            scale_length(1.f) {}
+};
+
+// -------------------------------------------------------------------------------
 struct Scene final : ElemBase {
     ID id FAIL;
 
@@ -877,6 +1016,9 @@ struct Scene final : ElemBase {
     std::shared_ptr<Collection> master_collection WARN;
 
     ListBase base;
+
+    RenderData r WARN;
+    UnitSettings unit WARN;
 
     Scene() = default;
 };

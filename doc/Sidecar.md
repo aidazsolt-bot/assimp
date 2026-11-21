@@ -1,0 +1,334 @@
+# Generic mesh / material / animation sidecar API
+
+ABI-safe side channels for importer data that do **not** fit the public
+`aiMesh` / `aiMaterial` / `aiAnimation` / `aiScene` layout (avoids the ABI break class of
+[PR #6593](https://github.com/assimp/assimp/pull/6593)).
+
+Header: `include/assimp/sidecar.h`
+
+## What it stores
+
+### Mesh sidecar (`aiMeshSidecar`)
+
+Per mesh index (same indexing as `aiScene::mMeshes`):
+
+| Field | Meaning |
+|---|---|
+| `aiSidecarBuffer[]` | Named attribute buffers (name, component type, tightly packed bytes) |
+| `mExtrasJson` | UTF-8 JSON object: merged mesh + primitive `extras` |
+| `mExtensionsJson` | UTF-8 JSON object: merged mesh + primitive `extensions` |
+
+Scene metadata: `AI_METADATA_MESH_SIDECAR` (`bool`).
+
+### Material sidecar (`aiMaterialSidecar`)
+
+Per material index (same as `aiScene::mMaterials` / `aiMesh::mMaterialIndex`):
+
+| Field | Meaning |
+|---|---|
+| `mExtensionsJson` | UTF-8 JSON object of **unmapped** material extensions |
+
+Do **not** put material extensions on `aiMeshSidecar`. Scene metadata:
+`AI_METADATA_MATERIAL_SIDECAR` (`bool`).
+
+### Animation sidecar (`aiAnimationSidecar`)
+
+Per animation index (same as `aiScene::mAnimations`):
+
+| Field | Meaning |
+|---|---|
+| `mExtensionsJson` | UTF-8 JSON: at least `KHR_animation_pointer.channels[]` |
+| `aiSidecarBuffer[]` | Named float sampler curves (`sampler_N_input` / `sampler_N_output`) |
+
+Assimp does **not** play pointer animations. The host samples buffers and applies
+JSON Pointers. Scene metadata: `AI_METADATA_ANIMATION_SIDECAR` (`bool`).
+
+Lifetime = scene. **Not** preserved by `aiCopyScene` / SceneCombiner.
+
+## Consumer example
+
+```cpp
+#include <assimp/sidecar.h>
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+
+Assimp::Importer importer;
+const aiScene *scene = importer.ReadFile("model.gltf", aiProcess_ValidateDataStructure);
+if (aiSceneHasMeshSidecar(scene)) {
+    const aiMeshSidecar *sc = aiGetMeshSidecar(scene, 0);
+    for (unsigned int i = 0; i < sc->mNumBuffers; ++i) {
+        const aiSidecarBuffer &b = sc->mBuffers[i];
+        // b.mName e.g. "_SCALE"; b.mData tightly packed floats/ints
+    }
+    if (sc->mExtrasJson) {
+        // parse JSON string of length sc->mExtrasJsonLength
+    }
+}
+if (aiSceneHasMaterialSidecar(scene)) {
+    const aiMaterialSidecar *msc = aiGetMaterialSidecar(scene, mesh->mMaterialIndex);
+    // msc->mExtensionsJson: e.g. KHR_materials_iridescence object
+}
+if (aiSceneHasAnimationSidecar(scene)) {
+    const aiAnimationSidecar *asc = aiGetAnimationSidecar(scene, 0);
+    // asc->mExtensionsJson: KHR_animation_pointer channels
+    // asc->mBuffers: float times / values named by inputBuffer / outputBuffer
+}
+```
+
+## glTF2 importer behaviour
+
+Standard semantics (`POSITION`, `NORMAL`, `TANGENT`, `TEXCOORD_*`, `COLOR_*`,
+`JOINTS_*`, `WEIGHTS_*`) stay on `aiMesh`. Anything else (typically `_`-prefixed
+application attributes) is extracted with the same vertex remapping as
+positions and attached via `AttachMeshSidecar`.
+
+Mesh- and primitive-level `extras` / `extensions` are serialized to JSON on the
+same mesh sidecar bag.
+
+### Material: `KHR_materials_iridescence`
+
+Assimp does **not** yet write typed `AI_MATKEY_IRIDESCENCE_*` properties. Until
+that exists, the glTF2 importer attaches a material sidecar whose
+`mExtensionsJson` contains only keys **present in the source** (no Assimp
+defaults such as factor=0 / ior=1.3 when omitted; no non-finite floats).
+
+Texture objects include a resolved `path` (same rules as `aiMaterial::GetTexture`:
+external URI or `*N` embedded). glTF `index` alone is never enough for the
+RenderAssimp pack. `texCoord` / transform `scale` are emitted only when authored.
+
+Fixtures: `test/models/glTF2/SidecarCustomAttr/`,
+`test/models/glTF2/SidecarIridescence/`.
+
+### Animation: `KHR_animation_pointer`
+
+Classic channels (`target.node` + `translation` / `rotation` / `scale` / `weights`)
+still fill `aiNodeAnim` / morph channels.
+
+Channels with `path: "pointer"`:
+
+| Pointer | Assimp behaviour |
+|---|---|
+| `/nodes/N/translation\|rotation\|scale\|weights` | Mapped to classic `aiNodeAnim` / morph (v1 convenience) |
+| Anything else (materials, texture transforms, lights, cameras, ...) | Animation sidecar |
+
+Sidecar JSON (authored keys only) example channel entry:
+
+```json
+{
+  "sampler": 0,
+  "pointer": "/materials/0/pbrMetallicRoughness/baseColorFactor",
+  "interpolation": "LINEAR",
+  "inputBuffer": "sampler_0_input",
+  "outputBuffer": "sampler_0_output",
+  "outputComponents": 4
+}
+```
+
+Buffers are float (`5126`), tightly packed. Input is SCALAR times in seconds.
+Output element count matches the accessor (`3x` input count for `CUBICSPLINE`).
+An animation that has only pointer channels still creates `aiAnimation` (name /
+duration / ticks) with `mNumChannels == 0`; duration is derived from sidecar
+input times when needed. `aiProcess_ValidateDataStructure` allows that case when
+an animation sidecar is attached.
+
+Fixtures: `SidecarAnimPointerMaterial/`, `SidecarAnimPointerTexTransform/`,
+`SidecarAnimPointerMixed/`.
+
+## Babylon mapping (RenderAssimp2026 follow-up)
+
+Goal: feed BabylonNative without `BABYLON.SceneLoader.Append`, using Assimp as
+the only importer. Suggested mapping for a future app bridge:
+
+| Assimp | Babylon |
+|---|---|
+| `aiMesh` positions / normals / UVs / indices | `VertexData` / `BABYLON.Mesh` |
+| `aiMaterial` + `GltfMaterial.h` keys | `PBRMaterial` (MR, clearcoat, transmission, volume, sheen, …) |
+| `aiAnimation` / node channels | `Animation` / `AnimationGroup` (group packaging is app-side) |
+| `aiAnimationSidecar` (`KHR_animation_pointer`) | Host samples buffers + applies pointers (materials / UV transform / ...) |
+| `aiMesh::mAnimMeshes` | morph target influences |
+| `AI_MATKEY_UVTRANSFORM` | texture `uAng` / `uScale` / `uOffset` |
+| Sidecar buffer `"_FOO"` | `mesh.setVerticesData("_FOO", floats, false, components)` or custom `VertexBuffer` |
+| Sidecar `mExtrasJson` | `mesh.metadata` / `mesh.extras` |
+| Sidecar `mExtensionsJson` | inspect for app-specific extensions not yet mapped to material keys |
+
+Out of scope for the Assimp sidecar branch itself: Embedding bind, replacing
+`look_babylon_scene.js` Append, NativeDraco path changes.
+
+### Transmission: file data vs Babylon runtime (honest split)
+
+Symptom often reported when skipping `SceneLoader.Append`:
+
+> Transmission factors are set, but Babylon needs an opaque-scene RTT
+> (`TransmissionHelper` from the glTF loader). Assimp pack without Append
+> falls back to IBL refraction only - gloss/tint OK, no real see-through
+> (e.g. cloth behind dragon glass).
+
+| Piece | In the glTF/model file? | Assimp today | Sidecar? |
+|---|---|---|---|
+| `KHR_materials_transmission` factor / texture | **Yes** | Already on `aiMaterial` (`AI_MATKEY_TRANSMISSION_FACTOR` / `AI_MATKEY_TRANSMISSION_TEXTURE`) | **No** - not needed |
+| `KHR_materials_volume` thickness / attenuation | **Yes** | Already on `aiMaterial` volume keys | **No** - not needed |
+| Opaque-scene color buffer / `TransmissionHelper` RTT | **No** - runtime only | Cannot invent a framebuffer | **No** - never |
+| Binding `subSurface.refractionTexture` to that RTT | **No** - engine wiring | App / Babylon JS | **No** |
+
+So: Assimp (and sidecar) can deliver **authored** transmission numbers honestly.
+They **cannot** deliver "true see-through" - that is Babylon painting an opaque
+pass into a render target and sampling it as refraction, which
+`babylonjs.loaders` + `TransmissionHelper` set up on Append. Without Append the
+host must build the same pass (see `ensureOpaqueTransmissionPass` /
+`refractionTexture` in RenderAssimp2026 `look_babylon_scene.js`).
+
+Sidecar is for **missing file payload** (custom attrs, extras JSON), not for
+**missing renderer features**.
+
+## Physics sidecar
+
+Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_METADATA_PHYSICS_SIDECAR`).
+
+- `aiSceneHasPhysicsSidecar` / `aiGetPhysicsSidecar`
+- JSON is built generically by scanning the glTF document:
+  - copy root `KHR_implicit_shapes` / `KHR_physics_rigid_bodies` when present
+  - walk every `nodes[i]`; if it has `extensions.KHR_physics_rigid_bodies`, append
+    `{index,name,KHR_physics_rigid_bodies}` to `nodes[]`
+  - `nodeNames[]` lists those names in the same order (fallback `node_<index>` if unnamed)
+- `index` is the glTF `nodes[]` array index (not DFS order under Assimp's synthetic ROOT).
+- Host walks `nodeNames` / `nodes` - do not hardcode author-specific body names in Assimp.
+- Assimp does not simulate; host (Bullet) steps and writes node TRS.
+- Collider `geometry.mesh` stays in the JSON bag only. Do **not** promote those
+  meshes onto `aiNode::mMeshes` (proxies are often intentionally mesh-less).
+
+Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/` (generic `BodyDynamic0` /
+`BodyKinematic0` names only for local geometry; tests walk JSON structure).
+
+### BLEND `BLEND_physics_*` inventory (Arris)
+
+Soft/cloth/fluid/smoke/particles/rigidbody nodes share:
+
+| Field | Meaning |
+|---|---|
+| `index` | Pre-order DFS under Assimp `<BlenderRoot>` (same order as Host `skinNodes`) |
+| `name` | Blender Object name (`aiNode::mName`) |
+| `modifier` / `type` / `settings` | Presence + DNA settings when available |
+
+Fluid / smoke nodes additionally bind the visual mesh:
+
+| Field | Meaning |
+|---|---|
+| `meshes` | `aiScene::mMeshes` indices on that node |
+| `materialIndex` / `materialName` | Primary (`meshes[0]`) material |
+| `materials[]` | Unique `{index,name}` for all meshes on the node |
+| `settings.fluid_role` | `domain` \| `flow` \| `effector` |
+| `settings.cache` | directory + frame range when Domain DNA present |
+
+Domain meshes stay on `aiNode::mMeshes`; Host may hide opaque domains via sidecar.
+
+### BLEND C6 packed Images (Arris)
+
+Blender 2.77+ / 4.x store embeds in `Image.packedfiles` (`ImagePackedFile`), not only
+deprecated `Image.packedfile`. Assimp reads both and emits `aiTexture` (`*N`) +
+`aiTextureType_BASE_COLOR` / `DIFFUSE` when C6 finds Image Texture links (incl.
+`ShaderNodeMix` chains) or falls back to packed paint maps (`layer_*_base.png`)
+matched by material name (e.g. splash House of Chores). Grease Pencil strokes are
+out of scope.
+
+## USD scene timing / units (C0 / S0)
+
+No new C API. Stage metas are emitted on `aiScene::mMetaData`:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | `aiString` | UTF-8 JSON bag below |
+| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `usd` / `usda` / `usdc` / `usdz` |
+
+JSON shape (schemaVersion 1):
+
+```json
+{
+  "schemaVersion": 1,
+  "source": {
+    "format": "usda",
+    "upAxis": "Y|Z|X",
+    "metersPerUnit": 1.0,
+    "timeCodesPerSecond": 24.0,
+    "framesPerSecond": 24.0,
+    "startTimeCode": 1.0,
+    "endTimeCode": 100.0
+  }
+}
+```
+
+Source: TinyUSDZ `Stage::metas()` (preferred) / `RenderScene::meta`.
+Non-finite `endTimeCode` is omitted. Host uses this for Session frame loop;
+Assimp does not evaluate USD composition beyond the loaded stage snapshot.
+
+Fixture: `test/models/USD/SidecarSceneTiming/SidecarSceneTiming.usda`.
+Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTER`).
+
+### USD S1-S8 category bags (`feature/usd-sidecar`)
+
+| Slice | Channel | Contents |
+|---|---|---|
+| S1 | `aiMeshSidecar.mExtensionsJson` | `primPath`, `primvars` (texcoord slots, normals, displayColor/Opacity), blendShapes, skel |
+| S2 | `aiAnimationSidecar` | `USD_skel_channels[]`, `blendshapeWeights[]` when TinyUSDZ emits clips |
+| S3 | `aiMaterialSidecar` | `UsdPreviewSurface` remainder (diffuse/metallic/roughness/ior/clearcoat/…) |
+| S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
+| S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` + optional `mass` from `physics:mass` |
+| S6 | (same physics bag) | Soft/cloth USD schemas recorded when present; else listed under `skipped` |
+| S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset` + presence (filePath when TinyUSDZ exposes OpenVDB props)), `pointInstancers[]` |
+| S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
+
+Host-probe hardening (2026-11-19):
+
+- **UsdGeomGprim tessellation:** `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` -> `aiMesh` when TinyUSDZ leaves them as Xform-only (`USDGprimMesh`).
+- **Empty-mesh stages:** Volume-only / payload-only sets `AI_SCENE_FLAGS_INCOMPLETE` so ValidateDS does not hard-fail; sidecars still emit.
+- **TinyUSDZ patch (not Assimp ASCII strip):** accept UsdPhysics `kilogramsPerUnit`; ignore other unknown stage/prim metas (e.g. `Usd_DCE_Params`); recognize distinct `Physics*API` vs Apple `Preliminary_Physics*API` tokens (`contrib/tinyusdz/patches/`).
+- **Composition honesty:** `payload` / `references` -> `skipped[]` entry `composition:payload_or_reference:<path>` (no nullptr child path).
+
+Fixtures: `test/models/USD/SidecarCategories/SidecarCategories.usda`,
+`SidecarGprimPhysics/SidecarGprimPhysics.usda`,
+`SidecarPayloadHonesty/SidecarPayloadHonesty.usda`.
+Tests: `utUSDImport.categorySidecarsS1toS8Test`, `gprimPhysicsTessellationTest`,
+`payloadCompositionHonestyTest`.
+Spec map: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.
+
+### BLEND compressed containers + DNA (Host probe 2026-11-19)
+
+- Gzip (`.blend` with `1f 8b`) and **Zstandard** (`28 b5 2f fd`, Blender 3+ default,
+  often multi-frame) are decompressed in `ParseMagicToken` before DNA parse
+  (`ASSIMP_BLEND_SUPPORT_ZSTD`).
+- Fixture: `test/models/BLEND/BlenderDefault_250_zstd.blend`
+  (`utBlenderImporter.importBlenderDefault250ZstdCompressed`).
+- Empty `mesh->mat[]` slots are skipped in UV/texture mapping and `BuildMaterials`
+  (avoids SEGV on large fluid demos such as `lava_fluid-viscosity-demo.blend`).
+- DNA `TYPE`/`TLEN`/`STRC` padding follows Blender `pad_up_4` relative to the
+  **SDNA blob base** (not absolute file offset). DNA1 bodies can start at
+  `file_off % 4 != 0` while markers stay aligned inside the DNA payload.
+
+### BLEND file format version 0 vs 1 (Blender 5.0+ LargeBHead8)
+
+Blender low-level container (see `BLO_core_blend_header.hh` / `BLO_core_bhead.hh`):
+
+| Format | Header | Block header | Notes |
+|---|---|---|---|
+| **v0** | 12 bytes `BLENDER` + `[-_]` + `[vV]` + 3-digit ver | `BHead4` (4-byte ptr) or `SmallBHead8` (8-byte ptr) | Blender <=4.x write path |
+| **v1** | 17 bytes `BLENDER` + `17` + `-` + `01` + `v` + 4-digit ver | always **`LargeBHead8`** (`code`, `SDNAnr`, `old`, `len` i64, `nr` i64) | Blender 5.0+; blocks can exceed 2GiB |
+
+Assimp decodes v0/v1 before DNA walk. Unknown format version (`>01`) or bad header ->
+`DeadlyImportError` with header dump (no silent mis-parse).
+
+`SceneSidecarJson.source` / `BLEND_file` include:
+
+| Key | Meaning |
+|---|---|
+| `formatVersion` | `0` or `1` |
+| `blenderFileVersion` | integer from header (`282`, `500`, …) |
+
+Fixture: `BlenderFormatV1_Header.blend` (ZSTD + `BLENDER17-01v0500`).
+Test: `importBlenderFormatV1Header`.
+
+Blender 5+ meshes often leave classic `*mvert` / `*mloop` / `*mpoly` null and
+store geometry in `AttributeStorage` (see blender.git
+`DNA_attribute_types.h` / `BKE_attribute_enums.hh`: `position` Float3 on Point,
+`.corner_vert` Int32 on Corner) plus `face_offset_indices` (DNA rename of
+`poly_offset_indices`). Assimp hydrates those into the classic arrays in
+`BlenderMeshAttributes.cpp` before `ConvertMesh` (shared generated block
+addresses are disambiguated by size and locality).

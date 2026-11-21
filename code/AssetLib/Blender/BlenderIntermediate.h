@@ -50,7 +50,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderDNA.h"
 #include "BlenderScene.h"
 #include <deque>
+#include <sstream>
+#include <string>
 #include <unordered_map>
+#include <vector>
 #include <assimp/material.h>
 
 struct aiTexture;
@@ -174,6 +177,36 @@ namespace Blender {
 
         // original file data
         const FileDatabase& db;
+
+        // Parallel to meshes[]: CustomData/primvar JSON for aiMeshSidecar (S1).
+        std::vector<std::string> meshSidecarJson;
+
+        // Parallel to materials[]: S3 BLEND_shader (+ optional principled) JSON bodies.
+        std::vector<std::string> materialSidecarJson;
+
+        // Physics modifier inventory (S5/S6) - filled while walking objects.
+        // Each entry is a complete JSON object without `index`; ConvertBlendFile
+        // injects hierarchy DFS index (same order as Host skinNodes flatten).
+        struct PhysicsInvNode {
+            std::string name;
+            std::string json;
+        };
+        std::vector<PhysicsInvNode> physicsSoftNodes;
+        std::vector<PhysicsInvNode> physicsClothNodes;
+        std::vector<PhysicsInvNode> physicsFluidNodes;
+        std::vector<PhysicsInvNode> physicsSmokeNodes;
+        std::vector<PhysicsInvNode> physicsRigidNodes;
+        std::vector<PhysicsInvNode> physicsParticleNodes;
+        std::vector<PhysicsInvNode> physicsJointNodes;
+        std::ostringstream khrShapes;
+        std::ostringstream khrMaterials;
+        std::ostringstream khrNodes;
+        bool khrShapeFirst{ true };
+        bool khrMatFirst{ true };
+        bool khrNodeFirst{ true };
+        int khrShapeCount{ 0 };
+        int khrMatCount{ 0 };
+        std::vector<std::string> skippedCategories;
     };
 #if defined(_MSC_VER) && _MSC_VER < 1900
 #   pragma warning(default:4351)

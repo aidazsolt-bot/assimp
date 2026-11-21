@@ -54,20 +54,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderMeshAttributes.h"
 #include "BlenderModifier.h"
 #include <assimp/StringUtils.h>
+#include <assimp/commonMetaData.h>
 #include <assimp/importerdesc.h>
+#include <assimp/metadata.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 
 #include <assimp/MemoryIOWrapper.h>
 #include <assimp/StreamReader.h>
 #include <assimp/StringComparison.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
-#include <string>
 #include <memory>
+#include <sstream>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -76,6 +81,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 namespace {
+char *BlendDupJson(const std::string &s, size_t &outLen) {
+    outLen = s.size();
+    char *p = new char[outLen + 1];
+    std::memcpy(p, s.c_str(), outLen + 1);
+    return p;
+}
+
+std::string BlendJsonEscape(const std::string &in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) {
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+// Legacy DNA node type ints (BKE_node_legacy_types.hh) - used when idname is absent.
 enum BlendShaderNodeType : short {
     kSH_NODE_OUTPUT_MATERIAL = 124,
     kSH_NODE_MIX_SHADER = 128,
@@ -1146,6 +1171,492 @@ void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
     BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data);
 }
 
+static std::string BlendMapJson(const Assimp::Blender::Image *img) {
+    if (img == nullptr || img->name[0] == '\0') {
+        return "null";
+    }
+    return std::string("\"") + BlendJsonEscape(img->name) + '"';
+}
+
+std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, const BlendShaderFlat &flat) {
+    std::ostringstream mjson;
+    mjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"BLEND_shader\":{";
+    mjson << "\"name\":\"" << BlendJsonEscape(mat.id.name + 2) << '"';
+    if (mat.nodetree) {
+        mjson << ",\"use_nodes\":true,\"engine\":\"CYCLES|EEVEE\"";
+        if (flat.ok && flat.output != nullptr) {
+            mjson << ",\"output\":\"" << BlendJsonEscape(flat.output) << '"';
+        }
+        if (flat.mixedGraph) {
+            mjson << ",\"mixedGraph\":true";
+        }
+    } else {
+        mjson << ",\"use_nodes\":false,\"engine\":\"INTERNAL\"";
+    }
+    mjson << '}';
+    if (flat.ok) {
+        mjson << ",\"BLEND_shader_principled\":{";
+        bool first = true;
+        auto sep = [&]() {
+            if (!first) {
+                mjson << ',';
+            }
+            first = false;
+        };
+        if (flat.hasBaseColor) {
+            sep();
+            mjson << "\"baseColor\":[" << flat.baseColor[0] << ',' << flat.baseColor[1] << ','
+                  << flat.baseColor[2] << ',' << flat.baseColor[3] << ']';
+        }
+        if (flat.hasMetallic) {
+            sep();
+            mjson << "\"metallic\":" << flat.metallic;
+        }
+        if (flat.hasRoughness) {
+            sep();
+            mjson << "\"roughness\":" << flat.roughness;
+        }
+        if (flat.hasIor) {
+            sep();
+            mjson << "\"ior\":" << flat.ior;
+        }
+        if (flat.hasTransmission) {
+            sep();
+            mjson << "\"transmission\":" << flat.transmission;
+        }
+        if (flat.hasAlpha) {
+            sep();
+            mjson << "\"alpha\":" << flat.alpha;
+        }
+        if (flat.hasEmissionColor) {
+            sep();
+            mjson << "\"emissionColor\":[" << flat.emissionColor[0] << ',' << flat.emissionColor[1] << ','
+                  << flat.emissionColor[2] << ']';
+        }
+        if (flat.hasEmissionStrength) {
+            sep();
+            mjson << "\"emissionStrength\":" << flat.emissionStrength;
+        }
+        if (flat.hasCoatWeight) {
+            sep();
+            mjson << "\"coatWeight\":" << flat.coatWeight;
+        }
+        if (flat.hasCoatRoughness) {
+            sep();
+            mjson << "\"coatRoughness\":" << flat.coatRoughness;
+        }
+        if (flat.mapBaseColor || flat.mapRoughness || flat.mapMetallic || flat.mapNormal || flat.mapEmission) {
+            sep();
+            mjson << "\"maps\":{\"baseColor\":" << BlendMapJson(flat.mapBaseColor)
+                  << ",\"roughness\":" << BlendMapJson(flat.mapRoughness)
+                  << ",\"metallic\":" << BlendMapJson(flat.mapMetallic)
+                  << ",\"normal\":" << BlendMapJson(flat.mapNormal)
+                  << ",\"emission\":" << BlendMapJson(flat.mapEmission) << '}';
+        }
+        mjson << '}';
+    }
+    mjson << '}';
+    return mjson.str();
+}
+
+std::string BuildBlendCustomDataLayersJson(const Assimp::Blender::Mesh *mesh) {
+    using namespace Assimp::Blender;
+    std::ostringstream json;
+    json << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"meshName\":\""
+         << BlendJsonEscape(mesh->id.name + 2) << "\",\"customDataLayers\":[";
+    bool first = true;
+    auto emitLayers = [&](const CustomData &cd, const char *domain) {
+        for (const auto &layer : cd.layers) {
+            if (!layer) {
+                continue;
+            }
+            if (!first) {
+                json << ',';
+            }
+            first = false;
+            json << "{\"domain\":\"" << domain << "\",\"type\":" << layer->type
+                 << ",\"name\":\"" << BlendJsonEscape(layer->name) << "\"}";
+        }
+    };
+    emitLayers(mesh->vdata, "vertex");
+    emitLayers(mesh->ldata, "loop");
+    json << "]}";
+    return json.str();
+}
+
+static const char *BlendRigidShapeName(short shape) {
+    using R = Assimp::Blender::RigidBodyOb;
+    switch (shape) {
+    case R::Shape_Box: return "box";
+    case R::Shape_Sphere: return "sphere";
+    case R::Shape_Capsule: return "capsule";
+    case R::Shape_Cylinder: return "cylinder";
+    case R::Shape_Cone: return "cone";
+    case R::Shape_ConvexH: return "convex";
+    case R::Shape_Trimesh: return "hull";
+    case R::Shape_Compound: return "compound";
+    default: return "box";
+    }
+}
+
+// Append mesh indices + material bind for fluid/smoke domain/flow visual meshes.
+static void BlendAppendNodeMeshMaterialBind(std::ostringstream &os, const aiNode *node,
+        Assimp::Blender::ConversionData &conv) {
+    if (node == nullptr || node->mNumMeshes == 0) {
+        return;
+    }
+    os << ",\"meshes\":[";
+    for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+        if (i) {
+            os << ',';
+        }
+        os << node->mMeshes[i];
+    }
+    os << ']';
+
+    std::vector<unsigned int> mats;
+    mats.reserve(node->mNumMeshes);
+    for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+        const unsigned int mi = node->mMeshes[i];
+        if (mi >= conv.meshes->size()) {
+            continue;
+        }
+        const aiMesh *mesh = conv.meshes[mi];
+        if (mesh == nullptr || mesh->mMaterialIndex == static_cast<unsigned int>(-1)) {
+            continue;
+        }
+        if (std::find(mats.begin(), mats.end(), mesh->mMaterialIndex) == mats.end()) {
+            mats.push_back(mesh->mMaterialIndex);
+        }
+    }
+    if (mats.empty()) {
+        return;
+    }
+    os << ",\"materialIndex\":" << mats[0];
+    if (mats[0] < conv.materials_raw.size() && conv.materials_raw[mats[0]]) {
+        os << ",\"materialName\":\"" << BlendJsonEscape(conv.materials_raw[mats[0]]->id.name + 2) << '"';
+    }
+    os << ",\"materials\":[";
+    for (size_t i = 0; i < mats.size(); ++i) {
+        if (i) {
+            os << ',';
+        }
+        os << "{\"index\":" << mats[i];
+        if (mats[i] < conv.materials_raw.size() && conv.materials_raw[mats[i]]) {
+            os << ",\"name\":\"" << BlendJsonEscape(conv.materials_raw[mats[i]]->id.name + 2) << '"';
+        }
+        os << '}';
+    }
+    os << ']';
+}
+
+static void BlendPushPhysicsInv(std::vector<Assimp::Blender::ConversionData::PhysicsInvNode> &bag,
+        const char *name, const std::string &json) {
+    Assimp::Blender::ConversionData::PhysicsInvNode entry;
+    entry.name = name ? name : "";
+    entry.json = json;
+    bag.push_back(std::move(entry));
+}
+
+// Pre-order DFS indices - same order as Host flattenSceneNodes / skinNodes.
+static void BlendBuildHierarchyIndexMap(const aiNode *node, std::unordered_map<std::string, int> &out, int &next) {
+    if (node == nullptr) {
+        return;
+    }
+    const int self = next++;
+    const char *nm = node->mName.C_Str();
+    if (out.find(nm) == out.end()) {
+        out.emplace(nm, self);
+    }
+    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+        BlendBuildHierarchyIndexMap(node->mChildren[i], out, next);
+    }
+}
+
+static void BlendEmitPhysicsInvBag(std::ostringstream &pjson, const char *key,
+        const std::vector<Assimp::Blender::ConversionData::PhysicsInvNode> &nodes,
+        const std::unordered_map<std::string, int> &nameToIndex) {
+    if (nodes.empty()) {
+        return;
+    }
+    pjson << ",\"" << key << "\":{\"nodes\":[";
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (i) {
+            pjson << ',';
+        }
+        int idx = -1;
+        const auto it = nameToIndex.find(nodes[i].name);
+        if (it != nameToIndex.end()) {
+            idx = it->second;
+        }
+        const std::string &j = nodes[i].json;
+        if (!j.empty() && j[0] == '{') {
+            pjson << "{\"index\":" << idx << ',' << j.substr(1);
+        } else {
+            pjson << j;
+        }
+    }
+    pjson << "]}";
+}
+
+void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv,
+        const aiNode *node) {
+    using namespace Assimp::Blender;
+    if (obj == nullptr) {
+        return;
+    }
+    const char *objName = obj->id.name + 2;
+
+    // Soft Body is commonly Object.soft (not Softbody modifier).
+    if (obj->soft) {
+        const SoftBody &sb = *obj->soft;
+        std::ostringstream softJson;
+        softJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                 << "\",\"type\":\"softbody\",\"settings\":{"
+                 << "\"source\":\"Object.soft\""
+                 << ",\"nodemass\":" << sb.nodemass
+                 << ",\"grav\":" << sb.grav
+                 << ",\"mediafrict\":" << sb.mediafrict
+                 << ",\"goalspring\":" << sb.goalspring
+                 << ",\"goalfrict\":" << sb.goalfrict
+                 << ",\"mingoal\":" << sb.mingoal
+                 << ",\"maxgoal\":" << sb.maxgoal
+                 << ",\"defgoal\":" << sb.defgoal
+                 << ",\"inspring\":" << sb.inspring
+                 << ",\"infrict\":" << sb.infrict
+                 << "}}";
+        BlendPushPhysicsInv(conv.physicsSoftNodes, objName, softJson.str());
+    }
+
+    // Rigid Body DNA -> BLEND bag + KHR-shaped nodes for Host Bullet/PhysX.
+    if (obj->rigidbody_object) {
+        const RigidBodyOb &rb = *obj->rigidbody_object;
+        const char *motionType = "dynamic";
+        if (rb.type == RigidBodyOb::Type_Passive) {
+            motionType = "static";
+        }
+        if (rb.flag & RigidBodyOb::Flag_Kinematic) {
+            motionType = "kinematic";
+        }
+        const char *shapeName = BlendRigidShapeName(rb.shape);
+        std::ostringstream rigidJson;
+        rigidJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                  << "\",\"type\":\"rigidbody\",\"settings\":{"
+                  << "\"source\":\"Object.rigidbody_object\""
+                  << ",\"rbo_type\":" << rb.type
+                  << ",\"shape\":\"" << shapeName << '"'
+                  << ",\"shape_id\":" << rb.shape
+                  << ",\"flag\":" << rb.flag
+                  << ",\"col_groups\":" << rb.col_groups
+                  << ",\"mass\":" << rb.mass
+                  << ",\"friction\":" << rb.friction
+                  << ",\"restitution\":" << rb.restitution
+                  << ",\"margin\":" << rb.margin
+                  << ",\"lin_damping\":" << rb.lin_damping
+                  << ",\"ang_damping\":" << rb.ang_damping
+                  << ",\"motion\":\"" << motionType << '"'
+                  << "}}";
+        BlendPushPhysicsInv(conv.physicsRigidNodes, objName, rigidJson.str());
+
+        // KHR_implicit_shapes entry
+        if (!conv.khrShapeFirst) {
+            conv.khrShapes << ',';
+        }
+        conv.khrShapeFirst = false;
+        const int shapeIdx = conv.khrShapeCount++;
+        conv.khrShapes << "{\"type\":\"" << shapeName << "\"}";
+
+        // physicsMaterials entry (1:1 with body for now)
+        if (!conv.khrMatFirst) {
+            conv.khrMaterials << ',';
+        }
+        conv.khrMatFirst = false;
+        const int matIdx = conv.khrMatCount++;
+        conv.khrMaterials << "{\"staticFriction\":" << rb.friction
+                          << ",\"dynamicFriction\":" << rb.friction
+                          << ",\"restitution\":" << rb.restitution << '}';
+
+        if (!conv.khrNodeFirst) {
+            conv.khrNodes << ',';
+        }
+        conv.khrNodeFirst = false;
+        conv.khrNodes << "{\"name\":\"" << BlendJsonEscape(objName)
+                      << "\",\"KHR_physics_rigid_bodies\":{"
+                      << "\"motion\":{\"type\":\"" << motionType << "\",\"mass\":" << rb.mass << '}'
+                      << ",\"collider\":{\"geometry\":{\"shape\":" << shapeIdx
+                      << "},\"physicsMaterial\":" << matIdx << "}}}";
+    }
+
+    if (obj->rigidbody_constraint) {
+        const RigidBodyCon &jc = *obj->rigidbody_constraint;
+        std::ostringstream jointJson;
+        jointJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                  << "\",\"type\":\"rigidbody_constraint\",\"settings\":{"
+                  << "\"source\":\"Object.rigidbody_constraint\""
+                  << ",\"constraint_type\":" << jc.type
+                  << ",\"breaking_threshold\":" << jc.breaking_threshold
+                  << "}}";
+        BlendPushPhysicsInv(conv.physicsJointNodes, objName, jointJson.str());
+    }
+
+    // Particle systems (Object.particlesystem ListBase)
+    for (const ParticleSystem *ps = static_cast<const ParticleSystem *>(obj->particlesystem.first.get());
+            ps != nullptr;
+            ps = static_cast<const ParticleSystem *>(ps->next.get())) {
+        const char *psName = (ps->name[0] != '\0') ? ps->name : objName;
+        std::ostringstream partJson;
+        partJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                 << "\",\"system\":\"" << BlendJsonEscape(psName)
+                 << "\",\"type\":\"particles\",\"settings\":{";
+        if (ps->part) {
+            const ParticleSettings &p = *ps->part;
+            partJson << "\"part_type\":" << p.type
+                     << ",\"totpart\":" << p.totpart
+                     << ",\"mass\":" << p.mass
+                     << ",\"size\":" << p.size
+                     << ",\"lifetime\":" << p.lifetime
+                     << ",\"frame_start\":" << p.sta
+                     << ",\"frame_end\":" << p.end;
+            if (p.id.name[0] != '\0') {
+                partJson << ",\"settings_name\":\"" << BlendJsonEscape(p.id.name + 2) << '"';
+            }
+        } else {
+            partJson << "\"source\":\"ParticleSystem\"";
+        }
+        partJson << "}}";
+        BlendPushPhysicsInv(conv.physicsParticleNodes, objName, partJson.str());
+    }
+
+    const SharedModifierData *cur = static_cast<const SharedModifierData *>(obj->modifiers.first.get());
+    for (; cur; cur = static_cast<const SharedModifierData *>(cur->modifier.next.get())) {
+        const ModifierData &dat = cur->modifier;
+        std::vector<ConversionData::PhysicsInvNode> *bag = nullptr;
+        const char *bagKey = nullptr;
+        bool wantMeshMatBind = false;
+        switch (dat.type) {
+        case ModifierData::eModifierType_Softbody:
+            bag = &conv.physicsSoftNodes;
+            bagKey = "softbody";
+            break;
+        case ModifierData::eModifierType_Cloth:
+            bag = &conv.physicsClothNodes;
+            bagKey = "cloth";
+            break;
+        case ModifierData::eModifierType_Fluidsim:
+        case ModifierData::eModifierType_Fluid:
+            bag = &conv.physicsFluidNodes;
+            bagKey = "fluid";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_Smoke:
+            bag = &conv.physicsSmokeNodes;
+            bagKey = "smoke";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_ParticleSystem:
+            bag = &conv.physicsParticleNodes;
+            bagKey = "particles";
+            break;
+        case ModifierData::eModifierType_Nodes: {
+            // Blender 3+ often drives cloth/soft via Geometry Nodes - map by name heuristic.
+            auto lowerContains = [](const char *a, const char *b) -> bool {
+                if (a == nullptr || b == nullptr) {
+                    return false;
+                }
+                std::string hay(a), needle(b);
+                for (char &c : hay) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                for (char &c : needle) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                return hay.find(needle) != std::string::npos;
+            };
+            const bool hitCloth = lowerContains(dat.name, "cloth") || lowerContains(objName, "cloth");
+            const bool hitSoft = lowerContains(dat.name, "soft") || lowerContains(objName, "soft") ||
+                                 lowerContains(objName, "pudding") || lowerContains(objName, "jiggle");
+            const bool hitFluid = lowerContains(dat.name, "fluid") || lowerContains(dat.name, "smoke") ||
+                                  lowerContains(objName, "smoke") || lowerContains(objName, "fluid");
+            const bool hitPart = lowerContains(dat.name, "particle") || lowerContains(objName, "particle") ||
+                                 lowerContains(dat.name, "emitter") || lowerContains(objName, "emitter");
+            if (hitCloth) {
+                bag = &conv.physicsClothNodes;
+                bagKey = "cloth";
+            } else if (hitSoft) {
+                bag = &conv.physicsSoftNodes;
+                bagKey = "softbody";
+            } else if (hitFluid) {
+                bag = &conv.physicsFluidNodes;
+                bagKey = "fluid";
+                wantMeshMatBind = true;
+            } else if (hitPart) {
+                bag = &conv.physicsParticleNodes;
+                bagKey = "particles";
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        if (bag == nullptr) {
+            continue;
+        }
+
+        std::ostringstream settings;
+        settings << "{\"mode\":" << dat.mode;
+        if (dat.type == ModifierData::eModifierType_Nodes) {
+            settings << ",\"source\":\"NodesModifierData\"";
+        }
+        if (dat.type == ModifierData::eModifierType_Cloth &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "ClothModifierData") == 0) {
+            const auto *cloth = static_cast<const ClothModifierData *>(cur);
+            if (cloth->sim_parms) {
+                const ClothSimSettings &cs = *cloth->sim_parms;
+                settings << ",\"mass\":" << cs.mass
+                         << ",\"shear\":" << cs.shear
+                         << ",\"bending\":" << cs.bending
+                         << ",\"tension\":" << cs.tension
+                         << ",\"goalspring\":" << cs.goalspring
+                         << ",\"goalfrict\":" << cs.goalfrict
+                         << ",\"stepsPerFrame\":" << cs.stepsPerFrame
+                         << ",\"gravity\":[" << cs.gravity[0] << ',' << cs.gravity[1] << ',' << cs.gravity[2] << ']';
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_Fluid &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "FluidModifierData") == 0) {
+            const auto *fluid = static_cast<const FluidModifierData *>(cur);
+            const char *role = "unknown";
+            if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_DOMAIN) {
+                role = "domain";
+            } else if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_FLOW) {
+                role = "flow";
+            } else if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_EFFEC) {
+                role = "effector";
+            }
+            settings << ",\"fluid_role\":\"" << role << "\"";
+            if (fluid->domain) {
+                settings << ",\"domain_type\":" << fluid->domain->type;
+                settings << ",\"cache\":{\"directory\":\"" << BlendJsonEscape(fluid->domain->cache_directory)
+                         << "\",\"frame_start\":" << fluid->domain->cache_frame_start
+                         << ",\"frame_end\":" << fluid->domain->cache_frame_end
+                         << ",\"type\":" << fluid->domain->cache_type << '}';
+            }
+        }
+        settings << '}';
+
+        std::ostringstream nodeJson;
+        nodeJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                 << "\",\"modifier\":\"" << BlendJsonEscape(dat.name)
+                 << "\",\"type\":\"" << bagKey << '"';
+        if (wantMeshMatBind) {
+            BlendAppendNodeMeshMaterialBind(nodeJson, node, conv);
+        }
+        nodeJson << ",\"settings\":" << settings.str() << '}';
+        BlendPushPhysicsInv(*bag, objName, nodeJson.str());
+    }
+}
 } // namespace
 
 // zlib is needed for compressed blend files
@@ -1316,7 +1827,7 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
     Scene scene;
     ExtractScene(scene, file);
 
-    ConvertBlendFile(pScene, scene, file);
+    ConvertBlendFile(pScene, scene, file, blenderVersionStr);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1454,7 +1965,8 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file) {
+void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file,
+        const char *blenderVersion) {
     ConversionData conv(file);
 
     aiNode *root = out->mRootNode = new aiNode("<BlenderRoot>");
@@ -1531,6 +2043,144 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     // not a single mesh between them.
     if (!out->mNumMeshes) {
         out->mFlags |= AI_SCENE_FLAGS_INCOMPLETE;
+    }
+
+    // C0-S8 sidecars (doc/Sidecar.md BLEND). Always emit scene bag when Scene DNA loaded.
+    if (out->mMetaData == nullptr) {
+        out->mMetaData = new aiMetadata();
+    }
+    const float fpsDenom = (in.r.frs_sec_base > 0.f) ? in.r.frs_sec_base : 1.f;
+    const float fps = (fpsDenom != 0.f) ? (in.r.frs_sec / fpsDenom) : in.r.frs_sec;
+    const float metersPerUnit = (in.unit.scale_length > 0.f) ? in.unit.scale_length : 1.f;
+
+    // S1 mesh CustomData layers
+    for (unsigned int mi = 0; mi < out->mNumMeshes; ++mi) {
+        if (mi >= conv.meshSidecarJson.size() || conv.meshSidecarJson[mi].empty()) {
+            continue;
+        }
+        auto *sc = new aiMeshSidecar();
+        sc->mExtensionsJson = BlendDupJson(conv.meshSidecarJson[mi], sc->mExtensionsJsonLength);
+        AttachMeshSidecar(out, mi, sc);
+    }
+
+    // S3 material bag: BLEND_shader (+ BLEND_shader_principled when C6 flatten succeeded)
+    for (unsigned int mati = 0; mati < out->mNumMaterials; ++mati) {
+        std::string body;
+        if (mati < conv.materialSidecarJson.size() && !conv.materialSidecarJson[mati].empty()) {
+            body = conv.materialSidecarJson[mati];
+        } else {
+            std::ostringstream mjson;
+            mjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"BLEND_shader\":{";
+            if (mati < conv.materials_raw.size() && conv.materials_raw[mati]) {
+                mjson << "\"name\":\"" << BlendJsonEscape(conv.materials_raw[mati]->id.name + 2) << '"';
+            }
+            mjson << "}}";
+            body = mjson.str();
+        }
+        auto *msc = new aiMaterialSidecar();
+        msc->mExtensionsJson = BlendDupJson(body, msc->mExtensionsJsonLength);
+        AttachMaterialSidecar(out, mati, msc);
+    }
+
+    // S5/S6 physics: modifiers + soft/rigid DNA + particles + KHR-shaped rigid when fields exist
+    if (conv.physicsRigidNodes.empty()) {
+        conv.skippedCategories.push_back("BLEND_physics_rigidbody_object_pointer");
+    }
+    conv.skippedCategories.push_back("BLEND_action_nla_animation_sidecar");
+    conv.skippedCategories.push_back("BLEND_shader_network_full_nodegraph");
+    const bool hasPhys = !conv.physicsSoftNodes.empty() || !conv.physicsClothNodes.empty() ||
+                         !conv.physicsFluidNodes.empty() || !conv.physicsSmokeNodes.empty() ||
+                         !conv.physicsRigidNodes.empty() || !conv.physicsParticleNodes.empty() ||
+                         !conv.physicsJointNodes.empty();
+    if (hasPhys) {
+        std::unordered_map<std::string, int> nameToIndex;
+        int nextIdx = 0;
+        BlendBuildHierarchyIndexMap(out->mRootNode, nameToIndex, nextIdx);
+
+        std::ostringstream pjson;
+        pjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"";
+        if (blenderVersion != nullptr && blenderVersion[0] != '\0') {
+            pjson << ",\"blender_version\":\"" << blenderVersion << '"';
+        }
+        pjson << '}';
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_softbody", conv.physicsSoftNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_cloth", conv.physicsClothNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_fluid", conv.physicsFluidNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_smoke", conv.physicsSmokeNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_rigidbody", conv.physicsRigidNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_particles", conv.physicsParticleNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_constraints", conv.physicsJointNodes, nameToIndex);
+        // Host Bullet/PhysX path: same KHR keys as glTF when RigidBodyOb fields were converted.
+        if (!conv.khrShapeFirst) {
+            pjson << ",\"KHR_implicit_shapes\":{\"shapes\":[" << conv.khrShapes.str() << "]}";
+            pjson << ",\"KHR_physics_rigid_bodies\":{\"physicsMaterials\":[" << conv.khrMaterials.str()
+                  << "],\"collisionFilters\":[],\"physicsJoints\":[]}";
+            pjson << ",\"nodes\":[" << conv.khrNodes.str() << ']';
+        }
+        pjson << '}';
+        auto *psc = new aiPhysicsSidecar();
+        psc->mExtensionsJson = BlendDupJson(pjson.str(), psc->mExtensionsJsonLength);
+        AttachPhysicsSidecar(out, psc);
+    }
+
+    std::ostringstream json;
+    json.setf(std::ios::fixed);
+    json.precision(9);
+    json << "{\"schemaVersion\":1,\"source\":{"
+         << "\"format\":\"blend\"";
+    if (blenderVersion != nullptr && blenderVersion[0] != '\0') {
+        json << ",\"generator\":\"Blender " << blenderVersion << '"';
+        out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(blenderVersion));
+    }
+    json << ",\"formatVersion\":" << file.file_format_version
+         << ",\"blenderFileVersion\":" << file.blender_file_version
+         << ",\"metersPerUnit\":" << metersPerUnit
+         << ",\"timeCodesPerSecond\":" << fps
+         << ",\"framesPerSecond\":" << fps
+         << ",\"startTimeCode\":" << static_cast<double>(in.r.sfra)
+         << ",\"endTimeCode\":" << static_cast<double>(in.r.efra)
+         << '}';
+    // Optional BLEND_file bag for host logs (container honesty)
+    json << ",\"BLEND_file\":{"
+         << "\"formatVersion\":" << file.file_format_version
+         << ",\"blenderFileVersion\":" << file.blender_file_version
+         << '}';
+
+    // S4 cameras / lights (typed already; bag for host inject inventory)
+    json << ",\"cameras\":[";
+    for (unsigned int ci = 0; ci < out->mNumCameras; ++ci) {
+        if (ci) {
+            json << ',';
+        }
+        json << "{\"index\":" << ci << ",\"name\":\"" << BlendJsonEscape(out->mCameras[ci]->mName.C_Str()) << "\"}";
+    }
+    json << "],\"lights\":[";
+    for (unsigned int li = 0; li < out->mNumLights; ++li) {
+        if (li) {
+            json << ',';
+        }
+        json << "{\"index\":" << li << ",\"name\":\"" << BlendJsonEscape(out->mLights[li]->mName.C_Str()) << "\"}";
+    }
+    json << "],\"volumes\":[],\"pointInstancers\":[],\"composition\":{},\"skipped\":[";
+    for (size_t si = 0; si < conv.skippedCategories.size(); ++si) {
+        if (si) {
+            json << ',';
+        }
+        json << '"' << BlendJsonEscape(conv.skippedCategories[si]) << '"';
+    }
+    json << "]}";
+
+    out->mMetaData->Add(AI_METADATA_SCENE_SIDECAR_JSON, aiString(json.str()));
+    out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString("blend"));
+    const bool flag = true;
+    if (aiSceneHasMeshSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_MESH_SIDECAR, flag);
+    }
+    if (aiSceneHasMaterialSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_MATERIAL_SIDECAR, flag);
+    }
+    if (aiSceneHasPhysicsSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_PHYSICS_SIDECAR, flag);
     }
 }
 
@@ -1657,6 +2307,9 @@ void BlenderImporter::ResolveTexture(aiMaterial *out, const Material *mat, const
         const char *disp = GetTextureTypeDisplayString(rtex->type);
         LogWarn("BLEND: skipping procedural texture type ", disp,
                 " (no Image datablock; not inventing $tex.file)");
+        std::string sk = "BLEND_texture_procedural_";
+        sk += disp;
+        conv_data.skippedCategories.push_back(sk);
         break;
     }
 
@@ -1807,6 +2460,7 @@ void BlenderImporter::AddBlendParams(aiMaterial *result, const Material *source)
 
 void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
     conv_data.materials->reserve(conv_data.materials_raw.size());
+    conv_data.materialSidecarJson.reserve(conv_data.materials_raw.size());
 
     BuildDefaultMaterial(conv_data);
 
@@ -1833,10 +2487,11 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
         if (std::strcmp(mat->id.name + 2, AI_DEFAULT_MATERIAL_NAME) == 0) {
             aiColor3D clr(0.6f, 0.6f, 0.6f);
             mout->AddProperty(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
+            conv_data.materialSidecarJson.emplace_back();
             continue;
         }
 
-        // C6 typed: flatten Principled/Glass/Glossy/Diffuse/Emission + Image Tex maps (no sidecars).
+        // C6: flatten active Principled/Glass/Glossy/Diffuse/Emission + follow Image Tex links.
         const BlendShaderFlat flat = BlendFlattenMaterialNodes(*mat);
         if (flat.ok) {
             BlendApplyFlatToMaterial(mout, flat, conv_data);
@@ -1894,6 +2549,10 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
         }
 
         AddBlendParams(mout, mat.get());
+        conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat));
+        if (mat->nodetree && !flat.ok) {
+            conv_data.skippedCategories.push_back("BLEND_shader_nodegraph");
+        }
     }
 }
 
@@ -2309,6 +2968,17 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         }
     }
 
+    // S1: stash CustomData layer inventory for mesh sidecars (attached after scene owns meshes).
+    {
+        const std::string layerJson = BuildBlendCustomDataLayersJson(mesh);
+        if (conv_data.meshSidecarJson.size() < temp->size()) {
+            conv_data.meshSidecarJson.resize(temp->size());
+        }
+        for (size_t mi = old; mi < temp->size(); ++mi) {
+            conv_data.meshSidecarJson[mi] = layerJson;
+        }
+    }
+
     return;
 }
 
@@ -2671,6 +3341,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 
     // apply modifiers
     modifier_cache->ApplyModifiers(*node, conv_data, in, *obj);
+    CollectBlendPhysicsModifiers(obj, conv_data, node.get());
 
     return node.release();
 }
