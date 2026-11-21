@@ -97,12 +97,14 @@ TEST(utBlenderImporter, importBlenderDefault250ZstdCompressed) {
 
 TEST(utBlenderImporter, importBlenderFormatV1Header) {
     // Blender 5.0 format-v1 container (ZSTD + BLENDER17-01v0500). Must not hit
-    // "invalid size of file block". GN-only / CD-attribute meshes may be 0.
+    // "invalid size of file block". Mesh count depends on AttributeStorage hydrate;
+    // GN-only / CD-attribute meshes may be 0. Sidecar still reports format v1.
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(
             ASSIMP_TEST_MODELS_DIR "/BLEND/BlenderFormatV1_Header.blend", 0);
     ASSERT_NE(nullptr, scene) << importer.GetErrorString();
     EXPECT_EQ(std::string::npos, std::string(importer.GetErrorString()).find("invalid size of file block"));
+    EXPECT_GE(scene->mNumMeshes, 1u);
     ASSERT_NE(nullptr, scene->mMetaData);
     aiString json;
     ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, json));
