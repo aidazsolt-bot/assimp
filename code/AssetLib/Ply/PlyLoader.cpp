@@ -1445,8 +1445,7 @@ namespace Assimp {
 
                 // handle opacity (authored property only)
                 if (0xFFFFFFFF != iOpacity) {
-                    ai_real fOpacity = PropertyInstance::ConvertTo<ai_real>(
-                            GetPropertyFront((*i).alProperties, static_cast<int>(iOpacity)), eOpacity);
+                    ai_real fOpacity = PropertyInstance::ConvertTo<ai_real>(GetProperty((*i).alProperties, iOpacity).avList.front(), eOpacity);
                     pcHelper->AddProperty<ai_real>(&fOpacity, 1, AI_MATKEY_OPACITY);
                 }
 
