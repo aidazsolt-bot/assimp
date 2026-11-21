@@ -508,6 +508,100 @@ void Structure ::Convert<Material>(
     ReadField<ErrorPolicy_Igno>(dest.seed1, "seed1", db);
     ReadField<ErrorPolicy_Igno>(dest.seed2, "seed2", db);
 
+    ReadField<ErrorPolicy_Igno>(dest.use_nodes, "use_nodes", db);
+    ReadField<ErrorPolicy_Igno>(dest.metallic, "metallic", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.nodetree, "*nodetree", db);
+
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<bNodeStack>(
+        bNodeStack &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.vec, "vec", db);
+    ReadField<ErrorPolicy_Igno>(dest.min, "min", db);
+    ReadField<ErrorPolicy_Igno>(dest.max, "max", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<bNodeSocketValueFloat>(
+        bNodeSocketValueFloat &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
+    ReadField<ErrorPolicy_Igno>(dest.value, "value", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<bNodeSocketValueRGBA>(
+        bNodeSocketValueRGBA &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.value, "value", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<bNodeSocket>(
+        bNodeSocket &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.identifier, "identifier", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.idname, "idname", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.default_value, "*default_value", db);
+    ReadField<ErrorPolicy_Igno>(dest.ns, "ns", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<bNode>(
+        bNode &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadField<ErrorPolicy_Igno>(dest.inputs, "inputs", db);
+    ReadField<ErrorPolicy_Igno>(dest.outputs, "outputs", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.idname, "idname", db);
+    // Older DNA: "type"; newer renamed to "type_legacy" in blender.git SDNA.
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    short typeLegacy = 0;
+    ReadField<ErrorPolicy_Igno>(typeLegacy, "type_legacy", db);
+    if (typeLegacy != 0) {
+        dest.type = typeLegacy;
+    }
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.id, "*id", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<bNodeLink>(
+        bNodeLink &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.fromnode, "*fromnode", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.tonode, "*tonode", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.fromsock, "*fromsock", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.tosock, "*tosock", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<bNodeTree>(
+        bNodeTree &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
+    ReadField<ErrorPolicy_Igno>(dest.nodes, "nodes", db);
+    ReadField<ErrorPolicy_Igno>(dest.links, "links", db);
     db.reader->IncPtr(size);
 }
 
@@ -993,6 +1087,13 @@ void DNA::RegisterConverters() {
     converters["Base"] = DNA::FactoryPair(&Structure::Allocate<Base>, &Structure::Convert<Base>);
     converters["MTFace"] = DNA::FactoryPair(&Structure::Allocate<MTFace>, &Structure::Convert<MTFace>);
     converters["Material"] = DNA::FactoryPair(&Structure::Allocate<Material>, &Structure::Convert<Material>);
+    converters["bNodeStack"] = DNA::FactoryPair(&Structure::Allocate<bNodeStack>, &Structure::Convert<bNodeStack>);
+    converters["bNodeSocketValueFloat"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueFloat>, &Structure::Convert<bNodeSocketValueFloat>);
+    converters["bNodeSocketValueRGBA"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueRGBA>, &Structure::Convert<bNodeSocketValueRGBA>);
+    converters["bNodeSocket"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocket>, &Structure::Convert<bNodeSocket>);
+    converters["bNode"] = DNA::FactoryPair(&Structure::Allocate<bNode>, &Structure::Convert<bNode>);
+    converters["bNodeLink"] = DNA::FactoryPair(&Structure::Allocate<bNodeLink>, &Structure::Convert<bNodeLink>);
+    converters["bNodeTree"] = DNA::FactoryPair(&Structure::Allocate<bNodeTree>, &Structure::Convert<bNodeTree>);
     converters["MTexPoly"] = DNA::FactoryPair(&Structure::Allocate<MTexPoly>, &Structure::Convert<MTexPoly>);
     converters["Mesh"] = DNA::FactoryPair(&Structure::Allocate<Mesh>, &Structure::Convert<Mesh>);
     converters["MDeformVert"] = DNA::FactoryPair(&Structure::Allocate<MDeformVert>, &Structure::Convert<MDeformVert>);

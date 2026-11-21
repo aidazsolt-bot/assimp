@@ -65,6 +65,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
+#include <string>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -72,6 +74,1079 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #if !defined(ASSIMP_BUILD_NO_COMPRESSED_BLEND) && defined(ASSIMP_BLEND_SUPPORT_ZSTD)
 #include <zstd.h>
 #endif
+
+namespace {
+enum BlendShaderNodeType : short {
+    kSH_NODE_OUTPUT_MATERIAL = 124,
+    kSH_NODE_MIX_SHADER = 128,
+    kSH_NODE_BSDF_GLOSSY = 131,
+    kSH_NODE_BSDF_DIFFUSE = 132,
+    kSH_NODE_BSDF_GLOSSY_LEGACY = 133,
+    kSH_NODE_BSDF_GLASS = 134,
+    kSH_NODE_EMISSION = 140,
+    kSH_NODE_TEX_IMAGE = 143,
+    kSH_NODE_BSDF_PRINCIPLED = 193,
+    kSH_NODE_NORMAL_MAP = 175,
+    kSH_NODE_BUMP = 170,
+    kSH_NODE_INVERT = 119,
+    kSH_NODE_REROUTE = 6,
+    kSH_NODE_RGB = 101,
+    kSH_NODE_VALUE = 102
+};
+
+struct BlendShaderFlat {
+    bool ok{ false };
+    bool mixedGraph{ false };
+    const char *output{ nullptr };
+    // Presence: only emit typed keys that were resolved from DNA default_value
+    // or a linked constant / node-type-fixed factor (never invent ns zeros).
+    bool hasBaseColor{ false };
+    bool hasMetallic{ false };
+    bool hasRoughness{ false };
+    bool hasIor{ false };
+    bool hasTransmission{ false };
+    bool hasAlpha{ false };
+    bool hasEmissionColor{ false };
+    bool hasEmissionStrength{ false };
+    bool hasCoatWeight{ false };
+    bool hasCoatRoughness{ false };
+    float baseColor[4]{};
+    float metallic{ 0.f };
+    float roughness{ 0.f };
+    float ior{ 0.f };
+    float transmission{ 0.f };
+    float alpha{ 0.f };
+    float emissionColor[3]{};
+    float emissionStrength{ 0.f };
+    float coatWeight{ 0.f };
+    float coatRoughness{ 0.f };
+    const Assimp::Blender::Image *mapBaseColor{ nullptr };
+    const Assimp::Blender::Image *mapRoughness{ nullptr };
+    const Assimp::Blender::Image *mapNormal{ nullptr };
+    const Assimp::Blender::Image *mapEmission{ nullptr };
+    const Assimp::Blender::Image *mapMetallic{ nullptr };
+
+    bool HasAnyFactor() const {
+        return hasBaseColor || hasMetallic || hasRoughness || hasIor || hasTransmission ||
+               hasAlpha || hasEmissionColor || hasEmissionStrength || hasCoatWeight ||
+               hasCoatRoughness || mapBaseColor || mapRoughness || mapNormal || mapEmission ||
+               mapMetallic;
+    }
+};
+
+bool BlendSockNameIs(const Assimp::Blender::bNodeSocket &sock, const char *want) {
+    if (want == nullptr) {
+        return false;
+    }
+    if (sock.identifier[0] != '\0' && std::strcmp(sock.identifier, want) == 0) {
+        return true;
+    }
+    return std::strcmp(sock.name, want) == 0;
+}
+
+bool BlendSockNameIsAny(const Assimp::Blender::bNodeSocket &sock, std::initializer_list<const char *> names) {
+    for (const char *n : names) {
+        if (BlendSockNameIs(sock, n)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool BlendReadSocketFloat(const Assimp::Blender::bNodeSocket &sock, float &out) {
+    using namespace Assimp::Blender;
+    // Only bNodeSocket.default_value (blender DNA). Deprecated ns is often zeroed and
+    // must not be treated as an authored factor.
+    if (!sock.default_value || sock.default_value->dna_type == nullptr) {
+        return false;
+    }
+    if (std::strcmp(sock.default_value->dna_type, "bNodeSocketValueFloat") == 0) {
+        out = static_cast<const bNodeSocketValueFloat *>(sock.default_value.get())->value;
+        return true;
+    }
+    return false;
+}
+
+bool BlendReadSocketColor(const Assimp::Blender::bNodeSocket &sock, float out[4]) {
+    using namespace Assimp::Blender;
+    if (!sock.default_value || sock.default_value->dna_type == nullptr) {
+        return false;
+    }
+    if (std::strcmp(sock.default_value->dna_type, "bNodeSocketValueRGBA") == 0) {
+        const auto *rgba = static_cast<const bNodeSocketValueRGBA *>(sock.default_value.get());
+        out[0] = rgba->value[0];
+        out[1] = rgba->value[1];
+        out[2] = rgba->value[2];
+        out[3] = rgba->value[3];
+        return true;
+    }
+    return false;
+}
+
+const Assimp::Blender::bNode *BlendCastNode(const Assimp::Blender::ElemBase *e) {
+    using namespace Assimp::Blender;
+    if (e == nullptr) {
+        return nullptr;
+    }
+    if (e->dna_type != nullptr && std::strcmp(e->dna_type, "bNode") != 0) {
+        return nullptr;
+    }
+    return static_cast<const bNode *>(e);
+}
+
+const Assimp::Blender::bNodeSocket *BlendCastSocket(const Assimp::Blender::ElemBase *e) {
+    using namespace Assimp::Blender;
+    if (e == nullptr) {
+        return nullptr;
+    }
+    if (e->dna_type != nullptr && std::strcmp(e->dna_type, "bNodeSocket") != 0) {
+        return nullptr;
+    }
+    return static_cast<const bNodeSocket *>(e);
+}
+
+bool BlendNodeIsPrincipled(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeBsdfPrincipled") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_BSDF_PRINCIPLED;
+}
+
+bool BlendNodeIsGlass(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeBsdfGlass") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_BSDF_GLASS;
+}
+
+bool BlendNodeIsGlossy(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeBsdfGlossy") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_BSDF_GLOSSY || n.type == kSH_NODE_BSDF_GLOSSY_LEGACY;
+}
+
+bool BlendNodeIsDiffuse(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeBsdfDiffuse") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_BSDF_DIFFUSE;
+}
+
+bool BlendNodeIsOutput(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeOutputMaterial") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_OUTPUT_MATERIAL;
+}
+
+bool BlendNodeIsEmission(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeEmission") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_EMISSION;
+}
+
+bool BlendNodeIsTexImage(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexImage") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_TEX_IMAGE;
+}
+
+bool BlendNodeIsMixShader(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeMixShader") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_MIX_SHADER;
+}
+
+bool BlendNodeIsRGB(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && (std::strcmp(n.idname, "ShaderNodeRGB") == 0 ||
+                                       std::strcmp(n.idname, "ShaderNodeCombineRGB") == 0 ||
+                                       std::strcmp(n.idname, "ShaderNodeCombineColor") == 0)) {
+        return true;
+    }
+    return n.type == kSH_NODE_RGB;
+}
+
+bool BlendNodeIsValue(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeValue") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_VALUE;
+}
+
+bool BlendNodeIsNormalMap(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeNormalMap") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_NORMAL_MAP;
+}
+
+bool BlendNodeIsBump(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeBump") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_BUMP;
+}
+
+bool BlendNodeIsMixColor(const Assimp::Blender::bNode &n) {
+    // Splash / Texture-Paint graphs: Image Texture -> ShaderNodeMix -> Principled Base Color.
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeMixRGB") == 0;
+    }
+    // Legacy SH_NODE_MIX_RGB
+    return n.type == 75;
+}
+
+bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeGroup") == 0 ||
+               std::strcmp(n.idname, "NodeGroup") == 0;
+    }
+    // Legacy NODE_GROUP
+    return n.type == 2;
+}
+
+const Assimp::Blender::bNodeTree *BlendNodeGroupTree(const Assimp::Blender::bNode &n) {
+    using namespace Assimp::Blender;
+    if (!BlendNodeIsGroup(n) || !n.id) {
+        return nullptr;
+    }
+    if (n.id->dna_type != nullptr && std::strcmp(n.id->dna_type, "bNodeTree") != 0) {
+        return nullptr;
+    }
+    return static_cast<const bNodeTree *>(n.id.get());
+}
+
+bool BlendNodeIsPassthrough(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        if (std::strcmp(n.idname, "NodeReroute") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeInvert") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeNormalMap") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeBump") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeHueSaturation") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeRGBToBW") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
+                std::strcmp(n.idname, "ShaderNodeMixRGB") == 0) {
+            return true;
+        }
+    }
+    return n.type == kSH_NODE_REROUTE || n.type == kSH_NODE_INVERT ||
+           n.type == kSH_NODE_NORMAL_MAP || n.type == kSH_NODE_BUMP ||
+           BlendNodeIsMixColor(n);
+}
+
+bool BlendNodeIsFlattenable(const Assimp::Blender::bNode &n) {
+    return BlendNodeIsPrincipled(n) || BlendNodeIsGlass(n) || BlendNodeIsGlossy(n) ||
+           BlendNodeIsDiffuse(n) || BlendNodeIsEmission(n);
+}
+
+const Assimp::Blender::bNodeLink *BlendCastLink(const Assimp::Blender::ElemBase *e) {
+    using namespace Assimp::Blender;
+    if (e == nullptr) {
+        return nullptr;
+    }
+    if (e->dna_type != nullptr && std::strcmp(e->dna_type, "bNodeLink") != 0) {
+        return nullptr;
+    }
+    return static_cast<const bNodeLink *>(e);
+}
+
+const Assimp::Blender::Image *BlendNodeImage(const Assimp::Blender::bNode &n) {
+    using namespace Assimp::Blender;
+    if (!n.id) {
+        return nullptr;
+    }
+    if (n.id->dna_type != nullptr && std::strcmp(n.id->dna_type, "Image") != 0) {
+        return nullptr;
+    }
+    return static_cast<const Image *>(n.id.get());
+}
+
+/** Prefer legacy Image.packedfile; else first ImagePackedFile in packedfiles. */
+const Assimp::Blender::PackedFile *BlendImageGetPacked(const Assimp::Blender::Image *img) {
+    using namespace Assimp::Blender;
+    if (img == nullptr) {
+        return nullptr;
+    }
+    if (img->packedfile) {
+        return img->packedfile.get();
+    }
+    for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
+        const ImagePackedFile *ipf = nullptr;
+        if (cur->dna_type == nullptr || std::strcmp(cur->dna_type, "ImagePackedFile") == 0) {
+            ipf = static_cast<const ImagePackedFile *>(cur.get());
+        }
+        if (ipf == nullptr) {
+            break;
+        }
+        if (ipf->packedfile) {
+            return ipf->packedfile.get();
+        }
+        cur = ipf->next;
+    }
+    return nullptr;
+}
+
+/** Path for format hint / logging: Image.filepath|name, else ImagePackedFile.filepath. */
+const char *BlendImageDisplayPath(const Assimp::Blender::Image *img) {
+    using namespace Assimp::Blender;
+    if (img == nullptr) {
+        return "";
+    }
+    if (img->name[0] != '\0') {
+        return img->name;
+    }
+    for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
+        const ImagePackedFile *ipf = nullptr;
+        if (cur->dna_type == nullptr || std::strcmp(cur->dna_type, "ImagePackedFile") == 0) {
+            ipf = static_cast<const ImagePackedFile *>(cur.get());
+        }
+        if (ipf == nullptr) {
+            break;
+        }
+        if (ipf->filepath[0] != '\0') {
+            return ipf->filepath;
+        }
+        cur = ipf->next;
+    }
+    return img->name;
+}
+
+struct BlendNodeGraph {
+    std::vector<const Assimp::Blender::bNode *> nodes;
+    std::vector<const Assimp::Blender::bNodeLink *> links;
+
+    const Assimp::Blender::bNodeLink *FindLinkToSocket(const Assimp::Blender::bNodeSocket &sock) const {
+        for (const Assimp::Blender::bNodeLink *l : links) {
+            if (l->tosock.get() == static_cast<const Assimp::Blender::ElemBase *>(&sock)) {
+                return l;
+            }
+            const Assimp::Blender::bNodeSocket *ts = BlendCastSocket(l->tosock.get());
+            if (ts == &sock) {
+                return l;
+            }
+        }
+        return nullptr;
+    }
+
+    const Assimp::Blender::bNode *FollowToTexImage(const Assimp::Blender::bNode *n, int depth = 0) const {
+        using namespace Assimp::Blender;
+        if (n == nullptr || depth > 24) {
+            return nullptr;
+        }
+        if (BlendNodeIsTexImage(*n)) {
+            return n;
+        }
+        if (!BlendNodeIsPassthrough(*n)) {
+            return nullptr;
+        }
+        // Normal Map: Color is the tangent-space map. Bump: prefer Normal chain, then Height.
+        auto trySock = [&](const char *want) -> const bNode * {
+            for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+                const bNodeSocket *sock = BlendCastSocket(cur.get());
+                if (sock == nullptr) {
+                    break;
+                }
+                if (BlendSockNameIs(*sock, want)) {
+                    const bNodeLink *l = FindLinkToSocket(*sock);
+                    if (l) {
+                        return FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1);
+                    }
+                }
+                cur = sock->next;
+            }
+            return nullptr;
+        };
+        if (BlendNodeIsNormalMap(*n)) {
+            if (const bNode *hit = trySock("Color")) {
+                return hit;
+            }
+        }
+        if (BlendNodeIsBump(*n)) {
+            if (const bNode *hit = trySock("Normal")) {
+                return hit;
+            }
+            if (const bNode *hit = trySock("Height")) {
+                return hit;
+            }
+        }
+        // ShaderNodeMix / MixRGB: Image often on B (or Color2); try B then A.
+        if (BlendNodeIsMixColor(*n)) {
+            for (const char *want : { "B", "A", "Color2", "Color1", "ColorB", "ColorA", "Color" }) {
+                if (const bNode *hit = trySock(want)) {
+                    return hit;
+                }
+            }
+        }
+        for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            if (BlendSockNameIsAny(*sock, { "Color", "Height", "Image", "Normal", "A", "B" })) {
+                const bNodeLink *l = FindLinkToSocket(*sock);
+                if (l) {
+                    const bNode *hit = FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1);
+                    if (hit) {
+                        return hit;
+                    }
+                }
+            }
+            cur = sock->next;
+        }
+        return nullptr;
+    }
+
+    bool ReadConstantColor(const Assimp::Blender::bNode *n, float out[4], int depth = 0) const {
+        using namespace Assimp::Blender;
+        if (n == nullptr || depth > 6) {
+            return false;
+        }
+        if (BlendNodeIsRGB(*n)) {
+            // RGB node: first output socket carries the color default.
+            for (std::shared_ptr<ElemBase> cur = n->outputs.first; cur;) {
+                const bNodeSocket *sock = BlendCastSocket(cur.get());
+                if (sock == nullptr) {
+                    break;
+                }
+                BlendReadSocketColor(*sock, out);
+                return true;
+            }
+        }
+        if (BlendNodeIsValue(*n)) {
+            float v = 0.f;
+            for (std::shared_ptr<ElemBase> cur = n->outputs.first; cur;) {
+                const bNodeSocket *sock = BlendCastSocket(cur.get());
+                if (sock == nullptr) {
+                    break;
+                }
+                BlendReadSocketFloat(*sock, v);
+                out[0] = out[1] = out[2] = v;
+                out[3] = 1.f;
+                return true;
+            }
+        }
+        if (BlendNodeIsPassthrough(*n) && !BlendNodeIsNormalMap(*n) && !BlendNodeIsBump(*n)) {
+            for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+                const bNodeSocket *sock = BlendCastSocket(cur.get());
+                if (sock == nullptr) {
+                    break;
+                }
+                if (BlendSockNameIsAny(*sock, { "Color", "Fac", "Value" })) {
+                    const bNodeLink *l = FindLinkToSocket(*sock);
+                    if (l && ReadConstantColor(BlendCastNode(l->fromnode.get()), out, depth + 1)) {
+                        return true;
+                    }
+                }
+                cur = sock->next;
+            }
+        }
+        return false;
+    }
+
+    bool ReadConstantFloat(const Assimp::Blender::bNode *n, float &out, int depth = 0) const {
+        float tmp[4];
+        if (!ReadConstantColor(n, tmp, depth)) {
+            return false;
+        }
+        out = tmp[0];
+        return true;
+    }
+
+    int Rank(const Assimp::Blender::bNode &n) const {
+        if (BlendNodeIsPrincipled(n)) return 5;
+        if (BlendNodeIsGlass(n)) return 4;
+        if (BlendNodeIsGlossy(n)) return 3;
+        if (BlendNodeIsDiffuse(n)) return 2;
+        if (BlendNodeIsEmission(n)) return 1;
+        return 0;
+    }
+
+    int DetailScore(const Assimp::Blender::bNode &n) const {
+        // Prefer the Principled that actually carries authored defaults / maps.
+        int score = 0;
+        if (!BlendNodeIsPrincipled(n) && !BlendNodeIsGlass(n) && !BlendNodeIsGlossy(n) && !BlendNodeIsDiffuse(n)) {
+            return score;
+        }
+        for (std::shared_ptr<Assimp::Blender::ElemBase> cur = n.inputs.first; cur;) {
+            const Assimp::Blender::bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            if (FindLinkToSocket(*sock)) {
+                score += 3;
+            }
+            if (BlendSockNameIsAny(*sock, { "Base Color", "BaseColor", "Color" })) {
+                float c[4] = { 0.8f, 0.8f, 0.8f, 1.f };
+                BlendReadSocketColor(*sock, c);
+                if (std::fabs(c[0] - 0.8f) > 0.02f || std::fabs(c[1] - 0.8f) > 0.02f || std::fabs(c[2] - 0.8f) > 0.02f) {
+                    score += 5;
+                }
+            }
+            if (BlendSockNameIs(*sock, "Roughness")) {
+                float r = 0.5f;
+                BlendReadSocketFloat(*sock, r);
+                if (std::fabs(r - 0.5f) > 0.02f) {
+                    score += 4;
+                }
+            }
+            cur = sock->next;
+        }
+        return score;
+    }
+
+    const Assimp::Blender::bNode *PickBest(const Assimp::Blender::bNode *a, const Assimp::Blender::bNode *b) const {
+        if (a == nullptr) return b;
+        if (b == nullptr) return a;
+        const int ra = Rank(*a), rb = Rank(*b);
+        if (ra != rb) {
+            return ra > rb ? a : b;
+        }
+        const int sa = DetailScore(*a), sb = DetailScore(*b);
+        return sa >= sb ? a : b;
+    }
+
+    const Assimp::Blender::bNode *ResolveSurface(const Assimp::Blender::bNode *n, bool &sawMix, int depth = 0) const {
+        using namespace Assimp::Blender;
+        if (n == nullptr || depth > 10) {
+            return nullptr;
+        }
+        if (BlendNodeIsFlattenable(*n) && !BlendNodeIsEmission(*n)) {
+            return n;
+        }
+        if (BlendNodeIsEmission(*n)) {
+            return n;
+        }
+        if (BlendNodeIsMixShader(*n)) {
+            sawMix = true;
+            const bNode *best = nullptr;
+            for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+                const bNodeSocket *sock = BlendCastSocket(cur.get());
+                if (sock == nullptr) {
+                    break;
+                }
+                if (BlendSockNameIsAny(*sock, { "Shader", "Shader_001", "Closure" }) ||
+                        BlendSockNameIs(*sock, "Shader")) {
+                    const bNodeLink *l = FindLinkToSocket(*sock);
+                    if (l) {
+                        best = PickBest(best, ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, depth + 1));
+                    }
+                }
+                // Mix Shader inputs are often just named "Shader" twice - take every linked input.
+                const bNodeLink *l = FindLinkToSocket(*sock);
+                if (l && !BlendSockNameIs(*sock, "Fac")) {
+                    best = PickBest(best, ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, depth + 1));
+                }
+                cur = sock->next;
+            }
+            return best;
+        }
+        return nullptr;
+    }
+};
+
+BlendNodeGraph BlendBuildGraph(const Assimp::Blender::bNodeTree &tree) {
+    using namespace Assimp::Blender;
+    BlendNodeGraph g;
+    for (std::shared_ptr<ElemBase> cur = tree.nodes.first; cur;) {
+        const bNode *n = BlendCastNode(cur.get());
+        if (n == nullptr) {
+            break;
+        }
+        g.nodes.push_back(n);
+        cur = n->next;
+    }
+    for (std::shared_ptr<ElemBase> cur = tree.links.first; cur;) {
+        const bNodeLink *l = BlendCastLink(cur.get());
+        if (l == nullptr) {
+            break;
+        }
+        g.links.push_back(l);
+        cur = l->next;
+    }
+    return g;
+}
+
+// Returns true if a numeric/color factor was resolved (typed default_value or linked constant).
+// Texture maps alone do not count as a factor (mapOut may still be set).
+bool BlendReadLinkedOrDefaultFloat(const BlendNodeGraph &g, const Assimp::Blender::bNodeSocket &sock,
+        float &out, const Assimp::Blender::Image **mapOut) {
+    using namespace Assimp::Blender;
+    bool got = BlendReadSocketFloat(sock, out);
+    const bNodeLink *l = g.FindLinkToSocket(sock);
+    if (!l) {
+        return got;
+    }
+    const bNode *src = BlendCastNode(l->fromnode.get());
+    const bNode *tex = g.FollowToTexImage(src);
+    if (tex && mapOut) {
+        *mapOut = BlendNodeImage(*tex);
+    }
+    float linked = out;
+    if (g.ReadConstantFloat(src, linked)) {
+        out = linked;
+        return true;
+    }
+    return got;
+}
+
+bool BlendReadLinkedOrDefaultColor(const BlendNodeGraph &g, const Assimp::Blender::bNodeSocket &sock,
+        float out[4], const Assimp::Blender::Image **mapOut) {
+    using namespace Assimp::Blender;
+    bool got = BlendReadSocketColor(sock, out);
+    const bNodeLink *l = g.FindLinkToSocket(sock);
+    if (!l) {
+        return got;
+    }
+    const bNode *src = BlendCastNode(l->fromnode.get());
+    const bNode *tex = g.FollowToTexImage(src);
+    if (tex && mapOut) {
+        *mapOut = BlendNodeImage(*tex);
+    }
+    float linked[4] = { out[0], out[1], out[2], out[3] };
+    if (g.ReadConstantColor(src, linked)) {
+        out[0] = linked[0];
+        out[1] = linked[1];
+        out[2] = linked[2];
+        out[3] = linked[3];
+        return true;
+    }
+    return got;
+}
+
+BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blender::bNode &node) {
+    BlendShaderFlat flat;
+    using namespace Assimp::Blender;
+
+    auto foreachInput = [&](const auto &fn) {
+        for (std::shared_ptr<ElemBase> cur = node.inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            fn(*sock);
+            cur = sock->next;
+        }
+    };
+
+    auto finish = [&]() {
+        // Node recognized only counts as flatten success if we resolved something real.
+        flat.ok = flat.HasAnyFactor();
+        return flat;
+    };
+
+    if (BlendNodeIsPrincipled(node)) {
+        flat.output = "Principled BSDF";
+        foreachInput([&](const bNodeSocket &sock) {
+            if (BlendSockNameIsAny(sock, { "Base Color", "BaseColor" })) {
+                if (BlendReadLinkedOrDefaultColor(g, sock, flat.baseColor, &flat.mapBaseColor)) {
+                    flat.hasBaseColor = true;
+                }
+            } else if (BlendSockNameIs(sock, "Metallic")) {
+                if (BlendReadLinkedOrDefaultFloat(g, sock, flat.metallic, &flat.mapMetallic)) {
+                    flat.hasMetallic = true;
+                }
+            } else if (BlendSockNameIs(sock, "Roughness")) {
+                if (BlendReadLinkedOrDefaultFloat(g, sock, flat.roughness, &flat.mapRoughness)) {
+                    flat.hasRoughness = true;
+                }
+            } else if (BlendSockNameIs(sock, "IOR")) {
+                if (BlendReadSocketFloat(sock, flat.ior)) {
+                    flat.hasIor = true;
+                }
+            } else if (BlendSockNameIs(sock, "Alpha")) {
+                if (BlendReadSocketFloat(sock, flat.alpha)) {
+                    flat.hasAlpha = true;
+                }
+            } else if (BlendSockNameIsAny(sock, { "Transmission", "Transmission Weight" })) {
+                if (BlendReadSocketFloat(sock, flat.transmission)) {
+                    flat.hasTransmission = true;
+                }
+            } else if (BlendSockNameIsAny(sock, { "Coat Weight", "Clearcoat" })) {
+                if (BlendReadSocketFloat(sock, flat.coatWeight)) {
+                    flat.hasCoatWeight = true;
+                }
+            } else if (BlendSockNameIsAny(sock, { "Coat Roughness", "Clearcoat Roughness" })) {
+                if (BlendReadSocketFloat(sock, flat.coatRoughness)) {
+                    flat.hasCoatRoughness = true;
+                }
+            } else if (BlendSockNameIsAny(sock, { "Emission Color", "Emission" })) {
+                float tmp[4]{};
+                if (BlendReadLinkedOrDefaultColor(g, sock, tmp, &flat.mapEmission)) {
+                    flat.emissionColor[0] = tmp[0];
+                    flat.emissionColor[1] = tmp[1];
+                    flat.emissionColor[2] = tmp[2];
+                    flat.hasEmissionColor = true;
+                }
+            } else if (BlendSockNameIs(sock, "Emission Strength")) {
+                if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
+                    flat.hasEmissionStrength = true;
+                }
+            } else if (BlendSockNameIs(sock, "Normal")) {
+                const bNodeLink *l = g.FindLinkToSocket(sock);
+                if (l) {
+                    const bNode *tex = g.FollowToTexImage(BlendCastNode(l->fromnode.get()));
+                    if (tex) {
+                        flat.mapNormal = BlendNodeImage(*tex);
+                    }
+                }
+            }
+        });
+        return finish();
+    }
+
+    if (BlendNodeIsGlass(node)) {
+        flat.output = "Glass BSDF";
+        // Node-type fixed: Glass BSDF is refractive (blender ShaderNodeBsdfGlass).
+        flat.transmission = 1.f;
+        flat.hasTransmission = true;
+        flat.metallic = 0.f;
+        flat.hasMetallic = true;
+        foreachInput([&](const bNodeSocket &sock) {
+            if (BlendSockNameIs(sock, "Color")) {
+                if (BlendReadLinkedOrDefaultColor(g, sock, flat.baseColor, &flat.mapBaseColor)) {
+                    flat.hasBaseColor = true;
+                }
+            } else if (BlendSockNameIs(sock, "Roughness")) {
+                if (BlendReadLinkedOrDefaultFloat(g, sock, flat.roughness, &flat.mapRoughness)) {
+                    flat.hasRoughness = true;
+                }
+            } else if (BlendSockNameIs(sock, "IOR")) {
+                if (BlendReadSocketFloat(sock, flat.ior)) {
+                    flat.hasIor = true;
+                }
+            }
+        });
+        return finish();
+    }
+
+    if (BlendNodeIsGlossy(node)) {
+        flat.output = "Glossy BSDF";
+        // Node-type fixed: Glossy BSDF is a metallic-like specular lobe.
+        flat.metallic = 1.f;
+        flat.hasMetallic = true;
+        flat.transmission = 0.f;
+        flat.hasTransmission = true;
+        foreachInput([&](const bNodeSocket &sock) {
+            if (BlendSockNameIs(sock, "Color")) {
+                if (BlendReadLinkedOrDefaultColor(g, sock, flat.baseColor, &flat.mapBaseColor)) {
+                    flat.hasBaseColor = true;
+                }
+            } else if (BlendSockNameIs(sock, "Roughness")) {
+                if (BlendReadLinkedOrDefaultFloat(g, sock, flat.roughness, &flat.mapRoughness)) {
+                    flat.hasRoughness = true;
+                }
+            }
+        });
+        return finish();
+    }
+
+    if (BlendNodeIsDiffuse(node)) {
+        flat.output = "Diffuse BSDF";
+        flat.metallic = 0.f;
+        flat.hasMetallic = true;
+        flat.transmission = 0.f;
+        flat.hasTransmission = true;
+        foreachInput([&](const bNodeSocket &sock) {
+            if (BlendSockNameIs(sock, "Color")) {
+                if (BlendReadLinkedOrDefaultColor(g, sock, flat.baseColor, &flat.mapBaseColor)) {
+                    flat.hasBaseColor = true;
+                }
+            } else if (BlendSockNameIs(sock, "Roughness")) {
+                if (BlendReadLinkedOrDefaultFloat(g, sock, flat.roughness, &flat.mapRoughness)) {
+                    flat.hasRoughness = true;
+                }
+            }
+        });
+        return finish();
+    }
+
+    if (BlendNodeIsEmission(node)) {
+        flat.output = "Emission";
+        foreachInput([&](const bNodeSocket &sock) {
+            if (BlendSockNameIs(sock, "Color")) {
+                float tmp[4]{};
+                if (BlendReadLinkedOrDefaultColor(g, sock, tmp, &flat.mapEmission)) {
+                    flat.baseColor[0] = flat.emissionColor[0] = tmp[0];
+                    flat.baseColor[1] = flat.emissionColor[1] = tmp[1];
+                    flat.baseColor[2] = flat.emissionColor[2] = tmp[2];
+                    flat.baseColor[3] = tmp[3];
+                    flat.hasBaseColor = true;
+                    flat.hasEmissionColor = true;
+                }
+            } else if (BlendSockNameIs(sock, "Strength")) {
+                if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
+                    flat.hasEmissionStrength = true;
+                }
+            }
+        });
+        return finish();
+    }
+
+    return flat;
+}
+
+static void BlendLowerAscii(std::string &s) {
+    for (char &c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+}
+
+/** Collect packed Images from a shader tree, descending into ShaderNodeGroup. */
+static void BlendCollectPackedImages(const Assimp::Blender::bNodeTree &tree,
+        std::vector<const Assimp::Blender::Image *> &out, int depth = 0) {
+    using namespace Assimp::Blender;
+    if (depth > 6) {
+        return;
+    }
+    const BlendNodeGraph g = BlendBuildGraph(tree);
+    for (const bNode *n : g.nodes) {
+        if (BlendNodeIsTexImage(*n)) {
+            const Image *img = BlendNodeImage(*n);
+            if (img != nullptr && BlendImageGetPacked(img) != nullptr) {
+                out.push_back(img);
+            }
+        }
+        if (const bNodeTree *gt = BlendNodeGroupTree(*n)) {
+            BlendCollectPackedImages(*gt, out, depth + 1);
+        }
+    }
+}
+
+/** When Principled Base Color is a group input / Mix chain we cannot follow, pick a packed
+ *  paint map (splash layer_*_base.png) by material name; else first *_base / first packed. */
+static void BlendFallbackPackedBaseColor(const Assimp::Blender::Material &mat, BlendShaderFlat &flat) {
+    using namespace Assimp::Blender;
+    if (flat.mapBaseColor != nullptr || !mat.nodetree) {
+        return;
+    }
+    std::vector<const Image *> imgs;
+    BlendCollectPackedImages(*mat.nodetree, imgs);
+    if (imgs.empty()) {
+        return;
+    }
+
+    std::string matKey = mat.id.name + 2;
+    BlendLowerAscii(matKey);
+    // Drop trailing .001 style suffixes for matching layer names.
+    const size_t dot = matKey.find('.');
+    if (dot != std::string::npos && dot + 1 < matKey.size() && std::isdigit(static_cast<unsigned char>(matKey[dot + 1]))) {
+        matKey.resize(dot);
+    }
+
+    const Image *best = nullptr;
+    int bestScore = -1;
+    for (const Image *img : imgs) {
+        std::string path = BlendImageDisplayPath(img);
+        BlendLowerAscii(path);
+        int score = 1;
+        if (path.find("_base") != std::string::npos || path.find("layer_") != std::string::npos) {
+            score += 5;
+        }
+        if (!matKey.empty() && path.find(matKey) != std::string::npos) {
+            score += 20;
+        }
+        // Watersurface / water mats prefer water maps.
+        if (matKey.find("water") != std::string::npos && path.find("water") != std::string::npos) {
+            score += 15;
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            best = img;
+        }
+    }
+    if (best != nullptr) {
+        flat.mapBaseColor = best;
+        flat.ok = true;
+    }
+}
+
+BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) {
+    using namespace Assimp::Blender;
+    BlendShaderFlat flat;
+    if (!mat.nodetree) {
+        return flat;
+    }
+    const BlendNodeGraph g = BlendBuildGraph(*mat.nodetree);
+
+    const bNode *outputNode = nullptr;
+    for (const bNode *n : g.nodes) {
+        if (BlendNodeIsOutput(*n)) {
+            outputNode = n;
+            break;
+        }
+    }
+
+    bool sawMix = false;
+    const bNode *chosen = nullptr;
+    if (outputNode != nullptr) {
+        for (std::shared_ptr<ElemBase> cur = outputNode->inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            if (BlendSockNameIsAny(*sock, { "Surface", "Displacement", "Volume" })) {
+                if (BlendSockNameIs(*sock, "Surface") || BlendSockNameIs(*sock, "surface")) {
+                    const bNodeLink *l = g.FindLinkToSocket(*sock);
+                    if (l) {
+                        chosen = g.ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix);
+                    }
+                }
+            }
+            cur = sock->next;
+        }
+        // Fallback: any link into the output node.
+        if (chosen == nullptr) {
+            for (const bNodeLink *l : g.links) {
+                if (BlendCastNode(l->tonode.get()) == outputNode) {
+                    chosen = g.ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix);
+                    if (chosen) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (chosen == nullptr) {
+        for (const bNode *n : g.nodes) {
+            chosen = g.PickBest(chosen, BlendNodeIsFlattenable(*n) ? n : nullptr);
+        }
+    }
+
+    if (chosen != nullptr) {
+        flat = BlendFlattenFromNode(g, *chosen);
+        flat.mixedGraph = sawMix;
+    }
+
+    // Splash / toon setups: Principled often inside ShaderNodeGroup; flatten there with that graph.
+    if (!flat.mapBaseColor) {
+        for (const bNode *n : g.nodes) {
+            const bNodeTree *gt = BlendNodeGroupTree(*n);
+            if (gt == nullptr) {
+                continue;
+            }
+            const BlendNodeGraph gg = BlendBuildGraph(*gt);
+            const bNode *inner = nullptr;
+            for (const bNode *gn : gg.nodes) {
+                inner = gg.PickBest(inner, BlendNodeIsFlattenable(*gn) ? gn : nullptr);
+            }
+            if (inner == nullptr) {
+                continue;
+            }
+            BlendShaderFlat innerFlat = BlendFlattenFromNode(gg, *inner);
+            if (!flat.ok || (innerFlat.mapBaseColor != nullptr && flat.mapBaseColor == nullptr) ||
+                    (innerFlat.HasAnyFactor() && !flat.HasAnyFactor())) {
+                flat = innerFlat;
+                flat.mixedGraph = true;
+            }
+            if (flat.mapBaseColor != nullptr) {
+                break;
+            }
+        }
+    }
+
+    // Paint maps linked via group inputs / Mix we could not follow: name-match packed Images.
+    BlendFallbackPackedBaseColor(mat, flat);
+    return flat;
+}
+
+void BlendAttachNodeImage(aiMaterial *mout, const Assimp::Blender::Image *img, aiTextureType type,
+        Assimp::Blender::ConversionData &conv_data) {
+    using namespace Assimp::Blender;
+    if (mout == nullptr || img == nullptr) {
+        return;
+    }
+    aiString name;
+    const PackedFile *packed = BlendImageGetPacked(img);
+    const char *dispPath = BlendImageDisplayPath(img);
+    if (packed != nullptr && packed->data && packed->size > 0) {
+        unsigned int texIndex = 0;
+        const auto found = conv_data.embeddedImageTexIndex.find(img);
+        if (found != conv_data.embeddedImageTexIndex.end()) {
+            texIndex = found->second;
+        } else {
+            texIndex = static_cast<unsigned int>(conv_data.textures->size());
+            conv_data.embeddedImageTexIndex.emplace(img, texIndex);
+            conv_data.textures->push_back(new aiTexture());
+            aiTexture *curTex = conv_data.textures->back();
+            const size_t nlen = std::strlen(dispPath);
+            const char *s = dispPath + nlen, *e = s;
+            while (s >= dispPath && *s != '.') {
+                --s;
+            }
+            curTex->achFormatHint[0] = s + 1 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[1])));
+            curTex->achFormatHint[1] = s + 2 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[2])));
+            curTex->achFormatHint[2] = s + 3 > e ? '\0' : static_cast<char>(::tolower(static_cast<unsigned char>(s[3])));
+            curTex->achFormatHint[3] = '\0';
+            curTex->mWidth = static_cast<unsigned int>(packed->size);
+            uint8_t *ch = new uint8_t[curTex->mWidth];
+            conv_data.db.reader->SetCurrentPos(static_cast<size_t>(packed->data->val));
+            conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
+            curTex->pcData = reinterpret_cast<aiTexel *>(ch);
+            if (dispPath[0] != '\0') {
+                curTex->mFilename = aiString(dispPath);
+            }
+        }
+        name.data[0] = '*';
+        name.length = 1 + Assimp::ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1),
+                static_cast<int32_t>(texIndex));
+    } else {
+        name = aiString(dispPath);
+    }
+    mout->AddProperty(&name, AI_MATKEY_TEXTURE(type, conv_data.next_texture[type]++));
+}
+
+void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
+        Assimp::Blender::ConversionData &conv_data) {
+    if (mout == nullptr || !flat.ok) {
+        return;
+    }
+    if (flat.hasBaseColor) {
+        aiColor4D base(flat.baseColor[0], flat.baseColor[1], flat.baseColor[2], flat.baseColor[3]);
+        mout->AddProperty(&base, 1, AI_MATKEY_BASE_COLOR);
+        aiColor3D diff(flat.baseColor[0], flat.baseColor[1], flat.baseColor[2]);
+        mout->AddProperty(&diff, 1, AI_MATKEY_COLOR_DIFFUSE);
+    }
+    if (flat.hasMetallic) {
+        mout->AddProperty(&flat.metallic, 1, AI_MATKEY_METALLIC_FACTOR);
+    }
+    if (flat.hasRoughness) {
+        mout->AddProperty(&flat.roughness, 1, AI_MATKEY_ROUGHNESS_FACTOR);
+    }
+    if (flat.hasIor) {
+        mout->AddProperty(&flat.ior, 1, AI_MATKEY_REFRACTI);
+    }
+    if (flat.hasTransmission) {
+        mout->AddProperty(&flat.transmission, 1, AI_MATKEY_TRANSMISSION_FACTOR);
+    }
+    if (flat.hasAlpha) {
+        mout->AddProperty(&flat.alpha, 1, AI_MATKEY_OPACITY);
+    }
+    const bool hasEmit = flat.mapEmission != nullptr ||
+                         (flat.hasEmissionColor &&
+                                 (flat.emissionColor[0] + flat.emissionColor[1] + flat.emissionColor[2]) > 1e-4f &&
+                                 (!flat.hasEmissionStrength || flat.emissionStrength > 0.f));
+    if (hasEmit) {
+        const float s = (flat.hasEmissionStrength && flat.emissionStrength > 0.f) ? flat.emissionStrength : 1.f;
+        aiColor3D emit(flat.emissionColor[0] * s, flat.emissionColor[1] * s, flat.emissionColor[2] * s);
+        mout->AddProperty(&emit, 1, AI_MATKEY_COLOR_EMISSIVE);
+    }
+    BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_BASE_COLOR, conv_data);
+    if (flat.mapBaseColor) {
+        BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_DIFFUSE, conv_data);
+    }
+    BlendAttachNodeImage(mout, flat.mapRoughness, aiTextureType_DIFFUSE_ROUGHNESS, conv_data);
+    BlendAttachNodeImage(mout, flat.mapMetallic, aiTextureType_METALNESS, conv_data);
+    BlendAttachNodeImage(mout, flat.mapNormal, aiTextureType_NORMALS, conv_data);
+    BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data);
+}
+
+} // namespace
 
 // zlib is needed for compressed blend files
 #ifndef ASSIMP_BUILD_NO_COMPRESSED_BLEND
@@ -459,57 +1534,6 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     }
 }
 
-namespace {
-
-/** Prefer legacy Image.packedfile; else first ImagePackedFile in packedfiles. */
-const PackedFile *BlendImageGetPacked(const Image *img) {
-    if (img == nullptr) {
-        return nullptr;
-    }
-    if (img->packedfile) {
-        return img->packedfile.get();
-    }
-    for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
-        const ImagePackedFile *ipf = nullptr;
-        if (cur->dna_type == nullptr || std::strcmp(cur->dna_type, "ImagePackedFile") == 0) {
-            ipf = static_cast<const ImagePackedFile *>(cur.get());
-        }
-        if (ipf == nullptr) {
-            break;
-        }
-        if (ipf->packedfile) {
-            return ipf->packedfile.get();
-        }
-        cur = ipf->next;
-    }
-    return nullptr;
-}
-
-const char *BlendImageDisplayPath(const Image *img) {
-    if (img == nullptr) {
-        return "";
-    }
-    if (img->name[0] != '\0') {
-        return img->name;
-    }
-    for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
-        const ImagePackedFile *ipf = nullptr;
-        if (cur->dna_type == nullptr || std::strcmp(cur->dna_type, "ImagePackedFile") == 0) {
-            ipf = static_cast<const ImagePackedFile *>(cur.get());
-        }
-        if (ipf == nullptr) {
-            break;
-        }
-        if (ipf->filepath[0] != '\0') {
-            return ipf->filepath;
-        }
-        cur = ipf->next;
-    }
-    return img->name;
-}
-
-} // namespace
-
 // ------------------------------------------------------------------------------------------------
 void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const MTex *tex, const Image *img, ConversionData &conv_data) {
     (void)mat;
@@ -812,30 +1836,44 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
             continue;
         }
 
-        // basic material colors
-        aiColor3D col(mat->r, mat->g, mat->b);
-        if (mat->r || mat->g || mat->b) {
+        // C6 typed: flatten Principled/Glass/Glossy/Diffuse/Emission + Image Tex maps (no sidecars).
+        const BlendShaderFlat flat = BlendFlattenMaterialNodes(*mat);
+        if (flat.ok) {
+            BlendApplyFlatToMaterial(mout, flat, conv_data);
+        } else {
+            // basic material colors (Blender Internal / no flattenable nodes)
+            aiColor3D col(mat->r, mat->g, mat->b);
+            if (mat->r || mat->g || mat->b) {
 
-            // Usually, zero diffuse color means no diffuse color at all in the equation.
-            // So we omit this member to express this intent.
-            mout->AddProperty(&col, 1, AI_MATKEY_COLOR_DIFFUSE);
+                // Usually, zero diffuse color means no diffuse color at all in the equation.
+                // So we omit this member to express this intent.
+                mout->AddProperty(&col, 1, AI_MATKEY_COLOR_DIFFUSE);
 
-            if (mat->emit) {
-                aiColor3D emit_col(mat->emit * mat->r, mat->emit * mat->g, mat->emit * mat->b);
-                mout->AddProperty(&emit_col, 1, AI_MATKEY_COLOR_EMISSIVE);
+                if (mat->emit) {
+                    aiColor3D emit_col(mat->emit * mat->r, mat->emit * mat->g, mat->emit * mat->b);
+                    mout->AddProperty(&emit_col, 1, AI_MATKEY_COLOR_EMISSIVE);
+                }
+            }
+
+            col = aiColor3D(mat->specr, mat->specg, mat->specb);
+            mout->AddProperty(&col, 1, AI_MATKEY_COLOR_SPECULAR);
+
+            // is hardness/shininess set?
+            if (mat->har) {
+                const float har = mat->har;
+                mout->AddProperty(&har, 1, AI_MATKEY_SHININESS);
+            }
+
+            // Modern DNA metallic/roughness on Material itself (EEVEE) when no nodes.
+            if (mat->metallic > 0.f) {
+                mout->AddProperty(&mat->metallic, 1, AI_MATKEY_METALLIC_FACTOR);
+            }
+            if (mat->roughness > 0.f) {
+                mout->AddProperty(&mat->roughness, 1, AI_MATKEY_ROUGHNESS_FACTOR);
             }
         }
 
-        col = aiColor3D(mat->specr, mat->specg, mat->specb);
-        mout->AddProperty(&col, 1, AI_MATKEY_COLOR_SPECULAR);
-
-        // is hardness/shininess set?
-        if (mat->har) {
-            const float har = mat->har;
-            mout->AddProperty(&har, 1, AI_MATKEY_SHININESS);
-        }
-
-        col = aiColor3D(mat->ambr, mat->ambg, mat->ambb);
+        aiColor3D col = aiColor3D(mat->ambr, mat->ambg, mat->ambb);
         mout->AddProperty(&col, 1, AI_MATKEY_COLOR_AMBIENT);
 
         // is mirror enabled?

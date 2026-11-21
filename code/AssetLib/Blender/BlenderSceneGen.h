@@ -134,6 +134,48 @@ template <> void Structure :: Convert<Material> (
     ) const
 ;
 
+template <> void Structure :: Convert<bNodeStack> (
+    bNodeStack& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<bNodeSocketValueFloat> (
+    bNodeSocketValueFloat& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<bNodeSocketValueRGBA> (
+    bNodeSocketValueRGBA& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<bNodeSocket> (
+    bNodeSocket& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<bNode> (
+    bNode& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<bNodeLink> (
+    bNodeLink& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<bNodeTree> (
+    bNodeTree& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<MTexPoly> (
     MTexPoly& dest,
     const FileDatabase& db
