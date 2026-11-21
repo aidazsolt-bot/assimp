@@ -1349,11 +1349,16 @@ void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
     BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data, matIndex);
 }
 
-static std::string BlendMapJson(const Assimp::Blender::Image *img) {
-    if (img == nullptr || img->name[0] == '\0') {
+static std::string BlendMapJson(const BlendTexMap &map) {
+    if (!map.img || map.img->name[0] == '\0') {
         return "null";
     }
-    return std::string("\"") + BlendJsonEscape(img->name) + '"';
+    // Prefer image datablock name; append uv layer when C6 UV Map resolved it.
+    if (map.uvname[0] != '\0') {
+        return std::string("{\"image\":\"") + BlendJsonEscape(map.img->name) + "\",\"uv\":\"" +
+               BlendJsonEscape(map.uvname) + "\"}";
+    }
+    return std::string("\"") + BlendJsonEscape(map.img->name) + '"';
 }
 
 std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, const BlendShaderFlat &flat) {
