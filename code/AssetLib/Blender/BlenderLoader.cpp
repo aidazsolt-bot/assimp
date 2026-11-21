@@ -355,6 +355,38 @@ bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
     return n.type == 2;
 }
 
+bool BlendNodeIsMixColor(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeMixRGB") == 0;
+    }
+    return n.type == 75; // SH_NODE_MIX_RGB_LEGACY
+}
+
+bool BlendNodeIsGroupOutput(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "NodeGroupOutput") == 0;
+    }
+    // NODE_GROUP_OUTPUT
+    return n.type == 3;
+}
+
+/** MixRGB custom1 (DNA_material_types.h MA_RAMP_*). Multiply-family: Color1/A is the base. */
+bool BlendMixPrefersColorA(short custom1) {
+    // MA_RAMP_MULT=2, SCREEN=4, DIV=5, OVERLAY=9, ... - keep A as albedo carrier.
+    switch (custom1) {
+    case 2: // MULT
+    case 4: // SCREEN
+    case 5: // DIV
+    case 9: // OVERLAY
+    case 16: // SOFT
+    case 17: // LINEAR light-ish
+        return true;
+    default:
+        return false;
+    }
+}
+
 const Assimp::Blender::bNodeTree *BlendNodeGroupTree(const Assimp::Blender::bNode &n) {
     using namespace Assimp::Blender;
     if (!BlendNodeIsGroup(n) || !n.id) {
@@ -756,6 +788,9 @@ const char *BlendImageDisplayPath(const Assimp::Blender::Image *img) {
     return img->name;
 }
 
+struct BlendNodeGraph;
+BlendNodeGraph BlendBuildGraph(const Assimp::Blender::bNodeTree &tree);
+
 struct BlendNodeGraph {
     std::vector<const Assimp::Blender::bNode *> nodes;
     std::vector<const Assimp::Blender::bNodeLink *> links;
@@ -773,11 +808,12 @@ struct BlendNodeGraph {
         return nullptr;
     }
 
-    /** Walk bNodeLink upstream until ShaderNodeTexImage. No node allowlist, no name-score.
-     *  Barriers: BSDF / Material Output / Mix Shader. Unlinked sockets use DNA default_value
-     *  at the Principled reader - not here. Multi-input: try higher-priority socks first
-     *  (Color/Image before Fac), then any other linked input. */
-    const Assimp::Blender::bNode *FollowToTexImage(const Assimp::Blender::bNode *n, int depth = 0) const {
+    /** Walk bNodeLink upstream until ShaderNodeTexImage. No filename name-score.
+     *  Barriers: BSDF / Material Output / Mix Shader. Group: enter nodetree via
+     *  NodeGroupOutput matching fromsock (do not walk outer group inputs).
+     *  Mix Color/RGB: Fac 0=A / 1=B, Multiply-family prefers Color1/A. */
+    const Assimp::Blender::bNode *FollowToTexImage(const Assimp::Blender::bNode *n, int depth = 0,
+            const Assimp::Blender::bNodeSocket *fromOutputSock = nullptr) const {
         using namespace Assimp::Blender;
         if (n == nullptr || depth > 24) {
             return nullptr;
@@ -787,6 +823,141 @@ struct BlendNodeGraph {
         }
         if (BlendNodeIsTexWalkBarrier(*n)) {
             return nullptr;
+        }
+
+        auto followLink = [&](const bNodeLink *l) -> const bNode * {
+            if (!l) {
+                return nullptr;
+            }
+            const bNodeSocket *outSock = BlendCastSocket(l->fromsock.get());
+            return FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1, outSock);
+        };
+        auto tryFromSock = [&](const bNodeSocket &sock) -> const bNode * {
+            return followLink(FindLinkToSocket(sock));
+        };
+
+        // ShaderNodeGroup: resolve inside the group tree from the matching Group Output input.
+        if (BlendNodeIsGroup(*n)) {
+            const bNodeTree *gt = BlendNodeGroupTree(*n);
+            if (gt == nullptr || fromOutputSock == nullptr) {
+                return nullptr;
+            }
+            const BlendNodeGraph gg = BlendBuildGraph(*gt);
+            for (const bNode *gn : gg.nodes) {
+                if (gn == nullptr || !BlendNodeIsGroupOutput(*gn)) {
+                    continue;
+                }
+                for (std::shared_ptr<ElemBase> cur = gn->inputs.first; cur;) {
+                    const bNodeSocket *is = BlendCastSocket(cur.get());
+                    if (is == nullptr) {
+                        break;
+                    }
+                    const bool nameHit = BlendSockNameIs(*is, fromOutputSock->name) ||
+                            (fromOutputSock->identifier[0] != '\0' &&
+                                    (BlendSockNameIs(*is, fromOutputSock->identifier) ||
+                                            std::strcmp(is->identifier, fromOutputSock->identifier) == 0 ||
+                                            std::strcmp(is->identifier, fromOutputSock->name) == 0));
+                    if (!nameHit) {
+                        cur = is->next;
+                        continue;
+                    }
+                    const bNodeLink *il = gg.FindLinkToSocket(*is);
+                    if (il) {
+                        if (const bNode *hit = gg.FollowToTexImage(BlendCastNode(il->fromnode.get()),
+                                    depth + 1, BlendCastSocket(il->fromsock.get()))) {
+                            return hit;
+                        }
+                    }
+                    cur = is->next;
+                }
+            }
+            // Fallback: linked Group Output inputs, Color/Image before Fac (socket rename safe).
+            struct GCand {
+                int prio;
+                const bNodeLink *link;
+            };
+            std::vector<GCand> gcands;
+            for (const bNode *gn : gg.nodes) {
+                if (gn == nullptr || !BlendNodeIsGroupOutput(*gn)) {
+                    continue;
+                }
+                for (std::shared_ptr<ElemBase> cur = gn->inputs.first; cur;) {
+                    const bNodeSocket *is = BlendCastSocket(cur.get());
+                    if (is == nullptr) {
+                        break;
+                    }
+                    if (const bNodeLink *il = gg.FindLinkToSocket(*is)) {
+                        gcands.push_back({ BlendSockTexWalkPriority(*is), il });
+                    }
+                    cur = is->next;
+                }
+            }
+            std::stable_sort(gcands.begin(), gcands.end(),
+                    [](const GCand &a, const GCand &b) { return a.prio > b.prio; });
+            for (const GCand &c : gcands) {
+                if (const bNode *hit = gg.FollowToTexImage(BlendCastNode(c.link->fromnode.get()),
+                            depth + 1, BlendCastSocket(c.link->fromsock.get()))) {
+                    return hit;
+                }
+            }
+            return nullptr;
+        }
+
+        // MixRGB / ShaderNodeMix: single Assimp map slot -> pick Blender-dominant branch.
+        if (BlendNodeIsMixColor(*n)) {
+            const bNodeSocket *sockA = nullptr;
+            const bNodeSocket *sockB = nullptr;
+            const bNodeSocket *sockFac = nullptr;
+            for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+                const bNodeSocket *sock = BlendCastSocket(cur.get());
+                if (sock == nullptr) {
+                    break;
+                }
+                if (BlendSockNameIsAny(*sock, { "A", "Color1", "ColorA" })) {
+                    sockA = sock;
+                } else if (BlendSockNameIsAny(*sock, { "B", "Color2", "ColorB" })) {
+                    sockB = sock;
+                } else if (BlendSockNameIsAny(*sock, { "Fac", "Factor" })) {
+                    sockFac = sock;
+                }
+                cur = sock->next;
+            }
+            float fac = 0.5f;
+            if (sockFac) {
+                BlendReadSocketFloat(*sockFac, fac);
+                const bNodeLink *fl = FindLinkToSocket(*sockFac);
+                if (fl) {
+                    float linked = fac;
+                    if (ReadConstantFloat(BlendCastNode(fl->fromnode.get()), linked)) {
+                        fac = linked;
+                    }
+                }
+            }
+            const bool aFirst = BlendMixPrefersColorA(n->custom1) || fac < 0.5f;
+            if (aFirst) {
+                if (sockA) {
+                    if (const bNode *hit = tryFromSock(*sockA)) {
+                        return hit;
+                    }
+                }
+                if (sockB) {
+                    if (const bNode *hit = tryFromSock(*sockB)) {
+                        return hit;
+                    }
+                }
+            } else {
+                if (sockB) {
+                    if (const bNode *hit = tryFromSock(*sockB)) {
+                        return hit;
+                    }
+                }
+                if (sockA) {
+                    if (const bNode *hit = tryFromSock(*sockA)) {
+                        return hit;
+                    }
+                }
+            }
+            // Fall through to generic linked-input walk if A/B did not reach a Tex Image.
         }
 
         struct Cand {
@@ -808,7 +979,7 @@ struct BlendNodeGraph {
                 [](const Cand &a, const Cand &b) { return a.prio > b.prio; });
 
         for (const Cand &c : cands) {
-            if (const bNode *hit = FollowToTexImage(BlendCastNode(c.link->fromnode.get()), depth + 1)) {
+            if (const bNode *hit = followLink(c.link)) {
                 return hit;
             }
         }
@@ -1087,7 +1258,7 @@ bool BlendReadLinkedOrDefaultFloat(const BlendNodeGraph &g, const Assimp::Blende
         return got;
     }
     const bNode *src = BlendCastNode(l->fromnode.get());
-    const bNode *tex = g.FollowToTexImage(src);
+    const bNode *tex = g.FollowToTexImage(src, 0, BlendCastSocket(l->fromsock.get()));
     if (tex && mapOut) {
         BlendFillTexMap(g, tex, *mapOut);
     }
@@ -1108,7 +1279,7 @@ bool BlendReadLinkedOrDefaultColor(const BlendNodeGraph &g, const Assimp::Blende
         return got;
     }
     const bNode *src = BlendCastNode(l->fromnode.get());
-    const bNode *tex = g.FollowToTexImage(src);
+    const bNode *tex = g.FollowToTexImage(src, 0, BlendCastSocket(l->fromsock.get()));
     if (tex && mapOut) {
         BlendFillTexMap(g, tex, *mapOut);
     }
@@ -1194,7 +1365,8 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
             } else if (BlendSockNameIs(sock, "Normal")) {
                 const bNodeLink *l = g.FindLinkToSocket(sock);
                 if (l) {
-                    const bNode *tex = g.FollowToTexImage(BlendCastNode(l->fromnode.get()));
+                    const bNode *tex = g.FollowToTexImage(BlendCastNode(l->fromnode.get()), 0,
+                            BlendCastSocket(l->fromsock.get()));
                     if (tex) {
                         BlendFillTexMap(g, tex, flat.mapNormal);
                     }

@@ -824,6 +824,7 @@ void Structure ::Convert<bNode>(
     if (typeLegacy != 0) {
         dest.type = typeLegacy;
     }
+    ReadField<ErrorPolicy_Igno>(dest.custom1, "custom1", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.id, "*id", db);
     // DNA *storage: runtime type from DATA block (e.g. NodeShaderUVMap).
     ReadFieldPtr<ErrorPolicy_Igno>(dest.storage, "*storage", db);

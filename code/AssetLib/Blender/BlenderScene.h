@@ -467,6 +467,7 @@ struct bNode final : ElemBase {
     char name[64];
     char idname[64];
     short type; // DNA "type" / "type_legacy"
+    short custom1; // MixRGB blend type (MA_RAMP_*), etc.
     std::shared_ptr<ElemBase> id; // e.g. Image* for ShaderNodeTexImage
     std::shared_ptr<ElemBase> storage; // e.g. NodeShaderUVMap for ShaderNodeUVMap
 
@@ -474,6 +475,7 @@ struct bNode final : ElemBase {
         memset(name, 0, sizeof name);
         memset(idname, 0, sizeof idname);
         type = 0;
+        custom1 = 0;
     }
 };
 
