@@ -976,33 +976,38 @@ struct BlendNodeGraph {
                 }
                 cur = sock->next;
             }
-            float fac = 0.5f;
+            // Fac from DNA only - never invent 0.5 when default_value is unread.
+            bool haveFac = false;
+            float fac = 0.f;
             if (sockFac) {
-                BlendReadSocketFloat(*sockFac, fac);
+                if (BlendReadSocketFloat(*sockFac, fac)) {
+                    haveFac = true;
+                }
                 const bNodeLink *fl = FindLinkToSocket(*sockFac);
                 if (fl) {
-                    float linked = fac;
+                    float linked = 0.f;
                     if (ReadConstantFloat(BlendCastNode(fl->fromnode.get()), linked)) {
                         fac = linked;
+                        haveFac = true;
                     }
                 }
             }
-            // MA_RAMP_BLEND extremes: only one side contributes.
+            // MA_RAMP_BLEND extremes: only one side contributes (requires real Fac).
             const bool blendMode = (n->custom1 == 0);
-            if (blendMode && fac <= 1e-4f) {
+            if (haveFac && blendMode && fac <= 1e-4f) {
                 if (sockA) {
                     if (const bNode *hit = tryFromSock(*sockA)) {
                         return hit;
                     }
                 }
-            } else if (blendMode && fac >= 1.f - 1e-4f) {
+            } else if (haveFac && blendMode && fac >= 1.f - 1e-4f) {
                 if (sockB) {
                     if (const bNode *hit = tryFromSock(*sockB)) {
                         return hit;
                     }
                 }
             } else {
-                // Mid Fac or Multiply/Overlay/...: Color1 first, then Color2.
+                // Mid Fac, unknown Fac, or Multiply/Overlay/...: Color1 first, then Color2.
                 if (sockA) {
                     if (const bNode *hit = tryFromSock(*sockA)) {
                         return hit;
@@ -1135,16 +1140,14 @@ struct BlendNodeGraph {
                 score += 3;
             }
             if (BlendSockNameIsAny(*sock, { "Base Color", "BaseColor", "Color" })) {
-                float c[4] = { 0.8f, 0.8f, 0.8f, 1.f };
-                BlendReadSocketColor(*sock, c);
-                if (std::fabs(c[0] - 0.8f) > 0.02f || std::fabs(c[1] - 0.8f) > 0.02f || std::fabs(c[2] - 0.8f) > 0.02f) {
+                float c[4]{};
+                if (BlendReadSocketColor(*sock, c)) {
                     score += 5;
                 }
             }
             if (BlendSockNameIs(*sock, "Roughness")) {
-                float r = 0.5f;
-                BlendReadSocketFloat(*sock, r);
-                if (std::fabs(r - 0.5f) > 0.02f) {
+                float r = 0.f;
+                if (BlendReadSocketFloat(*sock, r)) {
                     score += 4;
                 }
             }
