@@ -1269,82 +1269,6 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
     return flat;
 }
 
-static void BlendLowerAscii(std::string &s) {
-    for (char &c : s) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-}
-
-/** Collect packed Images from a shader tree, descending into ShaderNodeGroup. */
-static void BlendCollectPackedImages(const Assimp::Blender::bNodeTree &tree,
-        std::vector<const Assimp::Blender::Image *> &out, int depth = 0) {
-    using namespace Assimp::Blender;
-    if (depth > 6) {
-        return;
-    }
-    const BlendNodeGraph g = BlendBuildGraph(tree);
-    for (const bNode *n : g.nodes) {
-        if (BlendNodeIsTexImage(*n)) {
-            const Image *img = BlendNodeImage(*n);
-            if (img != nullptr && BlendImageGetPacked(img) != nullptr) {
-                out.push_back(img);
-            }
-        }
-        if (const bNodeTree *gt = BlendNodeGroupTree(*n)) {
-            BlendCollectPackedImages(*gt, out, depth + 1);
-        }
-    }
-}
-
-/** When Principled Base Color is a group input / Mix chain we cannot follow, pick a packed
- *  paint map (splash layer_*_base.png) by material name; else first *_base / first packed. */
-static void BlendFallbackPackedBaseColor(const Assimp::Blender::Material &mat, BlendShaderFlat &flat) {
-    using namespace Assimp::Blender;
-    if (flat.mapBaseColor || !mat.nodetree) {
-        return;
-    }
-    std::vector<const Image *> imgs;
-    BlendCollectPackedImages(*mat.nodetree, imgs);
-    if (imgs.empty()) {
-        return;
-    }
-
-    std::string matKey = mat.id.name + 2;
-    BlendLowerAscii(matKey);
-    // Drop trailing .001 style suffixes for matching layer names.
-    const size_t dot = matKey.find('.');
-    if (dot != std::string::npos && dot + 1 < matKey.size() && std::isdigit(static_cast<unsigned char>(matKey[dot + 1]))) {
-        matKey.resize(dot);
-    }
-
-    const Image *best = nullptr;
-    int bestScore = -1;
-    for (const Image *img : imgs) {
-        std::string path = BlendImageDisplayPath(img);
-        BlendLowerAscii(path);
-        int score = 1;
-        if (path.find("_base") != std::string::npos || path.find("layer_") != std::string::npos) {
-            score += 5;
-        }
-        if (!matKey.empty() && path.find(matKey) != std::string::npos) {
-            score += 20;
-        }
-        // Watersurface / water mats prefer water maps.
-        if (matKey.find("water") != std::string::npos && path.find("water") != std::string::npos) {
-            score += 15;
-        }
-        if (score > bestScore) {
-            bestScore = score;
-            best = img;
-        }
-    }
-    if (best != nullptr) {
-        flat.mapBaseColor.img = best;
-        BlendCopyUvName(flat.mapBaseColor.uvname, nullptr);
-        flat.ok = true;
-    }
-}
-
 BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) {
     using namespace Assimp::Blender;
     BlendShaderFlat flat;
@@ -1430,8 +1354,7 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
         }
     }
 
-    // Paint maps linked via group inputs / Mix we could not follow: name-match packed Images.
-    BlendFallbackPackedBaseColor(mat, flat);
+    // Presence: only Image Tex maps reached via bNodeLink (same as Blender). No name-guess.
     return flat;
 }
 
