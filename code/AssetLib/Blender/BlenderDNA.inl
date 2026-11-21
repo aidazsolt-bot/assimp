@@ -335,11 +335,16 @@ bool Structure::ReadCustomDataPtr(std::shared_ptr<ElemBase>&out, int cdtype, con
 	if (ptrval.val)	{
 		// get block for ptr
 		const FileBlockHead* block = LocateFileBlockForAddress(ptrval, db);
-		const size_t offset = static_cast<size_t>(ptrval.val - block->address.val);
-		db.reader->SetCurrentPos(block->start + offset);
-		// read block->num instances of given type to out
-		readOk = readCustomData(out, cdtype, block->num,
-				block->size - std::min(offset, block->size), db);
+		if (!block) {
+			out.reset();
+			readOk = false;
+		} else {
+			const size_t offset = static_cast<size_t>(ptrval.val - block->address.val);
+			db.reader->SetCurrentPos(block->start + offset);
+			// read block->num instances of given type to out
+			readOk = readCustomData(out, cdtype, block->num,
+					block->size - std::min(offset, block->size), db);
+		}
 	}
 
 	// and recover the previous stream position
@@ -384,15 +389,21 @@ bool Structure::ReadFieldPtrVector(vector<TOUT<T>>&out, const char* name, const 
 	if (ptrval.val)	{
 		// find the file block the pointer is pointing to
 		const FileBlockHead* block = LocateFileBlockForAddress(ptrval, db);
-		db.reader->SetCurrentPos(block->start + static_cast<size_t>((ptrval.val - block->address.val)));
-		// FIXME: basically, this could cause problems with 64 bit pointers on 32 bit systems.
-		// I really ought to improve StreamReader to work with 64 bit indices exclusively.
+		if (block) {
+			db.reader->SetCurrentPos(block->start + static_cast<size_t>((ptrval.val - block->address.val)));
+			// FIXME: basically, this could cause problems with 64 bit pointers on 32 bit systems.
+			// I really ought to improve StreamReader to work with 64 bit indices exclusively.
 
-		const Structure& s = db.dna[f->type];
-		for (size_t i = 0; i < block->num; ++i)	{
-			TOUT<T> p(new T);
-			s.Convert(*p, db);
-			out.push_back(p);
+			const Structure *sPtr = db.dna.Get(f->type);
+			if (sPtr == nullptr || f->type == "void") {
+				sPtr = &db.dna[block->dna_index];
+			}
+			const Structure &s = *sPtr;
+			for (size_t i = 0; i < block->num; ++i)	{
+				TOUT<T> p(new T);
+				s.Convert(*p, db);
+				out.push_back(p);
+			}
 		}
 	}
 
@@ -416,6 +427,9 @@ bool Structure::ResolvePointer(TOUT<T>& out, const Pointer & ptrval, const FileD
     }
     // find the file block the pointer is pointing to
     const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
+    if (!block) {
+        return false;
+    }
 
     // Target type from the block header (SDNA index written with the DATA).
     const Structure& ss = db.dna[block->dna_index];
@@ -509,6 +523,9 @@ inline bool Structure::ResolvePointer(std::shared_ptr<FileOffset>& out, const Po
 
     // find the file block the pointer is pointing to
     const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
+    if (!block) {
+        return false;
+    }
 
     out =  std::shared_ptr< FileOffset > (new FileOffset());
     out->val = block->start+ static_cast<size_t>((ptrval.val - block->address.val) );
@@ -532,6 +549,9 @@ bool Structure :: ResolvePointer(vector< TOUT<T> >& out, const Pointer & ptrval,
 
     // find the file block the pointer is pointing to
     const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
+    if (!block) {
+        return false;
+    }
     const size_t num = block->size / (db.i64bit?8:4);
 
     // keep the old stream position
@@ -570,6 +590,9 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
 
     // find the file block the pointer is pointing to
     const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
+    if (!block) {
+        return false;
+    }
 
     // determine the target type from the block header
     const Structure& s = db.dna[block->dna_index];
@@ -647,6 +670,10 @@ const FileBlockHead* Structure::LocateFileBlockForAddress(const Pointer &ptrval,
     // before the next ID. The same `old` address can legally appear on DATA of
     // different IDs (heap reuse when writing; stable pointer IDs fix this in
     // newer Blender). Prefer the block owned by active_id_scope.
+    //
+    // Pointers that miss every block (dangling / freed heap leftovers still
+    // written into DNA) must become nullptr like Blender's
+    // BLO_read_get_new_data_address - not abort the whole import.
     if (db.active_id_scope.val) {
         const FileBlockHead *scoped = nullptr;
         for (const FileBlockHead &e : db.entries) {
@@ -684,17 +711,13 @@ const FileBlockHead* Structure::LocateFileBlockForAddress(const Pointer &ptrval,
     // the only block that may actually contain the pointed-to data.
     auto it = std::upper_bound(db.entries.begin(),db.entries.end(),ptrval);
     if (it == db.entries.begin()) {
-        // this is crucial, pointers may not be invalid.
-        // this is either a corrupted file or an attempted attack.
-        throw DeadlyImportError("Failure resolving pointer 0x",
-            std::hex, ptrval.val,", no file block falls into this address range");
+        ASSIMP_LOG_DEBUG("BlendDNA: dangling pointer (no file block in range) - treating as null");
+        return nullptr;
     }
     --it;
     if ((ptrval.val - it->address.val) >= it->size) {
-        throw DeadlyImportError("Failure resolving pointer 0x",
-            std::hex,ptrval.val,", nearest file block starting at 0x",
-            it->address.val," ends at 0x",
-            it->address.val + it->size);
+        ASSIMP_LOG_DEBUG("BlendDNA: dangling pointer (outside nearest block) - treating as null");
+        return nullptr;
     }
     return &*it;
 }
