@@ -371,6 +371,14 @@ bool BlendNodeIsGroupOutput(const Assimp::Blender::bNode &n) {
     return n.type == 3;
 }
 
+bool BlendNodeIsGroupInput(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "NodeGroupInput") == 0;
+    }
+    // NODE_GROUP_INPUT
+    return n.type == 7;
+}
+
 const Assimp::Blender::bNodeTree *BlendNodeGroupTree(const Assimp::Blender::bNode &n) {
     using namespace Assimp::Blender;
     if (!BlendNodeIsGroup(n) || !n.id) {
@@ -792,13 +800,22 @@ struct BlendNodeGraph {
         return nullptr;
     }
 
+    /** Stack frame while inside a ShaderNodeGroup: host graph owns the instance node. */
+    struct GroupWalkFrame {
+        const BlendNodeGraph *host = nullptr;
+        const Assimp::Blender::bNode *instance = nullptr;
+    };
+
     /** Walk bNodeLink upstream until ShaderNodeTexImage. No filename name-score.
      *  Barriers: BSDF / Material Output / Mix Shader. Group: enter nodetree via
-     *  NodeGroupOutput matching fromsock (do not walk outer group inputs).
+     *  NodeGroupOutput matching fromsock; NodeGroupInput continues on the outer
+     *  group instance inputs (host graph).
      *  Mix Color/RGB (Blender ramp_blend): result starts as Color1; Color2 blended by Fac.
-     *  Fac~0 -> Color1 only; Fac~1 -> Color2 only; else Color1 first (accumulator base). */
+     *  Fac~0 -> Color1 only; Fac~1 -> Color2 only; else Color1 first (accumulator base).
+     *  Mix never treats Fac as the color/normal source (Fac is a mask only). */
     const Assimp::Blender::bNode *FollowToTexImage(const Assimp::Blender::bNode *n, int depth = 0,
-            const Assimp::Blender::bNodeSocket *fromOutputSock = nullptr) const {
+            const Assimp::Blender::bNodeSocket *fromOutputSock = nullptr,
+            std::vector<GroupWalkFrame> *groupStack = nullptr) const {
         using namespace Assimp::Blender;
         if (n == nullptr || depth > 24) {
             return nullptr;
@@ -815,11 +832,60 @@ struct BlendNodeGraph {
                 return nullptr;
             }
             const bNodeSocket *outSock = BlendCastSocket(l->fromsock.get());
-            return FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1, outSock);
+            return FollowToTexImage(BlendCastNode(l->fromnode.get()), depth + 1, outSock, groupStack);
         };
         auto tryFromSock = [&](const bNodeSocket &sock) -> const bNode * {
             return followLink(FindLinkToSocket(sock));
         };
+        auto sockNameHit = [](const bNodeSocket &a, const bNodeSocket &b) -> bool {
+            if (BlendSockNameIs(a, b.name) || BlendSockNameIs(b, a.name)) {
+                return true;
+            }
+            if (a.identifier[0] != '\0' && b.identifier[0] != '\0' &&
+                    std::strcmp(a.identifier, b.identifier) == 0) {
+                return true;
+            }
+            if (a.identifier[0] != '\0' &&
+                    (BlendSockNameIs(b, a.identifier) || std::strcmp(b.name, a.identifier) == 0)) {
+                return true;
+            }
+            if (b.identifier[0] != '\0' &&
+                    (BlendSockNameIs(a, b.identifier) || std::strcmp(a.name, b.identifier) == 0)) {
+                return true;
+            }
+            return false;
+        };
+
+        // NodeGroupInput: continue on the enclosing ShaderNodeGroup's matching input.
+        if (BlendNodeIsGroupInput(*n)) {
+            if (groupStack == nullptr || groupStack->empty() || fromOutputSock == nullptr) {
+                return nullptr;
+            }
+            const GroupWalkFrame frame = groupStack->back();
+            if (frame.host == nullptr || frame.instance == nullptr) {
+                return nullptr;
+            }
+            for (std::shared_ptr<ElemBase> cur = frame.instance->inputs.first; cur;) {
+                const bNodeSocket *is = BlendCastSocket(cur.get());
+                if (is == nullptr) {
+                    break;
+                }
+                if (!sockNameHit(*is, *fromOutputSock)) {
+                    cur = is->next;
+                    continue;
+                }
+                const bNodeLink *il = frame.host->FindLinkToSocket(*is);
+                if (!il) {
+                    return nullptr;
+                }
+                groupStack->pop_back();
+                const bNode *hit = frame.host->FollowToTexImage(BlendCastNode(il->fromnode.get()),
+                        depth + 1, BlendCastSocket(il->fromsock.get()), groupStack);
+                groupStack->push_back(frame);
+                return hit;
+            }
+            return nullptr;
+        }
 
         // ShaderNodeGroup: resolve inside the group tree from the matching Group Output input.
         if (BlendNodeIsGroup(*n)) {
@@ -828,6 +894,16 @@ struct BlendNodeGraph {
                 return nullptr;
             }
             const BlendNodeGraph gg = BlendBuildGraph(*gt);
+            std::vector<GroupWalkFrame> localStack;
+            std::vector<GroupWalkFrame> *st = groupStack ? groupStack : &localStack;
+            st->push_back({ this, n });
+            auto followInGroup = [&](const bNodeLink *il) -> const bNode * {
+                if (!il) {
+                    return nullptr;
+                }
+                return gg.FollowToTexImage(BlendCastNode(il->fromnode.get()), depth + 1,
+                        BlendCastSocket(il->fromsock.get()), st);
+            };
             for (const bNode *gn : gg.nodes) {
                 if (gn == nullptr || !BlendNodeIsGroupOutput(*gn)) {
                     continue;
@@ -837,21 +913,13 @@ struct BlendNodeGraph {
                     if (is == nullptr) {
                         break;
                     }
-                    const bool nameHit = BlendSockNameIs(*is, fromOutputSock->name) ||
-                            (fromOutputSock->identifier[0] != '\0' &&
-                                    (BlendSockNameIs(*is, fromOutputSock->identifier) ||
-                                            std::strcmp(is->identifier, fromOutputSock->identifier) == 0 ||
-                                            std::strcmp(is->identifier, fromOutputSock->name) == 0));
-                    if (!nameHit) {
+                    if (!sockNameHit(*is, *fromOutputSock)) {
                         cur = is->next;
                         continue;
                     }
-                    const bNodeLink *il = gg.FindLinkToSocket(*is);
-                    if (il) {
-                        if (const bNode *hit = gg.FollowToTexImage(BlendCastNode(il->fromnode.get()),
-                                    depth + 1, BlendCastSocket(il->fromsock.get()))) {
-                            return hit;
-                        }
+                    if (const bNode *hit = followInGroup(gg.FindLinkToSocket(*is))) {
+                        st->pop_back();
+                        return hit;
                     }
                     cur = is->next;
                 }
@@ -880,11 +948,12 @@ struct BlendNodeGraph {
             std::stable_sort(gcands.begin(), gcands.end(),
                     [](const GCand &a, const GCand &b) { return a.prio > b.prio; });
             for (const GCand &c : gcands) {
-                if (const bNode *hit = gg.FollowToTexImage(BlendCastNode(c.link->fromnode.get()),
-                            depth + 1, BlendCastSocket(c.link->fromsock.get()))) {
+                if (const bNode *hit = followInGroup(c.link)) {
+                    st->pop_back();
                     return hit;
                 }
             }
+            st->pop_back();
             return nullptr;
         }
 
@@ -945,7 +1014,8 @@ struct BlendNodeGraph {
                     }
                 }
             }
-            // Fall through to generic linked-input walk if A/B did not reach a Tex Image.
+            // Do not fall through to Fac / other sockets: Fac is a mask, not the map.
+            return nullptr;
         }
 
         struct Cand {
@@ -1353,8 +1423,8 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
             } else if (BlendSockNameIs(sock, "Normal")) {
                 const bNodeLink *l = g.FindLinkToSocket(sock);
                 if (l) {
-                    const bNode *tex = g.FollowToTexImage(BlendCastNode(l->fromnode.get()), 0,
-                            BlendCastSocket(l->fromsock.get()));
+                    const bNode *src = BlendCastNode(l->fromnode.get());
+                    const bNode *tex = g.FollowToTexImage(src, 0, BlendCastSocket(l->fromsock.get()));
                     if (tex) {
                         BlendFillTexMap(g, tex, flat.mapNormal);
                     }
