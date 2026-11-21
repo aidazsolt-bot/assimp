@@ -326,6 +326,21 @@ void Structure ::Convert<PackedFile>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<ImagePackedFile>(
+        ImagePackedFile &dest,
+        const FileDatabase &db) const {
+
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.packedfile, "*packedfile", db);
+    ReadField<ErrorPolicy_Igno>(dest.view, "view", db);
+    ReadField<ErrorPolicy_Igno>(dest.tile_number, "tile_number", db);
+    ReadFieldArray<ErrorPolicy_Warn>(dest.filepath, "filepath", db);
+
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<Base>(
         Base &dest,
         const FileDatabase &db) const {
@@ -886,7 +901,12 @@ void Structure ::Convert<Image>(
         const FileDatabase &db) const {
 
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
-    ReadFieldArray<ErrorPolicy_Warn>(dest.name, "name", db);
+    // Blender 2.8+: Image.filepath; older DNA used Image.name.
+    if (Get("filepath")) {
+        ReadFieldArray<ErrorPolicy_Warn>(dest.name, "filepath", db);
+    } else {
+        ReadFieldArray<ErrorPolicy_Warn>(dest.name, "name", db);
+    }
     ReadField<ErrorPolicy_Igno>(dest.ok, "ok", db);
     ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
     ReadField<ErrorPolicy_Igno>(dest.source, "source", db);
@@ -901,6 +921,7 @@ void Structure ::Convert<Image>(
     ReadField<ErrorPolicy_Igno>(dest.twsta, "twsta", db);
     ReadField<ErrorPolicy_Igno>(dest.twend, "twend", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.packedfile, "*packedfile", db);
+    ReadField<ErrorPolicy_Igno>(dest.packedfiles, "packedfiles", db);
     ReadField<ErrorPolicy_Igno>(dest.lastupdate, "lastupdate", db);
     ReadField<ErrorPolicy_Igno>(dest.lastused, "lastused", db);
     ReadField<ErrorPolicy_Igno>(dest.animspeed, "animspeed", db);
@@ -968,6 +989,7 @@ void DNA::RegisterConverters() {
     converters["Lamp"] = DNA::FactoryPair(&Structure::Allocate<Lamp>, &Structure::Convert<Lamp>);
     converters["MDeformWeight"] = DNA::FactoryPair(&Structure::Allocate<MDeformWeight>, &Structure::Convert<MDeformWeight>);
     converters["PackedFile"] = DNA::FactoryPair(&Structure::Allocate<PackedFile>, &Structure::Convert<PackedFile>);
+    converters["ImagePackedFile"] = DNA::FactoryPair(&Structure::Allocate<ImagePackedFile>, &Structure::Convert<ImagePackedFile>);
     converters["Base"] = DNA::FactoryPair(&Structure::Allocate<Base>, &Structure::Convert<Base>);
     converters["MTFace"] = DNA::FactoryPair(&Structure::Allocate<MTFace>, &Structure::Convert<MTFace>);
     converters["Material"] = DNA::FactoryPair(&Structure::Allocate<Material>, &Structure::Convert<Material>);

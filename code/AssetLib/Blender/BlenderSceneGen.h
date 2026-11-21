@@ -110,6 +110,12 @@ template <> void Structure :: Convert<PackedFile> (
     ) const
 ;
 
+template <> void Structure :: Convert<ImagePackedFile> (
+    ImagePackedFile& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<Base> (
     Base& dest,
     const FileDatabase& db

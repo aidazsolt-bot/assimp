@@ -459,6 +459,57 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     }
 }
 
+namespace {
+
+/** Prefer legacy Image.packedfile; else first ImagePackedFile in packedfiles. */
+const PackedFile *BlendImageGetPacked(const Image *img) {
+    if (img == nullptr) {
+        return nullptr;
+    }
+    if (img->packedfile) {
+        return img->packedfile.get();
+    }
+    for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
+        const ImagePackedFile *ipf = nullptr;
+        if (cur->dna_type == nullptr || std::strcmp(cur->dna_type, "ImagePackedFile") == 0) {
+            ipf = static_cast<const ImagePackedFile *>(cur.get());
+        }
+        if (ipf == nullptr) {
+            break;
+        }
+        if (ipf->packedfile) {
+            return ipf->packedfile.get();
+        }
+        cur = ipf->next;
+    }
+    return nullptr;
+}
+
+const char *BlendImageDisplayPath(const Image *img) {
+    if (img == nullptr) {
+        return "";
+    }
+    if (img->name[0] != '\0') {
+        return img->name;
+    }
+    for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
+        const ImagePackedFile *ipf = nullptr;
+        if (cur->dna_type == nullptr || std::strcmp(cur->dna_type, "ImagePackedFile") == 0) {
+            ipf = static_cast<const ImagePackedFile *>(cur.get());
+        }
+        if (ipf == nullptr) {
+            break;
+        }
+        if (ipf->filepath[0] != '\0') {
+            return ipf->filepath;
+        }
+        cur = ipf->next;
+    }
+    return img->name;
+}
+
+} // namespace
+
 // ------------------------------------------------------------------------------------------------
 void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const MTex *tex, const Image *img, ConversionData &conv_data) {
     (void)mat;
@@ -466,39 +517,52 @@ void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const M
     (void)conv_data;
     aiString name;
 
+    const PackedFile *packed = BlendImageGetPacked(img);
+    const char *dispPath = BlendImageDisplayPath(img);
+
     // check if the file contents are bundled with the BLEND file
-    if (img->packedfile) {
-        name.data[0] = '*';
-        name.length = 1 + ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1), static_cast<int32_t>(conv_data.textures->size()));
+    if (packed != nullptr && packed->data && packed->size > 0) {
+        unsigned int texIndex = 0;
+        const auto found = conv_data.embeddedImageTexIndex.find(img);
+        if (found != conv_data.embeddedImageTexIndex.end()) {
+            texIndex = found->second;
+        } else {
+            texIndex = static_cast<unsigned int>(conv_data.textures->size());
+            conv_data.embeddedImageTexIndex.emplace(img, texIndex);
+            conv_data.textures->push_back(new aiTexture());
+            aiTexture *curTex = conv_data.textures->back();
 
-        conv_data.textures->push_back(new aiTexture());
-        aiTexture *curTex = conv_data.textures->back();
+            // usually dispPath is the original file name of the embedded textures,
+            // so we can extract the file extension from it.
+            const size_t nlen = strlen(dispPath);
+            const char *s = dispPath + nlen, *e = s;
+            while (s >= dispPath && *s != '.') {
+                --s;
+            }
 
-        // usually 'img->name' will be the original file name of the embedded textures,
-        // so we can extract the file extension from it.
-        const size_t nlen = strlen(img->name);
-        const char *s = img->name + nlen, *e = s;
-        while (s >= img->name && *s != '.') {
-            --s;
+            curTex->achFormatHint[0] = s + 1 > e ? '\0' : (char)::tolower((unsigned char)s[1]);
+            curTex->achFormatHint[1] = s + 2 > e ? '\0' : (char)::tolower((unsigned char)s[2]);
+            curTex->achFormatHint[2] = s + 3 > e ? '\0' : (char)::tolower((unsigned char)s[3]);
+            curTex->achFormatHint[3] = '\0';
+
+            // tex->mHeight = 0;
+            curTex->mWidth = static_cast<unsigned int>(packed->size);
+            uint8_t *ch = new uint8_t[curTex->mWidth];
+
+            conv_data.db.reader->SetCurrentPos(static_cast<size_t>(packed->data->val));
+            conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
+
+            curTex->pcData = reinterpret_cast<aiTexel *>(ch);
+            if (dispPath[0] != '\0') {
+                curTex->mFilename = aiString(dispPath);
+            }
+
+            LogInfo("Reading embedded texture, original file was ", dispPath);
         }
-
-        curTex->achFormatHint[0] = s + 1 > e ? '\0' : (char)::tolower((unsigned char)s[1]);
-        curTex->achFormatHint[1] = s + 2 > e ? '\0' : (char)::tolower((unsigned char)s[2]);
-        curTex->achFormatHint[2] = s + 3 > e ? '\0' : (char)::tolower((unsigned char)s[3]);
-        curTex->achFormatHint[3] = '\0';
-
-        // tex->mHeight = 0;
-        curTex->mWidth = img->packedfile->size;
-        uint8_t *ch = new uint8_t[curTex->mWidth];
-
-        conv_data.db.reader->SetCurrentPos(static_cast<size_t>(img->packedfile->data->val));
-        conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
-
-        curTex->pcData = reinterpret_cast<aiTexel *>(ch);
-
-        LogInfo("Reading embedded texture, original file was ", img->name);
+        name.data[0] = '*';
+        name.length = 1 + ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1), static_cast<int32_t>(texIndex));
     } else {
-        name = aiString(img->name);
+        name = aiString(dispPath);
     }
 
     aiTextureType texture_type = aiTextureType_UNKNOWN;
@@ -534,6 +598,11 @@ void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const M
 
     out->AddProperty(&name, AI_MATKEY_TEXTURE(texture_type,
                                     conv_data.next_texture[texture_type]++));
+    // Typed PBR slot: BI COL maps are also BASE_COLOR for Host Looks.
+    if ((map_type & MTex::MapType_COL) != 0) {
+        out->AddProperty(&name, AI_MATKEY_TEXTURE(aiTextureType_BASE_COLOR,
+                                        conv_data.next_texture[aiTextureType_BASE_COLOR]++));
+    }
 }
 
 // ------------------------------------------------------------------------------------------------

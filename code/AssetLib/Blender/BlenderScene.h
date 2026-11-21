@@ -132,6 +132,21 @@ struct PackedFile final : ElemBase {
     std::shared_ptr<FileOffset> data WARN;
 };
 
+/** DNA ImagePackedFile - Blender 2.77+ stores embeds in Image.packedfiles ListBase. */
+struct ImagePackedFile final : ElemBase {
+    std::shared_ptr<ImagePackedFile> next WARN;
+    std::shared_ptr<PackedFile> packedfile WARN;
+    int view WARN;
+    int tile_number WARN;
+    char filepath[MaxNameLen] WARN;
+
+    ImagePackedFile() {
+        view = 0;
+        tile_number = 0;
+        memset(filepath, 0, sizeof filepath);
+    }
+};
+
 // -------------------------------------------------------------------------------
 struct GroupObject final : ElemBase {
     std::shared_ptr<GroupObject> prev, next FAIL;
@@ -793,7 +808,8 @@ struct Scene final : ElemBase {
 struct Image final : ElemBase {
     ID id FAIL;
 
-    char name[240] WARN;
+    /** Legacy DNA `name` or modern `filepath` (FILE_MAX). */
+    char name[MaxNameLen] WARN;
 
     //struct anim *anim;
 
@@ -807,7 +823,10 @@ struct Image final : ElemBase {
     //unsigned int bindcode;
     //unsigned int *repbind;
 
+    /** Deprecated DNA pointer; often null when packedfiles is used. */
     std::shared_ptr<PackedFile> packedfile;
+    /** Blender 2.77+ / 4.x: ListBase of ImagePackedFile. */
+    ListBase packedfiles WARN;
     //struct PreviewImage * preview;
 
     float lastupdate;
@@ -816,7 +835,16 @@ struct Image final : ElemBase {
 
     short gen_x, gen_y, gen_type;
 
-    Image() = default;
+    Image() {
+        memset(name, 0, sizeof name);
+        ok = flag = source = type = pad = pad1 = 0;
+        lastframe = 0;
+        tpageflag = totbind = xrep = yrep = twsta = twend = 0;
+        lastupdate = 0.f;
+        lastused = 0;
+        animspeed = 0;
+        gen_x = gen_y = gen_type = 0;
+    }
 };
 
 // -------------------------------------------------------------------------------
