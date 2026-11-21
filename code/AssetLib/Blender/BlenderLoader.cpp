@@ -2529,61 +2529,34 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         }
     }
 
-    // TODO should we create the TextureUVMapping map in Convert<Material> to prevent redundant processing?
-
-    // create texture <-> uvname mapping for all materials
-    // key is texture number, value is data *
-    typedef std::map<uint32_t, const MLoopUV *> TextureUVMapping;
-    // key is material number, value is the TextureUVMapping for the material
-    typedef std::map<uint32_t, TextureUVMapping> MaterialTextureUVMappings;
-    MaterialTextureUVMappings matTexUvMappings;
-    const uint32_t maxMat = static_cast<uint32_t>(mesh->mat.size());
-    for (uint32_t m = 0; m < maxMat; ++m) {
-        // get material by index
-        const std::shared_ptr<Material> pMat = mesh->mat[m];
-        // DNA may leave empty mat slots; dereferencing an empty shared_ptr crashes
-        // (seen on large fluid demos such as lava_fluid-viscosity-demo.blend).
-        if (!pMat) {
-            continue;
-        }
-        TextureUVMapping texuv;
-        const uint32_t maxTex = sizeof(pMat->mtex) / sizeof(pMat->mtex[0]);
-        for (uint32_t t = 0; t < maxTex; ++t) {
-            if (pMat->mtex[t] && pMat->mtex[t]->uvname[0]) {
-                // get the CustomData layer for given uvname and correct type
-                const ElemBase *pLoop = getCustomDataLayerData(mesh->ldata, CD_MLOOPUV, pMat->mtex[t]->uvname);
-                if (pLoop) {
-                    texuv.insert(std::make_pair(t, dynamic_cast<const MLoopUV *>(pLoop)));
-                }
-            }
-        }
-        if (texuv.size()) {
-            matTexUvMappings.insert(std::make_pair(m, texuv));
-        }
-    }
+    // Named UV maps: CustomData CD_MLOOPUV / CD_PROP_FLOAT2 + AttributeStorage.
+    std::vector<BlendUVLayer> uvLayers;
+    CollectMeshUVLayers(*mesh, conv_data.db, uvLayers, AI_MAX_NUMBER_OF_TEXTURECOORDS);
 
     // collect texture coordinates, they're stored in a separate per-face buffer
-    if (mesh->mtface || mesh->mloopuv) {
-        if (mesh->totface > static_cast<int>(mesh->mtface.size())) {
+    if (mesh->mtface || !uvLayers.empty() || !mesh->mloopuv.empty()) {
+        if (mesh->totface > 0 && mesh->totface > static_cast<int>(mesh->mtface.size()) && mesh->mtface.size() > 0) {
             ThrowException("Number of UV faces is larger than the corresponding UV face array (#1)");
         }
+        // If only mtface (no loop UVs), allocate a single channel.
+        const unsigned int numUV = !uvLayers.empty() ? static_cast<unsigned int>(uvLayers.size()) : 1u;
         for (std::vector<aiMesh *>::iterator it = temp->begin() + old; it != temp->end(); ++it) {
             ai_assert(0 != (*it)->mNumVertices);
             ai_assert(0 != (*it)->mNumFaces);
-            const auto itMatTexUvMapping = matTexUvMappings.find((*it)->mMaterialIndex);
-            if (itMatTexUvMapping == matTexUvMappings.end()) {
-                // default behaviour like before
-                (*it)->mTextureCoords[0] = new aiVector3D[(*it)->mNumVertices];
-            } else {
-                // create texture coords for every mapped tex
-                for (uint32_t i = 0; i < itMatTexUvMapping->second.size(); ++i) {
-                    (*it)->mTextureCoords[i] = new aiVector3D[(*it)->mNumVertices];
+            for (unsigned int u = 0; u < numUV; ++u) {
+                (*it)->mTextureCoords[u] = new aiVector3D[(*it)->mNumVertices];
+                (*it)->mNumUVComponents[u] = 2;
+                if (u < uvLayers.size() && !uvLayers[u].name.empty()) {
+                    (*it)->SetTextureCoordsName(u, aiString(uvLayers[u].name));
                 }
             }
             (*it)->mNumFaces = (*it)->mNumVertices = 0;
         }
 
         for (int i = 0; i < mesh->totface; ++i) {
+            if (mesh->mtface.empty()) {
+                break;
+            }
             const MTFace *v = &mesh->mtface[i];
 
             aiMesh *const out = temp[mat_num_to_mesh_idx[mesh->mface[i].mat_nr]];
@@ -2601,9 +2574,19 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
             aiMesh *const out = temp[mat_num_to_mesh_idx[v.mat_nr]];
             const aiFace &f = out->mFaces[out->mNumFaces++];
 
-            const auto itMatTexUvMapping = matTexUvMappings.find(v.mat_nr);
-            if (itMatTexUvMapping == matTexUvMappings.end()) {
-                // old behavior
+            if (!uvLayers.empty()) {
+                for (unsigned int u = 0; u < numUV; ++u) {
+                    aiVector3D *vo = &out->mTextureCoords[u][out->mNumVertices];
+                    const BlendUVLayer &layer = uvLayers[u];
+                    for (unsigned int j = 0; j < f.mNumIndices; ++j, ++vo) {
+                        const size_t li = static_cast<size_t>(v.loopstart + static_cast<int>(j));
+                        vo->x = layer.uv[li * 2 + 0];
+                        vo->y = layer.uv[li * 2 + 1];
+                        vo->z = 0.f;
+                    }
+                }
+                out->mNumVertices += f.mNumIndices;
+            } else if (!mesh->mloopuv.empty()) {
                 aiVector3D *vo = &out->mTextureCoords[0][out->mNumVertices];
                 for (unsigned int j = 0; j < f.mNumIndices; ++j, ++vo, ++out->mNumVertices) {
                     const MLoopUV &uv = mesh->mloopuv[v.loopstart + j];
@@ -2611,22 +2594,9 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
                     vo->y = uv.uv[1];
                 }
             } else {
-                // create textureCoords for every mapped tex
-                for (uint32_t m = 0; m < itMatTexUvMapping->second.size(); ++m) {
-                    const MLoopUV *tm = itMatTexUvMapping->second[m];
-                    aiVector3D *vo = &out->mTextureCoords[m][out->mNumVertices];
-                    uint32_t j = 0;
-                    for (; j < f.mNumIndices; ++j, ++vo) {
-                        const MLoopUV &uv = tm[v.loopstart + j];
-                        vo->x = uv.uv[0];
-                        vo->y = uv.uv[1];
-                    }
-                    // only update written mNumVertices in last loop
-                    // TODO why must the numVertices be incremented here?
-                    if (m == itMatTexUvMapping->second.size() - 1) {
-                        out->mNumVertices += j;
-                    }
-                }
+                // mtface-only path already advanced counters in the totface loop;
+                // poly without UV data: keep vertex index alignment with positions.
+                out->mNumVertices += f.mNumIndices;
             }
         }
     }
