@@ -199,6 +199,28 @@ Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_
 Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/` (generic `BodyDynamic0` /
 `BodyKinematic0` names only for local geometry; tests walk JSON structure).
 
+### BLEND `BLEND_physics_*` inventory (Arris)
+
+Soft/cloth/fluid/smoke/particles/rigidbody nodes share:
+
+| Field | Meaning |
+|---|---|
+| `index` | Pre-order DFS under Assimp `<BlenderRoot>` (same order as Host `skinNodes`) |
+| `name` | Blender Object name (`aiNode::mName`) |
+| `modifier` / `type` / `settings` | Presence + DNA settings when available |
+
+Fluid / smoke nodes additionally bind the visual mesh:
+
+| Field | Meaning |
+|---|---|
+| `meshes` | `aiScene::mMeshes` indices on that node |
+| `materialIndex` / `materialName` | Primary (`meshes[0]`) material |
+| `materials[]` | Unique `{index,name}` for all meshes on the node |
+| `settings.fluid_role` | `domain` \| `flow` \| `effector` |
+| `settings.cache` | directory + frame range when Domain DNA present |
+
+Domain meshes stay on `aiNode::mMeshes`; Host may hide opaque domains via sidecar.
+
 ## USD scene timing / units (C0 / S0)
 
 No new C API. Stage metas are emitted on `aiScene::mMetaData`:

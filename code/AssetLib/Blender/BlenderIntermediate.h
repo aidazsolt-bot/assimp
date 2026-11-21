@@ -181,23 +181,22 @@ namespace Blender {
         std::vector<std::string> materialSidecarJson;
 
         // Physics modifier inventory (S5/S6) - filled while walking objects.
-        std::ostringstream physicsSoftNodes;
-        std::ostringstream physicsClothNodes;
-        std::ostringstream physicsFluidNodes;
-        std::ostringstream physicsSmokeNodes;
-        std::ostringstream physicsRigidNodes;
-        std::ostringstream physicsParticleNodes;
-        std::ostringstream physicsJointNodes;
+        // Each entry is a complete JSON object without `index`; ConvertBlendFile
+        // injects hierarchy DFS index (same order as Host skinNodes flatten).
+        struct PhysicsInvNode {
+            std::string name;
+            std::string json;
+        };
+        std::vector<PhysicsInvNode> physicsSoftNodes;
+        std::vector<PhysicsInvNode> physicsClothNodes;
+        std::vector<PhysicsInvNode> physicsFluidNodes;
+        std::vector<PhysicsInvNode> physicsSmokeNodes;
+        std::vector<PhysicsInvNode> physicsRigidNodes;
+        std::vector<PhysicsInvNode> physicsParticleNodes;
+        std::vector<PhysicsInvNode> physicsJointNodes;
         std::ostringstream khrShapes;
         std::ostringstream khrMaterials;
         std::ostringstream khrNodes;
-        bool physicsSoftFirst{ true };
-        bool physicsClothFirst{ true };
-        bool physicsFluidFirst{ true };
-        bool physicsSmokeFirst{ true };
-        bool physicsRigidFirst{ true };
-        bool physicsParticleFirst{ true };
-        bool physicsJointFirst{ true };
         bool khrShapeFirst{ true };
         bool khrMatFirst{ true };
         bool khrNodeFirst{ true };
