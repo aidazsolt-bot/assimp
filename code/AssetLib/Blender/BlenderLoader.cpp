@@ -2395,45 +2395,65 @@ void BlenderImporter::ExtractScene(Scene &out, const FileDatabase &file) {
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root, const std::shared_ptr<Collection>& collection, ConversionData &conv_data) {
-
-    std::deque<Object *> root_objects;
-    // Count number of objects
-    for (std::shared_ptr<CollectionObject> cur = std::static_pointer_cast<CollectionObject>(collection->gobject.first); cur; cur = cur->next) {
+/** Gather Object* from a Collection and nested children (Blender 2.8+ view layer). */
+static void BlendCollectCollectionObjects(const std::shared_ptr<Collection> &collection,
+        std::vector<Object *> &out) {
+    if (!collection) {
+        return;
+    }
+    for (std::shared_ptr<CollectionObject> cur =
+                    std::static_pointer_cast<CollectionObject>(collection->gobject.first);
+            cur;
+            cur = cur->next) {
         if (cur->ob) {
-            root_objects.push_back(cur->ob);
+            out.push_back(cur->ob);
         }
     }
-    std::deque<Collection *> root_children;
-    // Count number of child nodes
-    for (std::shared_ptr<CollectionChild> cur = std::static_pointer_cast<CollectionChild>(collection->children.first); cur; cur = cur->next) {
+    for (std::shared_ptr<CollectionChild> cur =
+                    std::static_pointer_cast<CollectionChild>(collection->children.first);
+            cur;
+            cur = cur->next) {
         if (cur->collection) {
-            root_children.push_back(cur->collection.get());
+            BlendCollectCollectionObjects(cur->collection, out);
         }
     }
-    root->mNumChildren = static_cast<unsigned int>(root_objects.size() + root_children.size());
-    // ValidateDataStructure requires nullptr when empty (not new aiNode*[0]).
+}
+
+// ------------------------------------------------------------------------------------------------
+void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
+        const std::shared_ptr<Collection> &collection, ConversionData &conv_data) {
+    // Kept for API stability: build Object.parent hierarchy from all objects in this
+    // collection tree (same as ConvertBlendFile master_collection path).
+    std::vector<Object *> all;
+    BlendCollectCollectionObjects(collection, all);
+    std::set<const Object *> allSet(all.begin(), all.end());
+    std::deque<const Object *> no_parents;
+    unsigned parented = 0, orphanParent = 0;
+    for (Object *ob : all) {
+        if (ob == nullptr) {
+            continue;
+        }
+        if (ob->parent != nullptr && allSet.count(ob->parent) != 0) {
+            conv_data.objects.insert(ob);
+            ++parented;
+        } else {
+            if (ob->parent != nullptr) {
+                ++orphanParent;
+            }
+            no_parents.push_back(ob);
+        }
+    }
+    std::fprintf(stderr, "BLEND DBG hierarchy all=%zu parented=%u orphanParent=%u roots=%zu\n",
+            all.size(), parented, orphanParent, no_parents.size());
+    root->mNumChildren = static_cast<unsigned int>(no_parents.size());
     if (root->mNumChildren == 0) {
         root->mChildren = nullptr;
         return;
     }
     root->mChildren = new aiNode *[root->mNumChildren]();
-
-    for (unsigned int i = 0; i < static_cast<unsigned int>(root_objects.size()); ++i) {
-        root->mChildren[i] = ConvertNode(in, root_objects[i], conv_data, aiMatrix4x4());
+    for (unsigned int i = 0; i < root->mNumChildren; ++i) {
+        root->mChildren[i] = ConvertNode(in, no_parents[i], conv_data, aiMatrix4x4());
         root->mChildren[i]->mParent = root;
-    }
-
-    // For each subcollection create a new node to represent it
-    unsigned int iterator = static_cast<unsigned int>(root_objects.size());
-    for (std::shared_ptr<CollectionChild> cur = std::static_pointer_cast<CollectionChild>(collection->children.first); cur; cur = cur->next) {
-        if (!cur->collection) {
-            continue;
-        }
-        root->mChildren[iterator] = new aiNode(cur->collection->id.name + 2); // skip over the name prefix 'OB'
-        root->mChildren[iterator]->mParent = root;
-        ParseSubCollection(in, root->mChildren[iterator], cur->collection, conv_data);
-        iterator += 1;
     }
 }
 
@@ -2443,8 +2463,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     ConversionData conv(file);
 
     aiNode *root = out->mRootNode = new aiNode("<BlenderRoot>");
-    // Iterate over all objects directly under master_collection,
-    // If in.master_collection == null, then we're parsing something older.
+    // Blender 2.8+: objects live in master_collection. Hierarchy must follow Object.parent
+    // (glTF/exporter style) - not flat Collection membership.
     if (in.master_collection) {
         ParseSubCollection(in, root, in.master_collection, conv);
     } else {
