@@ -62,8 +62,42 @@ void Structure ::Convert<Object>(
     int temp = 0;
     ReadField<ErrorPolicy_Fail>(temp, "type", db);
     dest.type = static_cast<Assimp::Blender::Object::Type>(temp);
-    ReadFieldArray2<ErrorPolicy_Warn>(dest.obmat, "obmat", db);
-    ReadFieldArray2<ErrorPolicy_Warn>(dest.parentinv, "parentinv", db);
+
+    // World matrix: pre-4.1 `obmat`, briefly renamed `object_to_world` in DNA
+    // (file SDNA often still `obmat` via rename). Gone from DNA since 4.1 (runtime).
+    dest.has_world_matrix = false;
+    if (Get("obmat") != nullptr) {
+        ReadFieldArray2<ErrorPolicy_Warn>(dest.obmat, "obmat", db);
+        dest.has_world_matrix = true;
+    } else if (Get("object_to_world") != nullptr) {
+        ReadFieldArray2<ErrorPolicy_Warn>(dest.obmat, "object_to_world", db);
+        dest.has_world_matrix = true;
+    }
+
+    if (Get("parentinv") != nullptr) {
+        ReadFieldArray2<ErrorPolicy_Warn>(dest.parentinv, "parentinv", db);
+    }
+
+    // Local authored transform for >=4.1 compose fallback (BKE_object_to_mat4).
+    ReadFieldArray<ErrorPolicy_Igno>(dest.loc, "loc", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.dloc, "dloc", db);
+    if (Get("scale") != nullptr) {
+        ReadFieldArray<ErrorPolicy_Igno>(dest.scale, "scale", db);
+    } else if (Get("size") != nullptr) {
+        // Pre-2.60 DNA used `size` for scale.
+        ReadFieldArray<ErrorPolicy_Igno>(dest.scale, "size", db);
+    }
+    ReadFieldArray<ErrorPolicy_Igno>(dest.dscale, "dscale", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.rot, "rot", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.drot, "drot", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.quat, "quat", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.dquat, "dquat", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.rotAxis, "rotAxis", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.drotAxis, "drotAxis", db);
+    ReadField<ErrorPolicy_Igno>(dest.rotAngle, "rotAngle", db);
+    ReadField<ErrorPolicy_Igno>(dest.drotAngle, "drotAngle", db);
+    ReadField<ErrorPolicy_Igno>(dest.rotmode, "rotmode", db);
+
     ReadFieldArray<ErrorPolicy_Warn>(dest.parsubstr, "parsubstr", db);
     {
         std::shared_ptr<Object> parent;
