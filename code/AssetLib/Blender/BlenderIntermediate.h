@@ -201,14 +201,46 @@ namespace Blender {
         std::vector<PhysicsInvNode> physicsRigidNodes;
         std::vector<PhysicsInvNode> physicsParticleNodes;
         std::vector<PhysicsInvNode> physicsJointNodes;
+        std::vector<PhysicsInvNode> physicsBlastNodes;
         std::ostringstream khrShapes;
         std::ostringstream khrMaterials;
-        std::ostringstream khrNodes;
         bool khrShapeFirst{ true };
         bool khrMatFirst{ true };
-        bool khrNodeFirst{ true };
         int khrShapeCount{ 0 };
         int khrMatCount{ 0 };
+
+        /** Pending KHR rigid body node (index / filters / joints filled at emit). */
+        struct KhrBodyPending {
+            std::string name;
+            std::string motionType; // empty => collider-only (compound child)
+            float mass{ 0.f };
+            int shapeIdx{ -1 };
+            int matIdx{ -1 };
+            int colGroups{ 0 };
+        };
+        std::vector<KhrBodyPending> khrBodies;
+
+        /** Pending RigidBodyCon -> KHR physicsJoints + node joint attachment. */
+        struct KhrJointPending {
+            std::string constraintName;
+            std::string ob1Name;
+            std::string ob2Name;
+            short type{ 0 };
+            int flag{ 0 };
+            float breaking_threshold{ 0.f };
+            float limit_lin_x_lower{ 0.f }, limit_lin_x_upper{ 0.f };
+            float limit_lin_y_lower{ 0.f }, limit_lin_y_upper{ 0.f };
+            float limit_lin_z_lower{ 0.f }, limit_lin_z_upper{ 0.f };
+            float limit_ang_x_lower{ 0.f }, limit_ang_x_upper{ 0.f };
+            float limit_ang_y_lower{ 0.f }, limit_ang_y_upper{ 0.f };
+            float limit_ang_z_lower{ 0.f }, limit_ang_z_upper{ 0.f };
+            float motor_lin_target_velocity{ 0.f };
+            float motor_ang_target_velocity{ 0.f };
+            float motor_lin_max_impulse{ 0.f };
+            float motor_ang_max_impulse{ 0.f };
+        };
+        std::vector<KhrJointPending> khrJoints;
+
         std::vector<std::string> skippedCategories;
     };
 #if defined(_MSC_VER) && _MSC_VER < 1900

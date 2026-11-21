@@ -216,8 +216,14 @@ Fluid / smoke nodes additionally bind the visual mesh:
 | `meshes` | `aiScene::mMeshes` indices on that node |
 | `materialIndex` / `materialName` | Primary (`meshes[0]`) material |
 | `materials[]` | Unique `{index,name}` for all meshes on the node |
-| `settings.fluid_role` | `domain` \| `flow` \| `effector` |
+| `settings.fluid_role` | `domain` \| `flow` \| `inflow` \| `outflow` \| `obstacle` |
+| `settings.domain_type` | authored string `gas` \| `liquid` (omit if unread) |
 | `settings.cache` | directory + frame range when Domain DNA present |
+| `settings.flow` | fuel/temperature/density/behavior when Flow DNA present |
+
+`BLEND_physics_blast`: ExplodeModifier inventory (`index`/`settings`); Geometry Nodes fracture is listed under scene `skipped[]` (unevaluated - no invent chunks).
+
+KHR rigid (same bag): `collisionFilters` from `RigidBodyOb.col_groups` (`System_N` bits); `physicsJoints` + node `joint` from `RigidBodyCon` (limits/motors when flagged). Passive children under a parent emit collider-only (Host compounds).
 
 Domain meshes stay on `aiNode::mMeshes`; Host may hide opaque domains via sidecar.
 

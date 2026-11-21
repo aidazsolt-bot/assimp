@@ -746,6 +746,11 @@ struct GenericModifierData final : SharedModifierData {};
 
 /** Subset of blender DNA FluidDomainSettings - cache paths for Host Flow/VDB. */
 struct FluidDomainSettings final : ElemBase {
+    enum DomainType {
+        Domain_Gas = 0,
+        Domain_Liquid = 1
+    };
+
     int type WARN; // eFluidDomain_Type: gas/liquid
     int cache_frame_start WARN;
     int cache_frame_end WARN;
@@ -753,9 +758,33 @@ struct FluidDomainSettings final : ElemBase {
     char cache_directory[1024] WARN;
 
     FluidDomainSettings() :
-            type(0), cache_frame_start(1), cache_frame_end(250), cache_type(0) {
+            type(Domain_Gas), cache_frame_start(1), cache_frame_end(250), cache_type(0) {
         cache_directory[0] = '\0';
     }
+};
+
+/** Subset of DNA FluidFlowSettings (inflow / fire / liquid emitter). */
+struct FluidFlowSettings final : ElemBase {
+    enum FlowType {
+        Flow_Smoke = 1,
+        Flow_Fire = 2,
+        Flow_SmokeFire = 3,
+        Flow_Liquid = 4
+    };
+    enum FlowBehavior {
+        Behavior_Inflow = 0,
+        Behavior_Outflow = 1,
+        Behavior_Geometry = 2
+    };
+
+    float density WARN;
+    float fuel_amount WARN;
+    float temperature WARN;
+    short type WARN;
+    short behavior WARN;
+
+    FluidFlowSettings() :
+            density(1.f), fuel_amount(1.f), temperature(1.f), type(Flow_Smoke), behavior(Behavior_Geometry) {}
 };
 
 struct FluidModifierData final : SharedModifierData {
@@ -766,6 +795,7 @@ struct FluidModifierData final : SharedModifierData {
     };
 
     std::shared_ptr<FluidDomainSettings> domain;
+    std::shared_ptr<FluidFlowSettings> flow;
     float time WARN;
     int type WARN; // FluidModifierType bitflags
 
@@ -828,11 +858,62 @@ struct RigidBodyOb final : ElemBase {
 
 /** Subset of DNA RigidBodyCon (Object.rigidbody_constraint). */
 struct RigidBodyCon final : ElemBase {
+    enum Type {
+        Type_Point = 0,
+        Type_Hinge = 1,
+        Type_Slider = 3,
+        Type_6Dof = 5,
+        Type_6DofSpring = 6,
+        Type_Fixed = 8,
+        Type_Piston = 9,
+        Type_Motor = 11
+    };
+    enum Flag {
+        Flag_Enabled = 1 << 0,
+        Flag_DisableCollisions = 1 << 2,
+        Flag_UseBreaking = 1 << 3,
+        Flag_UseLimitLinX = 1 << 5,
+        Flag_UseLimitLinY = 1 << 6,
+        Flag_UseLimitLinZ = 1 << 7,
+        Flag_UseLimitAngX = 1 << 8,
+        Flag_UseLimitAngY = 1 << 9,
+        Flag_UseLimitAngZ = 1 << 10,
+        Flag_UseMotorLin = 1 << 14,
+        Flag_UseMotorAng = 1 << 15
+    };
+
+    Object *ob1 WARN;
+    Object *ob2 WARN;
     short type WARN;
+    int flag WARN;
     float breaking_threshold WARN;
+    float limit_lin_x_lower WARN;
+    float limit_lin_x_upper WARN;
+    float limit_lin_y_lower WARN;
+    float limit_lin_y_upper WARN;
+    float limit_lin_z_lower WARN;
+    float limit_lin_z_upper WARN;
+    float limit_ang_x_lower WARN;
+    float limit_ang_x_upper WARN;
+    float limit_ang_y_lower WARN;
+    float limit_ang_y_upper WARN;
+    float limit_ang_z_lower WARN;
+    float limit_ang_z_upper WARN;
+    float motor_lin_target_velocity WARN;
+    float motor_ang_target_velocity WARN;
+    float motor_lin_max_impulse WARN;
+    float motor_ang_max_impulse WARN;
 
     RigidBodyCon() :
-            type(0), breaking_threshold(10.f) {}
+            ob1(nullptr), ob2(nullptr), type(Type_Point), flag(Flag_Enabled), breaking_threshold(10.f),
+            limit_lin_x_lower(0.f), limit_lin_x_upper(0.f),
+            limit_lin_y_lower(0.f), limit_lin_y_upper(0.f),
+            limit_lin_z_lower(0.f), limit_lin_z_upper(0.f),
+            limit_ang_x_lower(0.f), limit_ang_x_upper(0.f),
+            limit_ang_y_lower(0.f), limit_ang_y_upper(0.f),
+            limit_ang_z_lower(0.f), limit_ang_z_upper(0.f),
+            motor_lin_target_velocity(0.f), motor_ang_target_velocity(0.f),
+            motor_lin_max_impulse(1.f), motor_ang_max_impulse(1.f) {}
 };
 
 /** Subset of DNA ClothSimSettings (*ClothModifierData.sim_parms). */

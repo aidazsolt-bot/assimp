@@ -98,6 +98,12 @@ template <> void Structure :: Convert<FluidDomainSettings> (
     ) const
 ;
 
+template <> void Structure :: Convert<FluidFlowSettings> (
+    FluidFlowSettings& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<FluidModifierData> (
     FluidModifierData& dest,
     const FileDatabase& db
