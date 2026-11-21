@@ -221,6 +221,15 @@ Fluid / smoke nodes additionally bind the visual mesh:
 
 Domain meshes stay on `aiNode::mMeshes`; Host may hide opaque domains via sidecar.
 
+### BLEND C6 packed Images (Arris)
+
+Blender 2.77+ / 4.x store embeds in `Image.packedfiles` (`ImagePackedFile`), not only
+deprecated `Image.packedfile`. Assimp reads both and emits `aiTexture` (`*N`) +
+`aiTextureType_BASE_COLOR` / `DIFFUSE` when C6 finds Image Texture links (incl.
+`ShaderNodeMix` chains) or falls back to packed paint maps (`layer_*_base.png`)
+matched by material name (e.g. splash House of Chores). Grease Pencil strokes are
+out of scope.
+
 ## USD scene timing / units (C0 / S0)
 
 No new C API. Stage metas are emitted on `aiScene::mMetaData`:
