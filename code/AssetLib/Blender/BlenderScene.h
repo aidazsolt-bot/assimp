@@ -410,6 +410,26 @@ struct Material final : ElemBase {
     char use_nodes;
     float metallic;
     std::shared_ptr<struct bNodeTree> nodetree;
+
+    /** Grease Pencil stroke/fill textures (DNA Material.gp_style). */
+    std::shared_ptr<struct MaterialGPencilStyle> gp_style;
+};
+
+/** Subset of DNA MaterialGPencilStyle - fill/stroke Image pointers only. */
+struct MaterialGPencilStyle final : ElemBase {
+    std::shared_ptr<Image> sima; // stroke texture
+    std::shared_ptr<Image> ima; // fill texture
+};
+
+/** DNA GreasePencil (GP3 / OB_GREASE_PENCIL) - materials + packed GP textures. */
+struct GreasePencil final : ElemBase {
+    ID id FAIL;
+    /** DNA Material **material_array (same double-pointer pattern as Mesh::mat). */
+    vector<std::shared_ptr<Material>> material_array WARN;
+    short material_array_size WARN;
+
+    GreasePencil() :
+            material_array_size(0) {}
 };
 
 // -------------------------------------------------------------------------------
@@ -923,6 +943,14 @@ struct Object final : ElemBase {
         ,
         Type_WAVE = 21,
         Type_LATTICE = 22
+
+        // DNA_object_types.h / bpy.types.Object.type:
+        // legacy Grease Pencil: OB_GPENCIL_LEGACY, bpy 'GPENCIL'
+        ,
+        Type_GPENCIL_LEGACY = 26
+        // Grease Pencil 3 (Blender 4.3+): OB_GREASE_PENCIL, bpy 'GREASEPENCIL'
+        ,
+        Type_GREASE_PENCIL = 30
     };
 
     Type type FAIL;

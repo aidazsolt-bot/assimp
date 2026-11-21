@@ -958,20 +958,35 @@ struct BlendNodeGraph {
         }
 
         // MixRGB / ShaderNodeMix: Color1 is ramp_blend accumulator; Color2 is blend-in (Fac).
+        // ShaderNodeMix (type 713) exposes parallel A/B/Factor sockets per datatype
+        // (Float/Vector/Color/Rotation). Prefer Color (and non-Vector Factor); never keep
+        // the last homonym (A_Rotation) or Fac walks miss Image Texture links.
         if (BlendNodeIsMixColor(*n)) {
             const bNodeSocket *sockA = nullptr;
             const bNodeSocket *sockB = nullptr;
             const bNodeSocket *sockFac = nullptr;
+            auto mixIdentOk = [](const bNodeSocket &sock, const char *colorTag) -> bool {
+                if (sock.identifier[0] == '\0') {
+                    return true; // legacy MixRGB: identifier often empty
+                }
+                if (std::strcmp(sock.identifier, sock.name) == 0) {
+                    return true;
+                }
+                return std::strstr(sock.identifier, colorTag) != nullptr;
+            };
             for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
                 const bNodeSocket *sock = BlendCastSocket(cur.get());
                 if (sock == nullptr) {
                     break;
                 }
-                if (BlendSockNameIsAny(*sock, { "A", "Color1", "ColorA" })) {
+                if (BlendSockNameIsAny(*sock, { "Color1", "ColorA" }) ||
+                        (BlendSockNameIs(*sock, "A") && mixIdentOk(*sock, "Color"))) {
                     sockA = sock;
-                } else if (BlendSockNameIsAny(*sock, { "B", "Color2", "ColorB" })) {
+                } else if (BlendSockNameIsAny(*sock, { "Color2", "ColorB" }) ||
+                           (BlendSockNameIs(*sock, "B") && mixIdentOk(*sock, "Color"))) {
                     sockB = sock;
-                } else if (BlendSockNameIsAny(*sock, { "Fac", "Factor" })) {
+                } else if (BlendSockNameIsAny(*sock, { "Fac", "Factor" }) &&
+                           (sock->identifier[0] == '\0' || std::strstr(sock->identifier, "Vector") == nullptr)) {
                     sockFac = sock;
                 }
                 cur = sock->next;
@@ -1515,6 +1530,10 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
                     flat.baseColor[3] = tmp[3];
                     flat.hasBaseColor = true;
                     flat.hasEmissionColor = true;
+                    // Splash / toon Emission surfaces: same Image is the visible albedo.
+                    if (flat.mapEmission) {
+                        flat.mapBaseColor = flat.mapEmission;
+                    }
                 }
             } else if (BlendSockNameIs(sock, "Strength")) {
                 if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
@@ -3112,6 +3131,21 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
             ResolveTexture(mout, mat.get(), mat->mtex[i].get(), conv_data);
         }
 
+        // Grease Pencil materials: DNA Material.gp_style -> fill/stroke Images (often packed).
+        if (mat->gp_style) {
+            const unsigned matIndex = static_cast<unsigned>(matRawIndex);
+            BlendTexMap gpMap;
+            if (mat->gp_style->ima) {
+                gpMap.img = mat->gp_style->ima.get();
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_BASE_COLOR, conv_data, matIndex);
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_DIFFUSE, conv_data, matIndex);
+            }
+            if (mat->gp_style->sima) {
+                gpMap.img = mat->gp_style->sima.get();
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_DIFFUSE, conv_data, matIndex);
+            }
+        }
+
         AddBlendParams(mout, mat.get());
         conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat));
         if (mat->nodetree && !flat.ok) {
@@ -3847,6 +3881,27 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
                 conv_data.camera_objects.push_back(obj);
             }
         } break;
+
+            // Grease Pencil 3 (bpy 'GREASEPENCIL' / OB_GREASE_PENCIL): no stroke mesh yet,
+            // but register DNA materials so packed fill/stroke / node images embed+assign.
+        case Object ::Type_GREASE_PENCIL: {
+            CheckActualType(obj->data.get(), "GreasePencil");
+            const GreasePencil *gp = static_cast<const GreasePencil *>(obj->data.get());
+            for (const std::shared_ptr<Material> &mat : gp->material_array) {
+                if (!mat) {
+                    continue;
+                }
+                const auto has = std::find(conv_data.materials_raw.begin(), conv_data.materials_raw.end(), mat);
+                if (has == conv_data.materials_raw.end()) {
+                    conv_data.materials_raw.push_back(mat);
+                }
+            }
+        } break;
+
+            // Legacy GP (bpy 'GPENCIL' / OB_GPENCIL_LEGACY): data is bGPdata (unsupported).
+        case Object ::Type_GPENCIL_LEGACY:
+            NotSupportedObjectType(obj, "GPencil");
+            break;
 
             // unsupported object types / log, but do not break
         case Object ::Type_CURVE:

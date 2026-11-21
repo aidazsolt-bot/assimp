@@ -194,6 +194,18 @@ template <> void Structure :: Convert<Material> (
     ) const
 ;
 
+template <> void Structure :: Convert<MaterialGPencilStyle> (
+    MaterialGPencilStyle& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<GreasePencil> (
+    GreasePencil& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<bNodeStack> (
     bNodeStack& dest,
     const FileDatabase& db
