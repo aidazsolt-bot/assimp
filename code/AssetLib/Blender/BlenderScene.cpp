@@ -726,7 +726,7 @@ void Structure ::Convert<bNode>(
         dest.type = typeLegacy;
     }
     ReadFieldPtr<ErrorPolicy_Igno>(dest.id, "*id", db);
-    // void* storage - runtime type from DATA block (e.g. NodeShaderUVMap).
+    // DNA *storage: runtime type from DATA block (e.g. NodeShaderUVMap).
     ReadFieldPtr<ErrorPolicy_Igno>(dest.storage, "*storage", db);
     db.reader->IncPtr(size);
 }

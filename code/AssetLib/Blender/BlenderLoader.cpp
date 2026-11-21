@@ -3581,7 +3581,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
         // the whole input; ZSTD_getFrameContentSize only describes the first frame.
         LogDebug("Found no BLENDER magic word but a Zstandard header, might be a compressed file");
         std::shared_ptr<StreamReaderLE> reader = std::shared_ptr<StreamReaderLE>(new StreamReaderLE(stream));
-        const void *src = reader->GetPtr();
+        const int8_t *src = reader->GetPtr();
         const size_t srcSize = reader->GetRemainingSize();
         ZSTD_DCtx *dctx = ZSTD_createDCtx();
         if (dctx == nullptr) {
