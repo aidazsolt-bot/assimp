@@ -119,6 +119,16 @@ enum BlendShaderNodeType : short {
     kSH_NODE_VALUE = 102
 };
 
+/** Image map slot + optional UV layer name from ShaderNodeUVMap / MTex.uvname. */
+struct BlendTexMap {
+    const Assimp::Blender::Image *img{ nullptr };
+    char uvname[64]{};
+
+    explicit operator bool() const {
+        return img != nullptr;
+    }
+};
+
 struct BlendShaderFlat {
     bool ok{ false };
     bool mixedGraph{ false };
@@ -145,11 +155,11 @@ struct BlendShaderFlat {
     float emissionStrength{ 0.f };
     float coatWeight{ 0.f };
     float coatRoughness{ 0.f };
-    const Assimp::Blender::Image *mapBaseColor{ nullptr };
-    const Assimp::Blender::Image *mapRoughness{ nullptr };
-    const Assimp::Blender::Image *mapNormal{ nullptr };
-    const Assimp::Blender::Image *mapEmission{ nullptr };
-    const Assimp::Blender::Image *mapMetallic{ nullptr };
+    BlendTexMap mapBaseColor;
+    BlendTexMap mapRoughness;
+    BlendTexMap mapNormal;
+    BlendTexMap mapEmission;
+    BlendTexMap mapMetallic;
 
     bool HasAnyFactor() const {
         return hasBaseColor || hasMetallic || hasRoughness || hasIor || hasTransmission ||
@@ -279,6 +289,22 @@ bool BlendNodeIsTexImage(const Assimp::Blender::bNode &n) {
     return n.type == kSH_NODE_TEX_IMAGE;
 }
 
+bool BlendNodeIsUVMap(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeUVMap") == 0) {
+        return true;
+    }
+    // SH_NODE_UVMAP historically 311 in DNA_node_types.h
+    return n.type == 311;
+}
+
+bool BlendNodeIsTexCoord(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexCoord") == 0) {
+        return true;
+    }
+    // SH_NODE_TEX_COORD historically 311+; idname is authoritative on 2.8+.
+    return false;
+}
+
 bool BlendNodeIsMixShader(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeMixShader") == 0) {
         return true;
@@ -389,6 +415,74 @@ const Assimp::Blender::Image *BlendNodeImage(const Assimp::Blender::bNode &n) {
         return nullptr;
     }
     return static_cast<const Image *>(n.id.get());
+}
+
+void BlendCopyUvName(char out[64], const char *src) {
+    if (out == nullptr) {
+        return;
+    }
+    out[0] = '\0';
+    if (src == nullptr || src[0] == '\0') {
+        return;
+    }
+    std::strncpy(out, src, 63);
+    out[63] = '\0';
+}
+
+/** Match UV layer name to aiMesh texture-coord index (prefer meshes using matIndex). */
+int BlendFindUvIndex(const Assimp::Blender::ConversionData &conv_data, unsigned matIndex, const char *uvname) {
+    if (uvname == nullptr || uvname[0] == '\0') {
+        return 0;
+    }
+    auto matchMesh = [&](const aiMesh *mesh) -> int {
+        if (mesh == nullptr) {
+            return -1;
+        }
+        for (unsigned u = 0; u < AI_MAX_NUMBER_OF_TEXTURECOORDS; ++u) {
+            if (!mesh->HasTextureCoords(u)) {
+                break;
+            }
+            const aiString *n = mesh->GetTextureCoordsName(u);
+            if (n != nullptr && n->length > 0 && std::strcmp(n->C_Str(), uvname) == 0) {
+                return static_cast<int>(u);
+            }
+        }
+        return -1;
+    };
+    for (const aiMesh *mesh : conv_data.meshes.get()) {
+        if (mesh && mesh->mMaterialIndex == matIndex) {
+            const int hit = matchMesh(mesh);
+            if (hit >= 0) {
+                return hit;
+            }
+        }
+    }
+    for (const aiMesh *mesh : conv_data.meshes.get()) {
+        const int hit = matchMesh(mesh);
+        if (hit >= 0) {
+            return hit;
+        }
+    }
+    return 0;
+}
+
+unsigned BlendMaterialRawIndex(const Assimp::Blender::ConversionData &conv_data, const Assimp::Blender::Material *mat) {
+    if (mat == nullptr) {
+        return 0;
+    }
+    for (size_t i = 0; i < conv_data.materials_raw.size(); ++i) {
+        if (conv_data.materials_raw[i].get() == mat) {
+            return static_cast<unsigned>(i);
+        }
+    }
+    return 0;
+}
+
+void BlendEmitUvWsrc(aiMaterial *mout, aiTextureType type, unsigned slot, int uvIndex) {
+    if (mout == nullptr) {
+        return;
+    }
+    mout->AddProperty(&uvIndex, 1, AI_MATKEY_UVWSRC(type, slot));
 }
 
 /** Prefer legacy Image.packedfile; else first ImagePackedFile in packedfiles. */
@@ -696,10 +790,89 @@ BlendNodeGraph BlendBuildGraph(const Assimp::Blender::bNodeTree &tree) {
     return g;
 }
 
+/** Follow Image Texture Vector input to ShaderNodeUVMap.uv_map (empty = active/TexCoord). */
+void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::bNode &texNode, char uvname[64]) {
+    using namespace Assimp::Blender;
+    BlendCopyUvName(uvname, nullptr);
+    if (!BlendNodeIsTexImage(texNode)) {
+        return;
+    }
+    for (std::shared_ptr<ElemBase> cur = texNode.inputs.first; cur;) {
+        const bNodeSocket *sock = BlendCastSocket(cur.get());
+        if (sock == nullptr) {
+            break;
+        }
+        if (BlendSockNameIsAny(*sock, { "Vector", "Vector2" })) {
+            const bNodeLink *l = g.FindLinkToSocket(*sock);
+            if (l == nullptr) {
+                return;
+            }
+            const bNode *src = BlendCastNode(l->fromnode.get());
+            for (int depth = 0; src != nullptr && depth < 12; ++depth) {
+                if (BlendNodeIsUVMap(*src)) {
+                    if (src->storage && src->storage->dna_type != nullptr &&
+                            std::strcmp(src->storage->dna_type, "NodeShaderUVMap") == 0) {
+                        const auto *st = static_cast<const NodeShaderUVMap *>(src->storage.get());
+                        BlendCopyUvName(uvname, st->uv_map);
+                    }
+                    return;
+                }
+                if (BlendNodeIsTexCoord(*src)) {
+                    // Active render UV -> Assimp set 0 (CollectMeshUVLayers may promote active_rnd).
+                    return;
+                }
+                // Passthrough vector manipulators: Reroute / Mapping (keep following Vector/input).
+                const bool passthroughVec =
+                        (src->idname[0] != '\0' &&
+                                (std::strcmp(src->idname, "NodeReroute") == 0 ||
+                                        std::strcmp(src->idname, "ShaderNodeMapping") == 0 ||
+                                        std::strcmp(src->idname, "ShaderNodeVectorMath") == 0 ||
+                                        std::strcmp(src->idname, "ShaderNodeVectorTransform") == 0));
+                if (!passthroughVec) {
+                    break;
+                }
+                const bNodeLink *rl = nullptr;
+                for (std::shared_ptr<ElemBase> ic = src->inputs.first; ic;) {
+                    const bNodeSocket *is = BlendCastSocket(ic.get());
+                    if (is == nullptr) {
+                        break;
+                    }
+                    // Mapping: follow "Vector"; Reroute: first linked input.
+                    if (std::strcmp(src->idname, "ShaderNodeMapping") == 0 &&
+                            !BlendSockNameIsAny(*is, { "Vector", "Vector2" })) {
+                        ic = is->next;
+                        continue;
+                    }
+                    rl = g.FindLinkToSocket(*is);
+                    if (rl) {
+                        break;
+                    }
+                    ic = is->next;
+                }
+                src = rl ? BlendCastNode(rl->fromnode.get()) : nullptr;
+            }
+            return;
+        }
+        cur = sock->next;
+    }
+}
+
+void BlendFillTexMap(const BlendNodeGraph &g, const Assimp::Blender::bNode *texNode, BlendTexMap &out) {
+    out.img = nullptr;
+    BlendCopyUvName(out.uvname, nullptr);
+    if (texNode == nullptr) {
+        return;
+    }
+    out.img = BlendNodeImage(*texNode);
+    if (out.img) {
+        BlendResolveTexImageUvName(g, *texNode, out.uvname);
+    }
+}
+
 // Returns true if a numeric/color factor was resolved (typed default_value or linked constant).
 // Texture maps alone do not count as a factor (mapOut may still be set).
 bool BlendReadLinkedOrDefaultFloat(const BlendNodeGraph &g, const Assimp::Blender::bNodeSocket &sock,
-        float &out, const Assimp::Blender::Image **mapOut) {
+        float &out, BlendTexMap *mapOut) {
     using namespace Assimp::Blender;
     bool got = BlendReadSocketFloat(sock, out);
     const bNodeLink *l = g.FindLinkToSocket(sock);
@@ -709,7 +882,7 @@ bool BlendReadLinkedOrDefaultFloat(const BlendNodeGraph &g, const Assimp::Blende
     const bNode *src = BlendCastNode(l->fromnode.get());
     const bNode *tex = g.FollowToTexImage(src);
     if (tex && mapOut) {
-        *mapOut = BlendNodeImage(*tex);
+        BlendFillTexMap(g, tex, *mapOut);
     }
     float linked = out;
     if (g.ReadConstantFloat(src, linked)) {
@@ -720,7 +893,7 @@ bool BlendReadLinkedOrDefaultFloat(const BlendNodeGraph &g, const Assimp::Blende
 }
 
 bool BlendReadLinkedOrDefaultColor(const BlendNodeGraph &g, const Assimp::Blender::bNodeSocket &sock,
-        float out[4], const Assimp::Blender::Image **mapOut) {
+        float out[4], BlendTexMap *mapOut) {
     using namespace Assimp::Blender;
     bool got = BlendReadSocketColor(sock, out);
     const bNodeLink *l = g.FindLinkToSocket(sock);
@@ -730,7 +903,7 @@ bool BlendReadLinkedOrDefaultColor(const BlendNodeGraph &g, const Assimp::Blende
     const bNode *src = BlendCastNode(l->fromnode.get());
     const bNode *tex = g.FollowToTexImage(src);
     if (tex && mapOut) {
-        *mapOut = BlendNodeImage(*tex);
+        BlendFillTexMap(g, tex, *mapOut);
     }
     float linked[4] = { out[0], out[1], out[2], out[3] };
     if (g.ReadConstantColor(src, linked)) {
@@ -816,7 +989,7 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
                 if (l) {
                     const bNode *tex = g.FollowToTexImage(BlendCastNode(l->fromnode.get()));
                     if (tex) {
-                        flat.mapNormal = BlendNodeImage(*tex);
+                        BlendFillTexMap(g, tex, flat.mapNormal);
                     }
                 }
             }
@@ -946,7 +1119,7 @@ static void BlendCollectPackedImages(const Assimp::Blender::bNodeTree &tree,
  *  paint map (splash layer_*_base.png) by material name; else first *_base / first packed. */
 static void BlendFallbackPackedBaseColor(const Assimp::Blender::Material &mat, BlendShaderFlat &flat) {
     using namespace Assimp::Blender;
-    if (flat.mapBaseColor != nullptr || !mat.nodetree) {
+    if (flat.mapBaseColor || !mat.nodetree) {
         return;
     }
     std::vector<const Image *> imgs;
@@ -985,7 +1158,8 @@ static void BlendFallbackPackedBaseColor(const Assimp::Blender::Material &mat, B
         }
     }
     if (best != nullptr) {
-        flat.mapBaseColor = best;
+        flat.mapBaseColor.img = best;
+        BlendCopyUvName(flat.mapBaseColor.uvname, nullptr);
         flat.ok = true;
     }
 }
@@ -1064,12 +1238,12 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
                 continue;
             }
             BlendShaderFlat innerFlat = BlendFlattenFromNode(gg, *inner);
-            if (!flat.ok || (innerFlat.mapBaseColor != nullptr && flat.mapBaseColor == nullptr) ||
+            if (!flat.ok || (innerFlat.mapBaseColor && !flat.mapBaseColor) ||
                     (innerFlat.HasAnyFactor() && !flat.HasAnyFactor())) {
                 flat = innerFlat;
                 flat.mixedGraph = true;
             }
-            if (flat.mapBaseColor != nullptr) {
+            if (flat.mapBaseColor) {
                 break;
             }
         }
@@ -1080,12 +1254,13 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
     return flat;
 }
 
-void BlendAttachNodeImage(aiMaterial *mout, const Assimp::Blender::Image *img, aiTextureType type,
-        Assimp::Blender::ConversionData &conv_data) {
+void BlendAttachNodeImage(aiMaterial *mout, const BlendTexMap &map, aiTextureType type,
+        Assimp::Blender::ConversionData &conv_data, unsigned matIndex) {
     using namespace Assimp::Blender;
-    if (mout == nullptr || img == nullptr) {
+    if (mout == nullptr || map.img == nullptr) {
         return;
     }
+    const Image *img = map.img;
     aiString name;
     const PackedFile *packed = BlendImageGetPacked(img);
     const char *dispPath = BlendImageDisplayPath(img);
@@ -1123,11 +1298,14 @@ void BlendAttachNodeImage(aiMaterial *mout, const Assimp::Blender::Image *img, a
     } else {
         name = aiString(dispPath);
     }
-    mout->AddProperty(&name, AI_MATKEY_TEXTURE(type, conv_data.next_texture[type]++));
+    const unsigned slot = conv_data.next_texture[type]++;
+    mout->AddProperty(&name, AI_MATKEY_TEXTURE(type, slot));
+    const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
+    BlendEmitUvWsrc(mout, type, slot, uvIndex);
 }
 
 void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
-        Assimp::Blender::ConversionData &conv_data) {
+        Assimp::Blender::ConversionData &conv_data, unsigned matIndex) {
     if (mout == nullptr || !flat.ok) {
         return;
     }
@@ -1152,7 +1330,7 @@ void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
     if (flat.hasAlpha) {
         mout->AddProperty(&flat.alpha, 1, AI_MATKEY_OPACITY);
     }
-    const bool hasEmit = flat.mapEmission != nullptr ||
+    const bool hasEmit = flat.mapEmission ||
                          (flat.hasEmissionColor &&
                                  (flat.emissionColor[0] + flat.emissionColor[1] + flat.emissionColor[2]) > 1e-4f &&
                                  (!flat.hasEmissionStrength || flat.emissionStrength > 0.f));
@@ -1161,14 +1339,14 @@ void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
         aiColor3D emit(flat.emissionColor[0] * s, flat.emissionColor[1] * s, flat.emissionColor[2] * s);
         mout->AddProperty(&emit, 1, AI_MATKEY_COLOR_EMISSIVE);
     }
-    BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_BASE_COLOR, conv_data);
+    BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_BASE_COLOR, conv_data, matIndex);
     if (flat.mapBaseColor) {
-        BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_DIFFUSE, conv_data);
+        BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_DIFFUSE, conv_data, matIndex);
     }
-    BlendAttachNodeImage(mout, flat.mapRoughness, aiTextureType_DIFFUSE_ROUGHNESS, conv_data);
-    BlendAttachNodeImage(mout, flat.mapMetallic, aiTextureType_METALNESS, conv_data);
-    BlendAttachNodeImage(mout, flat.mapNormal, aiTextureType_NORMALS, conv_data);
-    BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data);
+    BlendAttachNodeImage(mout, flat.mapRoughness, aiTextureType_DIFFUSE_ROUGHNESS, conv_data, matIndex);
+    BlendAttachNodeImage(mout, flat.mapMetallic, aiTextureType_METALNESS, conv_data, matIndex);
+    BlendAttachNodeImage(mout, flat.mapNormal, aiTextureType_NORMALS, conv_data, matIndex);
+    BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data, matIndex);
 }
 
 static std::string BlendMapJson(const Assimp::Blender::Image *img) {
@@ -2186,9 +2364,6 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
 
 // ------------------------------------------------------------------------------------------------
 void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const MTex *tex, const Image *img, ConversionData &conv_data) {
-    (void)mat;
-    (void)tex;
-    (void)conv_data;
     aiString name;
 
     const PackedFile *packed = BlendImageGetPacked(img);
@@ -2270,12 +2445,16 @@ void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const M
         texture_type = aiTextureType_DISPLACEMENT;
     //else if (map_type & MTex::MapType_WARP)
 
-    out->AddProperty(&name, AI_MATKEY_TEXTURE(texture_type,
-                                    conv_data.next_texture[texture_type]++));
+    const unsigned matIndex = BlendMaterialRawIndex(conv_data, mat);
+    const int uvIndex = BlendFindUvIndex(conv_data, matIndex, tex->uvname);
+    const unsigned slot = conv_data.next_texture[texture_type]++;
+    out->AddProperty(&name, AI_MATKEY_TEXTURE(texture_type, slot));
+    BlendEmitUvWsrc(out, texture_type, slot, uvIndex);
     // Typed PBR slot: BI COL maps are also BASE_COLOR for Host Looks.
     if ((map_type & MTex::MapType_COL) != 0) {
-        out->AddProperty(&name, AI_MATKEY_TEXTURE(aiTextureType_BASE_COLOR,
-                                        conv_data.next_texture[aiTextureType_BASE_COLOR]++));
+        const unsigned baseSlot = conv_data.next_texture[aiTextureType_BASE_COLOR]++;
+        out->AddProperty(&name, AI_MATKEY_TEXTURE(aiTextureType_BASE_COLOR, baseSlot));
+        BlendEmitUvWsrc(out, aiTextureType_BASE_COLOR, baseSlot, uvIndex);
     }
 }
 
@@ -2464,7 +2643,8 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
 
     BuildDefaultMaterial(conv_data);
 
-    for (const std::shared_ptr<Material> &mat : conv_data.materials_raw) {
+    for (size_t matRawIndex = 0; matRawIndex < conv_data.materials_raw.size(); ++matRawIndex) {
+        const std::shared_ptr<Material> &mat = conv_data.materials_raw[matRawIndex];
         // Sparse mesh->mat slots can push empty shared_ptrs; skip them.
         if (!mat) {
             continue;
@@ -2494,7 +2674,7 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
         // C6: flatten active Principled/Glass/Glossy/Diffuse/Emission + follow Image Tex links.
         const BlendShaderFlat flat = BlendFlattenMaterialNodes(*mat);
         if (flat.ok) {
-            BlendApplyFlatToMaterial(mout, flat, conv_data);
+            BlendApplyFlatToMaterial(mout, flat, conv_data, static_cast<unsigned>(matRawIndex));
         } else {
             // basic material colors (Blender Internal / no flattenable nodes)
             aiColor3D col(mat->r, mat->g, mat->b);

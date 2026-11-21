@@ -426,6 +426,15 @@ struct bNodeSocketValueRGBA final : ElemBase {
     float value[4];
 };
 
+/** Subset of DNA NodeShaderUVMap (bNode.storage for ShaderNodeUVMap). */
+struct NodeShaderUVMap final : ElemBase {
+    char uv_map[64];
+
+    NodeShaderUVMap() {
+        memset(uv_map, 0, sizeof uv_map);
+    }
+};
+
 /** Subset of DNA bNodeSocket. */
 struct bNodeSocket final : ElemBase {
     std::shared_ptr<ElemBase> next WARN;
@@ -456,6 +465,7 @@ struct bNode final : ElemBase {
     char idname[64];
     short type; // DNA "type" / "type_legacy"
     std::shared_ptr<ElemBase> id; // e.g. Image* for ShaderNodeTexImage
+    std::shared_ptr<ElemBase> storage; // e.g. NodeShaderUVMap for ShaderNodeUVMap
 
     bNode() {
         memset(name, 0, sizeof name);
