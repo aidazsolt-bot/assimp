@@ -912,6 +912,10 @@ unsigned CollectMeshUVLayers(const Mesh &mesh, const FileDatabase &db, std::vect
     const size_t expect = static_cast<size_t>(mesh.totloop) * 2;
 
     // 1) CustomData corner layers: CD_MLOOPUV (legacy) + CD_PROP_FLOAT2 (modern UV maps)
+    // Track first UV-type group's active_rnd so render-active map can be set 0.
+    std::vector<size_t> cdUvFoundIdx;
+    int cdUvActiveRnd = -1;
+    int cdUvTypeGroup = -1;
     for (const auto &layerPtr : mesh.ldata.layers) {
         if (!layerPtr) {
             continue;
@@ -933,7 +937,14 @@ unsigned CollectMeshUVLayers(const Mesh &mesh, const FileDatabase &db, std::vect
         } else {
             continue;
         }
-        PushUvLayer(found, lname, std::move(uv), expect);
+        if (cdUvTypeGroup < 0) {
+            cdUvTypeGroup = layer.type;
+            cdUvActiveRnd = layer.active_rnd;
+        }
+        const size_t before = found.size();
+        if (PushUvLayer(found, lname, std::move(uv), expect) && layer.type == cdUvTypeGroup) {
+            cdUvFoundIdx.push_back(before);
+        }
     }
 
     // 2) AttributeStorage corner float2 (Blender ~4.5+ / 5.x)
@@ -985,6 +996,16 @@ unsigned CollectMeshUVLayers(const Mesh &mesh, const FileDatabase &db, std::vect
             uv[static_cast<size_t>(i) * 2 + 1] = mesh.mloopuv[static_cast<size_t>(i)].uv[1];
         }
         PushUvLayer(found, "UVMap", std::move(uv), expect);
+    }
+
+    // Promote CustomData render-active UV (active_rnd) to Assimp set 0 when not already first.
+    if (cdUvActiveRnd >= 0 && static_cast<size_t>(cdUvActiveRnd) < cdUvFoundIdx.size()) {
+        const size_t want = cdUvFoundIdx[static_cast<size_t>(cdUvActiveRnd)];
+        if (want > 0 && want < found.size()) {
+            BlendUVLayer active = std::move(found[want]);
+            found.erase(found.begin() + static_cast<std::vector<BlendUVLayer>::difference_type>(want));
+            found.insert(found.begin(), std::move(active));
+        }
     }
 
     const char *meshName = (mesh.id.name[0] && mesh.id.name[1]) ? mesh.id.name + 2 : mesh.id.name;

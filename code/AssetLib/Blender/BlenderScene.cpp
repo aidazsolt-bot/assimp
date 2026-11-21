@@ -547,6 +547,15 @@ void Structure ::Convert<bNodeSocketValueRGBA>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<NodeShaderUVMap>(
+        NodeShaderUVMap &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.uv_map, "uv_map", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<bNodeSocket>(
         bNodeSocket &dest,
         const FileDatabase &db) const {
@@ -578,6 +587,8 @@ void Structure ::Convert<bNode>(
         dest.type = typeLegacy;
     }
     ReadFieldPtr<ErrorPolicy_Igno>(dest.id, "*id", db);
+    // void* storage - runtime type from DATA block (e.g. NodeShaderUVMap).
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.storage, "*storage", db);
     db.reader->IncPtr(size);
 }
 
@@ -1090,6 +1101,7 @@ void DNA::RegisterConverters() {
     converters["bNodeStack"] = DNA::FactoryPair(&Structure::Allocate<bNodeStack>, &Structure::Convert<bNodeStack>);
     converters["bNodeSocketValueFloat"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueFloat>, &Structure::Convert<bNodeSocketValueFloat>);
     converters["bNodeSocketValueRGBA"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueRGBA>, &Structure::Convert<bNodeSocketValueRGBA>);
+    converters["NodeShaderUVMap"] = DNA::FactoryPair(&Structure::Allocate<NodeShaderUVMap>, &Structure::Convert<NodeShaderUVMap>);
     converters["bNodeSocket"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocket>, &Structure::Convert<bNodeSocket>);
     converters["bNode"] = DNA::FactoryPair(&Structure::Allocate<bNode>, &Structure::Convert<bNode>);
     converters["bNodeLink"] = DNA::FactoryPair(&Structure::Allocate<bNodeLink>, &Structure::Convert<bNodeLink>);
