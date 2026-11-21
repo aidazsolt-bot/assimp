@@ -347,22 +347,6 @@ bool BlendNodeIsGroupOutput(const Assimp::Blender::bNode &n) {
     return n.type == 3;
 }
 
-/** MixRGB custom1 (DNA_material_types.h MA_RAMP_*). Multiply-family: Color1/A is the base. */
-bool BlendMixPrefersColorA(short custom1) {
-    // MA_RAMP_MULT=2, SCREEN=4, DIV=5, OVERLAY=9, ... - keep A as albedo carrier.
-    switch (custom1) {
-    case 2: // MULT
-    case 4: // SCREEN
-    case 5: // DIV
-    case 9: // OVERLAY
-    case 16: // SOFT
-    case 17: // LINEAR light-ish
-        return true;
-    default:
-        return false;
-    }
-}
-
 const Assimp::Blender::bNodeTree *BlendNodeGroupTree(const Assimp::Blender::bNode &n) {
     using namespace Assimp::Blender;
     if (!BlendNodeIsGroup(n) || !n.id) {
@@ -787,7 +771,8 @@ struct BlendNodeGraph {
     /** Walk bNodeLink upstream until ShaderNodeTexImage. No filename name-score.
      *  Barriers: BSDF / Material Output / Mix Shader. Group: enter nodetree via
      *  NodeGroupOutput matching fromsock (do not walk outer group inputs).
-     *  Mix Color/RGB: Fac 0=A / 1=B, Multiply-family prefers Color1/A. */
+     *  Mix Color/RGB (Blender ramp_blend): result starts as Color1; Color2 blended by Fac.
+     *  Fac~0 -> Color1 only; Fac~1 -> Color2 only; else Color1 first (accumulator base). */
     const Assimp::Blender::bNode *FollowToTexImage(const Assimp::Blender::bNode *n, int depth = 0,
             const Assimp::Blender::bNodeSocket *fromOutputSock = nullptr) const {
         using namespace Assimp::Blender;
@@ -879,7 +864,7 @@ struct BlendNodeGraph {
             return nullptr;
         }
 
-        // MixRGB / ShaderNodeMix: single Assimp map slot -> pick Blender-dominant branch.
+        // MixRGB / ShaderNodeMix: Color1 is ramp_blend accumulator; Color2 is blend-in (Fac).
         if (BlendNodeIsMixColor(*n)) {
             const bNodeSocket *sockA = nullptr;
             const bNodeSocket *sockB = nullptr;
@@ -909,26 +894,29 @@ struct BlendNodeGraph {
                     }
                 }
             }
-            const bool aFirst = BlendMixPrefersColorA(n->custom1) || fac < 0.5f;
-            if (aFirst) {
+            // MA_RAMP_BLEND extremes: only one side contributes.
+            const bool blendMode = (n->custom1 == 0);
+            if (blendMode && fac <= 1e-4f) {
                 if (sockA) {
                     if (const bNode *hit = tryFromSock(*sockA)) {
                         return hit;
                     }
                 }
+            } else if (blendMode && fac >= 1.f - 1e-4f) {
                 if (sockB) {
                     if (const bNode *hit = tryFromSock(*sockB)) {
                         return hit;
                     }
                 }
             } else {
-                if (sockB) {
-                    if (const bNode *hit = tryFromSock(*sockB)) {
+                // Mid Fac or Multiply/Overlay/...: Color1 first, then Color2.
+                if (sockA) {
+                    if (const bNode *hit = tryFromSock(*sockA)) {
                         return hit;
                     }
                 }
-                if (sockA) {
-                    if (const bNode *hit = tryFromSock(*sockA)) {
+                if (sockB) {
+                    if (const bNode *hit = tryFromSock(*sockB)) {
                         return hit;
                     }
                 }
