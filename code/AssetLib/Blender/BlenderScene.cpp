@@ -663,7 +663,57 @@ void Structure ::Convert<bNodeSocket>(
     ReadFieldArray<ErrorPolicy_Igno>(dest.identifier, "identifier", db);
     ReadFieldArray<ErrorPolicy_Igno>(dest.idname, "idname", db);
     ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
-    ReadFieldPtr<ErrorPolicy_Igno>(dest.default_value, "*default_value", db);
+
+    // default_value is void* in DNA. Many .blend writers store the pointee DATA
+    // block with SDNAnr 0 (appears as "Link"), so typed ResolvePointer fails.
+    // Decode by socket datatype (SOCK_FLOAT / SOCK_RGBA) - never invent values.
+    dest.default_value.reset();
+    {
+        Pointer ptrval;
+        ptrval.val = 0;
+        const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+        try {
+            const Field &f = (*this)["*default_value"];
+            db.reader->IncPtr(f.offset);
+            Convert(ptrval, db);
+        } catch (const Error &) {
+            ptrval.val = 0;
+        }
+        db.reader->SetCurrentPos(old);
+
+        // eNodeSocketDatatype: SOCK_FLOAT=0, SOCK_RGBA=2 (makesdna DNA_node_types.h).
+        const char *valueStruct = nullptr;
+        if (dest.type == 0) {
+            valueStruct = "bNodeSocketValueFloat";
+        } else if (dest.type == 2) {
+            valueStruct = "bNodeSocketValueRGBA";
+        }
+        if (ptrval.val && valueStruct != nullptr) {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            const Structure *sVal = db.dna.Get(valueStruct);
+            if (block != nullptr && sVal != nullptr) {
+                DNA::FactoryPair builders = db.dna.GetBlobToStructureConverter(*sVal, db);
+                if (builders.first && builders.second) {
+                    const uint64_t cache_owner = (block->id == "DATA") ? block->owner_id.val : 0;
+                    db.cache(dest.default_value).get(*sVal, dest.default_value, ptrval, cache_owner);
+                    if (!dest.default_value) {
+                        const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                        db.reader->SetCurrentPos(
+                                block->start + static_cast<size_t>((ptrval.val - block->address.val)));
+                        dest.default_value = ((*sVal).*builders.first)();
+                        db.cache(dest.default_value).set(*sVal, dest.default_value, ptrval, cache_owner);
+                        ((*sVal).*builders.second)(dest.default_value, db);
+                        dest.default_value->dna_type = sVal->name.c_str();
+                        db.reader->SetCurrentPos(pold);
+                    }
+                }
+            }
+        } else if (ptrval.val) {
+            // Unknown socket datatype: try generic void* resolve (may still fail on SDNAnr 0).
+            ReadFieldPtr<ErrorPolicy_Igno>(dest.default_value, "*default_value", db);
+        }
+    }
+
     ReadField<ErrorPolicy_Igno>(dest.ns, "ns", db);
     db.reader->IncPtr(size);
 }
