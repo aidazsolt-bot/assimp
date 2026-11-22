@@ -177,6 +177,10 @@ namespace Blender {
 
         // Camera objects (for Action -> aiNodeAnim), filled during ConvertNode.
         std::vector<const Object *> camera_objects;
+        /** DOF focus empties / objects (TRS Action -> aiNodeAnim), filled from Camera DNA. */
+        std::vector<const Object *> camera_focus_objects;
+        /** Per aiCamera name: extra JSON fragment for SceneSidecarJson.cameras[] (DOF bind). */
+        std::unordered_map<std::string, std::string> cameraSidecarExtras;
 
         // original file data
         const FileDatabase& db;

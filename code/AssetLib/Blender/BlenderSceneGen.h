@@ -398,6 +398,16 @@ template <> void Structure :: Convert<Tex> (
     ) const
 ;
 
+template <> void Structure :: Convert<GPUDOFSettings> (
+    GPUDOFSettings& dest,
+    const FileDatabase& db
+    ) const
+;
+template <> void Structure :: Convert<CameraDOFSettings> (
+    CameraDOFSettings& dest,
+    const FileDatabase& db
+    ) const
+;
 template <> void Structure :: Convert<Camera> (
     Camera& dest,
     const FileDatabase& db

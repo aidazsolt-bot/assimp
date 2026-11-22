@@ -630,6 +630,36 @@ struct Library final : ElemBase {
 };
 
 // -------------------------------------------------------------------------------
+/** Subset of DNA GPUDOFSettings (legacy Camera.gpu_dof). */
+struct GPUDOFSettings final : ElemBase {
+    float focus_distance WARN;
+    float fstop WARN;
+    float focal_length WARN;
+    float sensor WARN;
+    float rotation WARN;
+    float ratio WARN;
+    int num_blades WARN;
+
+    GPUDOFSettings() :
+            focus_distance(0.f), fstop(0.f), focal_length(0.f), sensor(0.f),
+            rotation(0.f), ratio(0.f), num_blades(0) {}
+};
+
+/** Subset of DNA CameraDOFSettings (Camera.dof, Blender 2.8+). */
+struct CameraDOFSettings final : ElemBase {
+    enum Flag {
+        Flag_Enabled = 1 << 0
+    };
+    std::shared_ptr<Object> focus_object WARN;
+    float focus_distance WARN;
+    float aperture_fstop WARN;
+    int aperture_blades WARN;
+    short flag WARN;
+
+    CameraDOFSettings() :
+            focus_distance(0.f), aperture_fstop(0.f), aperture_blades(0), flag(0) {}
+};
+
 struct Camera : ElemBase {
     enum Type {
         Type_PERSP = 0,
@@ -644,6 +674,10 @@ struct Camera : ElemBase {
     float sensor_y WARN; // film height - aspect = sensor_x/sensor_y when both set
     float ortho_scale WARN; // Blender full ortho scale; aiCamera wants half-width
     float clipsta, clipend;
+    /** Legacy pre-2.8 DOF focus Object (*dof_ob). Tiger-era files. */
+    std::shared_ptr<Object> dof_ob WARN;
+    GPUDOFSettings gpu_dof WARN;
+    CameraDOFSettings dof WARN;
 
     Camera() :
             type(Type_PERSP), flag(Type_PERSP), lens(0.f), sensor_x(0.f), sensor_y(0.f),
@@ -1127,6 +1161,9 @@ struct Object final : ElemBase {
     std::shared_ptr<SoftBody> soft;
     std::shared_ptr<RigidBodyOb> rigidbody_object;
     std::shared_ptr<RigidBodyCon> rigidbody_constraint;
+    /** Empty display (DNA empty_drawtype / empty_drawsize). */
+    char empty_drawtype WARN;
+    float empty_drawsize WARN;
 
     Object() :
             type(Type_EMPTY),
@@ -1134,7 +1171,9 @@ struct Object final : ElemBase {
             drotAngle(0.f),
             rotmode(1), // ROT_MODE_EUL / XYZ
             has_world_matrix(false),
-            parent(nullptr) {
+            parent(nullptr),
+            empty_drawtype(0),
+            empty_drawsize(0.f) {
         // Identity parentinv / unit scale / unit quat (Blender defaults).
         for (unsigned int i = 0; i < 4; ++i) {
             for (unsigned int j = 0; j < 4; ++j) {
