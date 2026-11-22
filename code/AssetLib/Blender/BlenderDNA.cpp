@@ -175,7 +175,10 @@ void DNAParser::Parse() {
 
             // pointers always specify the size of the pointee instead of their own.
             // The pointer asterisk remains a property of the lookup name.
-            if (f.name[0] == '*') {
+            // Function pointers are named `(*foo)()` / `(*foo)(void)` - also pointer-sized
+            // (otherwise offsets after callbacks drift, e.g. ParticleSystem.name/seed).
+            const bool isFuncPtr = f.name.size() >= 2 && f.name[0] == '(' && f.name[1] == '*';
+            if (f.name[0] == '*' || isFuncPtr) {
                 f.size = db.i64bit ? 8 : 4;
                 f.flags |= FieldFlag_Pointer;
             }

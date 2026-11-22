@@ -221,6 +221,32 @@ namespace Blender {
         std::vector<AnimPointerChannel> animPointerChannels;
         /** Scene volumes[] entries (Principled Volume bind). */
         std::vector<std::string> volumeJsonEntries;
+        /** C13 PointInstancer pending (particle collection/object instances). */
+        struct PointInstancerPending {
+            std::string emitterName;
+            std::string systemName;
+            std::string settingsName;
+            std::string collectionName;
+            std::string instanceObjectName;
+            short ren_as{ 0 };
+            short from{ 0 };
+            short distr{ 0 };
+            int flag{ 0 };
+            int totpart{ 0 };
+            int seed{ 0 };
+            float size{ 0.f };
+            float randsize{ 0.f };
+            float jitfac{ 0.f };
+            std::vector<std::string> prototypeNames;
+            std::vector<int> prototypeCounts;
+            std::vector<int> prototypeIndices;
+            std::vector<float> positions; // xyz * N when DNA ParticleData present
+            std::vector<float> orients; // wxyz * N
+            std::vector<float> scales; // uniform * N
+            std::vector<int> protoIndices; // per-instance prototype slot
+            bool arraysResolved{ false };
+        };
+        std::vector<PointInstancerPending> pointInstancers;
         /** Material indices with resolved Principled Volume (parallel to materials_raw). */
         std::vector<char> materialHasPrincipledVolume;
         std::ostringstream khrShapes;

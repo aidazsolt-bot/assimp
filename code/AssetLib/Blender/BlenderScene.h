@@ -1030,28 +1030,102 @@ struct ClothModifierData final : SharedModifierData {
     std::shared_ptr<ClothSimSettings> sim_parms;
 };
 
+/** DNA ParticleKey (ParticleData.state / prev_state). */
+struct ParticleKey final : ElemBase {
+    float co[3] WARN;
+    float vel[3] WARN;
+    float rot[4] WARN;
+    float ave[3] WARN;
+    float time WARN;
+
+    ParticleKey() :
+            time(0.f) {
+        co[0] = co[1] = co[2] = 0.f;
+        vel[0] = vel[1] = vel[2] = 0.f;
+        rot[0] = 1.f;
+        rot[1] = rot[2] = rot[3] = 0.f;
+        ave[0] = ave[1] = ave[2] = 0.f;
+    }
+};
+
+/** Subset of DNA ParticleData (per-particle state when written to the blend). */
+struct ParticleData final : ElemBase {
+    ParticleKey state WARN;
+    float size WARN;
+
+    ParticleData() :
+            size(0.f) {}
+};
+
+/** DNA ParticleDupliWeight (ParticleSettings.dupliweights / instance_weights). */
+struct ParticleDupliWeight final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    Object *ob WARN;
+    short count WARN;
+    short flag WARN;
+    short index WARN;
+
+    ParticleDupliWeight() :
+            ob(nullptr), count(0), flag(0), index(0) {}
+};
+
 /** Subset of DNA ParticleSettings. */
 struct ParticleSettings final : ElemBase {
     ID id WARN;
-    int type WARN;
+    int flag WARN;
+    short type WARN;
+    short from WARN;
+    short distr WARN;
+    short ren_as WARN;
     int totpart WARN;
     float mass WARN;
     float size WARN;
+    float randsize WARN;
     float lifetime WARN;
     float sta WARN;
     float end WARN;
+    float jitfac WARN;
+    /** Blender 2.8 DNA name; newer files may use instance_collection. */
+    std::shared_ptr<Collection> dup_group WARN;
+    ListBase dupliweights WARN; // ParticleDupliWeight
+    std::shared_ptr<Object> dup_ob WARN;
+
+    enum DrawAs {
+        Draw_None = 0,
+        Draw_Halo = 1,
+        Draw_Line = 5,
+        Draw_Path = 6,
+        Draw_Object = 7,
+        Draw_Collection = 8
+    };
 
     ParticleSettings() :
-            type(0), totpart(0), mass(1.f), size(0.05f), lifetime(50.f), sta(1.f), end(200.f) {}
+            flag(0),
+            type(0),
+            from(0),
+            distr(0),
+            ren_as(0),
+            totpart(0),
+            mass(1.f),
+            size(0.05f),
+            randsize(0.f),
+            lifetime(50.f),
+            sta(1.f),
+            end(200.f),
+            jitfac(1.f) {}
 };
 
 /** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
 struct ParticleSystem final : ElemBase {
     std::shared_ptr<ElemBase> next WARN;
     std::shared_ptr<ParticleSettings> part;
+    vector<ParticleData> particles WARN;
     char name[64] WARN;
+    int seed WARN;
+    int totpart WARN;
 
-    ParticleSystem() {
+    ParticleSystem() :
+            seed(0), totpart(0) {
         name[0] = '\0';
     }
 };

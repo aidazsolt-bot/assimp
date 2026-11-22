@@ -2503,9 +2503,14 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                      << ",\"totpart\":" << p.totpart
                      << ",\"mass\":" << p.mass
                      << ",\"size\":" << p.size
+                     << ",\"randsize\":" << p.randsize
+                     << ",\"ren_as\":" << p.ren_as
+                     << ",\"from\":" << p.from
+                     << ",\"distr\":" << p.distr
                      << ",\"lifetime\":" << p.lifetime
                      << ",\"frame_start\":" << p.sta
-                     << ",\"frame_end\":" << p.end;
+                     << ",\"frame_end\":" << p.end
+                     << ",\"seed\":" << ps->seed;
             if (p.id.name[0] != '\0') {
                 partJson << ",\"settings_name\":\"" << BlendJsonEscape(p.id.name + 2) << '"';
             }
@@ -2514,6 +2519,75 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         partJson << "}}";
         BlendPushPhysicsInv(conv.physicsParticleNodes, objName, partJson.str());
+
+        // C13 PointInstancer inventory for collection/object render (Presence: TRS only if DNA particles[]).
+        if (ps->part) {
+            const ParticleSettings &p = *ps->part;
+            if (p.ren_as == ParticleSettings::Draw_Collection || p.ren_as == ParticleSettings::Draw_Object) {
+                ConversionData::PointInstancerPending pi;
+                pi.emitterName = objName;
+                pi.systemName = psName;
+                if (p.id.name[0] != '\0') {
+                    pi.settingsName = p.id.name + 2;
+                }
+                pi.ren_as = p.ren_as;
+                pi.from = p.from;
+                pi.distr = p.distr;
+                pi.flag = p.flag;
+                pi.totpart = p.totpart;
+                pi.seed = ps->seed;
+                pi.size = p.size;
+                pi.randsize = p.randsize;
+                pi.jitfac = p.jitfac;
+                if (p.dup_group && p.dup_group->id.name[0] != '\0') {
+                    pi.collectionName = p.dup_group->id.name + 2;
+                }
+                if (p.dup_ob && p.dup_ob->id.name[0] != '\0') {
+                    pi.instanceObjectName = p.dup_ob->id.name + 2;
+                }
+                for (std::shared_ptr<ParticleDupliWeight> dw =
+                                std::static_pointer_cast<ParticleDupliWeight>(p.dupliweights.first);
+                        dw;
+                        dw = std::static_pointer_cast<ParticleDupliWeight>(dw->next)) {
+                    if (dw->ob && dw->ob->id.name[0] != '\0') {
+                        pi.prototypeNames.emplace_back(dw->ob->id.name + 2);
+                        pi.prototypeCounts.push_back(static_cast<int>(dw->count));
+                        pi.prototypeIndices.push_back(static_cast<int>(dw->index));
+                    }
+                }
+                if (pi.prototypeNames.empty() && !pi.instanceObjectName.empty()) {
+                    pi.prototypeNames.push_back(pi.instanceObjectName);
+                    pi.prototypeCounts.push_back(1);
+                    pi.prototypeIndices.push_back(0);
+                }
+                // Instance arrays only when ParticleSystem.particles was written to the blend.
+                if (!ps->particles.empty()) {
+                    const size_t n = ps->particles.size();
+                    pi.positions.reserve(n * 3);
+                    pi.orients.reserve(n * 4);
+                    pi.scales.reserve(n);
+                    pi.protoIndices.reserve(n);
+                    const size_t nproto = pi.prototypeNames.size();
+                    for (size_t i = 0; i < n; ++i) {
+                        const ParticleData &pd = ps->particles[i];
+                        pi.positions.push_back(pd.state.co[0]);
+                        pi.positions.push_back(pd.state.co[1]);
+                        pi.positions.push_back(pd.state.co[2]);
+                        pi.orients.push_back(pd.state.rot[0]);
+                        pi.orients.push_back(pd.state.rot[1]);
+                        pi.orients.push_back(pd.state.rot[2]);
+                        pi.orients.push_back(pd.state.rot[3]);
+                        const float sc = (pd.size > 0.f) ? pd.size : p.size;
+                        pi.scales.push_back(sc);
+                        if (nproto > 0) {
+                            pi.protoIndices.push_back(static_cast<int>(i % nproto));
+                        }
+                    }
+                    pi.arraysResolved = true;
+                }
+                conv.pointInstancers.push_back(std::move(pi));
+            }
+        }
     }
 
     const SharedModifierData *cur = static_cast<const SharedModifierData *>(obj->modifiers.first.get());
@@ -3082,6 +3156,102 @@ static void BlendCollectCollectionObjects(const std::shared_ptr<Collection> &col
     }
 }
 
+/** Collect (collectionName -> object names) from a collection tree for C13 bind. */
+static void BlendIndexCollections(
+        const std::shared_ptr<Collection> &collection,
+        std::vector<std::pair<std::string, std::vector<std::string>>> &out) {
+    if (!collection) {
+        return;
+    }
+    std::vector<std::string> names;
+    for (std::shared_ptr<CollectionObject> cur =
+                    std::static_pointer_cast<CollectionObject>(collection->gobject.first);
+            cur;
+            cur = cur->next) {
+        if (cur->ob && cur->ob->id.name[0] != '\0') {
+            names.emplace_back(cur->ob->id.name + 2);
+        }
+    }
+    if (collection->id.name[0] != '\0') {
+        out.emplace_back(collection->id.name + 2, std::move(names));
+    }
+    for (std::shared_ptr<CollectionChild> cur =
+                    std::static_pointer_cast<CollectionChild>(collection->children.first);
+            cur;
+            cur = cur->next) {
+        if (cur->collection) {
+            BlendIndexCollections(cur->collection, out);
+        }
+    }
+}
+
+/** When DNA dup_group/instance_collection is null, bind prototypes to a owning Collection. */
+static std::string BlendResolveCollectionForPrototypes(
+        const Scene &in,
+        const std::vector<std::string> &protoNames) {
+    if (protoNames.empty() || !in.master_collection) {
+        return {};
+    }
+    std::vector<std::pair<std::string, std::vector<std::string>>> cols;
+    BlendIndexCollections(in.master_collection, cols);
+    std::string best;
+    size_t bestExtra = static_cast<size_t>(-1);
+    for (const auto &col : cols) {
+        size_t hits = 0;
+        for (const std::string &pn : protoNames) {
+            if (std::find(col.second.begin(), col.second.end(), pn) != col.second.end()) {
+                ++hits;
+            }
+        }
+        if (hits != protoNames.size()) {
+            continue;
+        }
+        const size_t extra = col.second.size() - hits;
+        if (best.empty() || extra < bestExtra) {
+            best = col.first;
+            bestExtra = extra;
+        }
+    }
+    return best;
+}
+
+static void BlendEmitFloatArray(std::ostringstream &json, const char *key, const std::vector<float> &v) {
+    json << ",\"" << key << "\":[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) {
+            json << ',';
+        }
+        json << v[i];
+    }
+    json << ']';
+}
+
+static void BlendEmitIntArray(std::ostringstream &json, const char *key, const std::vector<int> &v) {
+    json << ",\"" << key << "\":[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) {
+            json << ',';
+        }
+        json << v[i];
+    }
+    json << ']';
+}
+
+static const aiNode *BlendFindNodeByName(const aiNode *n, const char *name) {
+    if (!n || name == nullptr) {
+        return nullptr;
+    }
+    if (n->mName == aiString(name)) {
+        return n;
+    }
+    for (unsigned int ci = 0; ci < n->mNumChildren; ++ci) {
+        if (const aiNode *f = BlendFindNodeByName(n->mChildren[ci], name)) {
+            return f;
+        }
+    }
+    return nullptr;
+}
+
 // ------------------------------------------------------------------------------------------------
 void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
         const std::shared_ptr<Collection> &collection, ConversionData &conv_data) {
@@ -3252,7 +3422,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                          !conv.physicsJointNodes.empty() || !conv.physicsBlastNodes.empty() ||
                          !conv.physicsOceanNodes.empty() || !conv.physicsDynamicPaintNodes.empty() ||
                          !conv.physicsSolidifyNodes.empty() ||
-                         !conv.khrBodies.empty() || !conv.khrJoints.empty();
+                         !conv.khrBodies.empty() || !conv.khrJoints.empty() ||
+                         !conv.pointInstancers.empty();
     if (hasPhys) {
         std::unordered_map<std::string, int> nameToIndex;
         int nextIdx = 0;
@@ -3275,6 +3446,92 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_ocean", conv.physicsOceanNodes, nameToIndex);
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_dynamic_paint", conv.physicsDynamicPaintNodes, nameToIndex);
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_solidify", conv.physicsSolidifyNodes, nameToIndex);
+        // C13 PointInstancer (particle collection/object) - full detail (SceneSidecarJson is aiString-capped).
+        if (!conv.pointInstancers.empty()) {
+            bool anyUnresolvedArrays = false;
+            pjson << ",\"BLEND_point_instancers\":{\"nodes\":[";
+            for (size_t pi = 0; pi < conv.pointInstancers.size(); ++pi) {
+                ConversionData::PointInstancerPending &inst = conv.pointInstancers[pi];
+                if (inst.collectionName.empty()) {
+                    inst.collectionName = BlendResolveCollectionForPrototypes(in, inst.prototypeNames);
+                }
+                if (pi) {
+                    pjson << ',';
+                }
+                pjson << "{\"name\":\"" << BlendJsonEscape(inst.systemName.empty() ? inst.emitterName : inst.systemName)
+                      << "\",\"kind\":\"PointInstancer\""
+                      << ",\"source\":\"BLEND_particle\""
+                      << ",\"emitter\":\"" << BlendJsonEscape(inst.emitterName) << '"'
+                      << ",\"system\":\"" << BlendJsonEscape(inst.systemName) << '"';
+                {
+                    const auto it = nameToIndex.find(inst.emitterName);
+                    if (it != nameToIndex.end()) {
+                        pjson << ",\"emitterIndex\":" << it->second;
+                    }
+                }
+                if (!inst.settingsName.empty()) {
+                    pjson << ",\"settings\":\"" << BlendJsonEscape(inst.settingsName) << '"';
+                }
+                if (!inst.collectionName.empty()) {
+                    pjson << ",\"collection\":\"" << BlendJsonEscape(inst.collectionName) << '"';
+                }
+                if (!inst.instanceObjectName.empty()) {
+                    pjson << ",\"instanceObject\":\"" << BlendJsonEscape(inst.instanceObjectName) << '"';
+                }
+                pjson << ",\"ren_as\":" << inst.ren_as
+                      << ",\"from\":" << inst.from
+                      << ",\"distr\":" << inst.distr
+                      << ",\"flag\":" << inst.flag
+                      << ",\"totpart\":" << inst.totpart
+                      << ",\"seed\":" << inst.seed
+                      << ",\"size\":" << inst.size
+                      << ",\"randsize\":" << inst.randsize
+                      << ",\"jitfac\":" << inst.jitfac;
+                pjson << ",\"prototypes\":[";
+                for (size_t pr = 0; pr < inst.prototypeNames.size(); ++pr) {
+                    if (pr) {
+                        pjson << ',';
+                    }
+                    const std::string &pn = inst.prototypeNames[pr];
+                    pjson << "{\"name\":\"" << BlendJsonEscape(pn) << '"';
+                    if (pr < inst.prototypeIndices.size()) {
+                        pjson << ",\"dupliIndex\":" << inst.prototypeIndices[pr];
+                    }
+                    if (pr < inst.prototypeCounts.size()) {
+                        pjson << ",\"count\":" << inst.prototypeCounts[pr];
+                    }
+                    const auto nit = nameToIndex.find(pn);
+                    if (nit != nameToIndex.end()) {
+                        pjson << ",\"nodeIndex\":" << nit->second;
+                        // Prototype object mesh slot (mesh datablock name may differ from object name).
+                        if (const aiNode *pnode = BlendFindNodeByName(out->mRootNode, pn.c_str())) {
+                            if (pnode->mNumMeshes > 0) {
+                                pjson << ",\"meshIndex\":" << pnode->mMeshes[0];
+                            }
+                        }
+                    }
+                    pjson << '}';
+                }
+                pjson << ']';
+                if (inst.arraysResolved) {
+                    pjson << ",\"arraysResolved\":true";
+                    BlendEmitFloatArray(pjson, "positions", inst.positions);
+                    BlendEmitFloatArray(pjson, "orients", inst.orients);
+                    BlendEmitFloatArray(pjson, "scales", inst.scales);
+                    if (!inst.protoIndices.empty()) {
+                        BlendEmitIntArray(pjson, "protoIndices", inst.protoIndices);
+                    }
+                } else {
+                    pjson << ",\"arraysResolved\":false";
+                    anyUnresolvedArrays = true;
+                }
+                pjson << '}';
+            }
+            pjson << "]}";
+            if (anyUnresolvedArrays) {
+                conv.skippedCategories.push_back("BLEND_particle_instance_arrays");
+            }
+        }
         // Host Bullet/PhysX: KHR joints/filters/nodes (glTF-shaped).
         if (!conv.khrBodies.empty() || !conv.khrJoints.empty()) {
             BlendEmitKhrPhysics(pjson, conv, nameToIndex);
@@ -3462,7 +3719,13 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         }
         json << conv.volumeJsonEntries[vi];
     }
-    json << "],\"pointInstancers\":[],\"composition\":{},\"skipped\":[";
+    // C13 detail lives in Physics bag (heap). SceneSidecarJson is aiString-capped (AI_MAXLEN).
+    json << "],\"pointInstancers\":[";
+    if (!conv.pointInstancers.empty()) {
+        json << "{\"count\":" << conv.pointInstancers.size()
+             << ",\"bag\":\"BLEND_point_instancers\"}";
+    }
+    json << "],\"composition\":{},\"skipped\":[";
     for (size_t si = 0; si < conv.skippedCategories.size(); ++si) {
         if (si) {
             json << ',';

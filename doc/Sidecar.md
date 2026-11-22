@@ -279,7 +279,7 @@ Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTE
 | S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
 | S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` + optional `mass` from `physics:mass` |
 | S6 | (same physics bag) | Soft/cloth USD schemas recorded when present; else listed under `skipped` |
-| S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset` + presence (filePath when TinyUSDZ exposes OpenVDB props)), `pointInstancers[]` |
+| S7 | `SceneSidecarJson` + Physics bag | `volumes[]`; `pointInstancers[]` stub (`count`+`bag`) — **BLEND C13 detail** in Physics `BLEND_point_instancers.nodes[]` (collection bind, prototypes, totpart/seed; `arraysResolved` + positions/orients/scales/protoIndices only when DNA `ParticleSystem.particles` present). SceneSidecarJson is `aiString`-capped (`AI_MAXLEN`) |
 | S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
 
 Host-probe hardening (2026-11-19):
