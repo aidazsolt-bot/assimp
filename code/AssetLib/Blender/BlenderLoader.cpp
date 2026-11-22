@@ -339,6 +339,14 @@ bool BlendNodeIsMixColor(const Assimp::Blender::bNode &n) {
     return n.type == 75; // SH_NODE_MIX_RGB_LEGACY
 }
 
+/** MixRGB / ShaderNodeMixRGB: custom1 is MA_RAMP_* blend type. ShaderNodeMix uses custom1 as data_type. */
+bool BlendNodeIsMixRgbBlendType(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeMixRGB") == 0;
+    }
+    return n.type == 75; // SH_NODE_MIX_RGB_LEGACY
+}
+
 bool BlendNodeIsGroupOutput(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0') {
         return std::strcmp(n.idname, "NodeGroupOutput") == 0;
@@ -968,23 +976,30 @@ struct BlendNodeGraph {
                 cur = sock->next;
             }
             // Fac from DNA only - never invent 0.5 when default_value is unread.
+            // Linked non-constant Fac is a mask: do not use socket default for extremes.
             bool haveFac = false;
             float fac = 0.f;
+            bool facLinkedNonConst = false;
             if (sockFac) {
-                if (BlendReadSocketFloat(*sockFac, fac)) {
-                    haveFac = true;
-                }
                 const bNodeLink *fl = FindLinkToSocket(*sockFac);
                 if (fl) {
                     float linked = 0.f;
                     if (ReadConstantFloat(BlendCastNode(fl->fromnode.get()), linked)) {
                         fac = linked;
                         haveFac = true;
+                    } else {
+                        facLinkedNonConst = true;
                     }
+                } else if (BlendReadSocketFloat(*sockFac, fac)) {
+                    haveFac = true;
                 }
             }
-            // MA_RAMP_BLEND extremes: only one side contributes (requires real Fac).
-            const bool blendMode = (n->custom1 == 0);
+            if (facLinkedNonConst) {
+                haveFac = false; // mid path: Color1 accumulator first
+            }
+            // MixRGB MA_RAMP_BLEND extremes only (custom1 = blend type). ShaderNodeMix
+            // custom1 is data_type - never treat as blend; Color1 accumulator first.
+            const bool blendMode = BlendNodeIsMixRgbBlendType(*n) && (n->custom1 == 0);
             if (haveFac && blendMode && fac <= 1e-4f) {
                 if (sockA) {
                     if (const bNode *hit = tryFromSock(*sockA)) {
