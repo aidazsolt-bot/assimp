@@ -181,6 +181,13 @@ namespace Blender {
         std::vector<const Object *> camera_focus_objects;
         /** Per aiCamera name: extra JSON fragment for SceneSidecarJson.cameras[] (DOF bind). */
         std::unordered_map<std::string, std::string> cameraSidecarExtras;
+        /** Armature objects (bone hierarchy + pose Action -> aiNodeAnim). */
+        std::vector<const Object *> armature_objects;
+        /**
+         * Map Armature Object name -> bone rest name used as aiNode::mName
+         * (unique: "ArmatureObj|BoneName") for pose channel targeting.
+         */
+        std::unordered_map<std::string, std::unordered_map<std::string, std::string>> armatureBoneNodeNames;
 
         // original file data
         const FileDatabase& db;
