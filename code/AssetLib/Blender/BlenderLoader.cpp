@@ -71,11 +71,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <initializer_list>
-#include <set>
-#include <string>
+#include <map>
 #include <memory>
+#include <set>
 #include <sstream>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1258,39 +1260,56 @@ BlendNodeGraph BlendBuildGraph(const Assimp::Blender::bNodeTree &tree) {
     return g;
 }
 
-/** Follow Image Texture Vector input to ShaderNodeUVMap.uv_map (empty = active/TexCoord). */
+/** Follow Image Texture Vector input to ShaderNodeUVMap.uv_map (empty = active/TexCoord).
+ *  TexImage often lives inside a ShaderNodeGroup - resolve against the graph that owns
+ *  the node's Vector link (outer material graph alone misses inner links). */
 void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::bNode &texNode, char uvname[64]) {
     using namespace Assimp::Blender;
     BlendCopyUvName(uvname, nullptr);
     if (!BlendNodeIsTexImage(texNode)) {
         return;
     }
-    for (std::shared_ptr<ElemBase> cur = texNode.inputs.first; cur;) {
-        const bNodeSocket *sock = BlendCastSocket(cur.get());
-        if (sock == nullptr) {
-            break;
+
+    auto graphHasNode = [](const BlendNodeGraph &gg, const bNode &node) -> bool {
+        for (const bNode *n : gg.nodes) {
+            if (n == &node) {
+                return true;
+            }
         }
-        if (BlendSockNameIsAny(*sock, { "Vector", "Vector2" })) {
-            const bNodeLink *l = g.FindLinkToSocket(*sock);
+        return false;
+    };
+
+    auto resolveInGraph = [&](const BlendNodeGraph &gg) -> bool {
+        if (!graphHasNode(gg, texNode)) {
+            return false;
+        }
+        for (std::shared_ptr<ElemBase> cur = texNode.inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            if (!BlendSockNameIsAny(*sock, { "Vector", "Vector2" })) {
+                cur = sock->next;
+                continue;
+            }
+            const bNodeLink *l = gg.FindLinkToSocket(*sock);
             if (l == nullptr) {
-                return;
+                // Unlinked Vector = Blender active/render UV (empty name).
+                return true;
             }
             const bNode *src = BlendCastNode(l->fromnode.get());
             for (int depth = 0; src != nullptr && depth < 12; ++depth) {
                 if (BlendNodeIsUVMap(*src)) {
-                    // Named uv_map, or empty = Blender default/render UV (CD_AUTO_FROM_NAME "").
                     if (src->storage && src->storage->dna_type != nullptr &&
                             std::strcmp(src->storage->dna_type, "NodeShaderUVMap") == 0) {
                         const auto *st = static_cast<const NodeShaderUVMap *>(src->storage.get());
                         BlendCopyUvName(uvname, st->uv_map);
                     }
-                    return;
+                    return true;
                 }
                 if (BlendNodeIsTexCoord(*src)) {
-                    // TexCoord.UV uses default/render UV (empty name -> BlendFindUvIndex default).
-                    return;
+                    return true; // empty name -> active/render
                 }
-                // Passthrough vector manipulators: Reroute / Mapping (keep following Vector/input).
                 const bool passthroughVec =
                         (src->idname[0] != '\0' &&
                                 (std::strcmp(src->idname, "NodeReroute") == 0 ||
@@ -1306,13 +1325,17 @@ void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::
                     if (is == nullptr) {
                         break;
                     }
-                    // Mapping: follow "Vector"; Reroute: first linked input.
                     if (std::strcmp(src->idname, "ShaderNodeMapping") == 0 &&
                             !BlendSockNameIsAny(*is, { "Vector", "Vector2" })) {
                         ic = is->next;
                         continue;
                     }
-                    rl = g.FindLinkToSocket(*is);
+                    if (std::strcmp(src->idname, "ShaderNodeVectorMath") == 0 &&
+                            !BlendSockNameIsAny(*is, { "Vector", "Vector2", "A" })) {
+                        ic = is->next;
+                        continue;
+                    }
+                    rl = gg.FindLinkToSocket(*is);
                     if (rl) {
                         break;
                     }
@@ -1320,10 +1343,40 @@ void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::
                 }
                 src = rl ? BlendCastNode(rl->fromnode.get()) : nullptr;
             }
-            return;
+            return true;
         }
-        cur = sock->next;
+        return true; // tex in graph, no Vector socket
+    };
+
+    if (resolveInGraph(g)) {
+        return;
     }
+
+    // Nested ShaderNodeGroup trees (Image Tex inside group).
+    std::function<bool(const BlendNodeGraph &, int)> walkGroups;
+    walkGroups = [&](const BlendNodeGraph &gg, int depth) -> bool {
+        if (depth > 8) {
+            return false;
+        }
+        for (const bNode *n : gg.nodes) {
+            if (n == nullptr || !BlendNodeIsGroup(*n)) {
+                continue;
+            }
+            const bNodeTree *gt = BlendNodeGroupTree(*n);
+            if (gt == nullptr) {
+                continue;
+            }
+            const BlendNodeGraph sub = BlendBuildGraph(*gt);
+            if (resolveInGraph(sub)) {
+                return true;
+            }
+            if (walkGroups(sub, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    walkGroups(g, 0);
 }
 
 void BlendFillTexMap(const BlendNodeGraph &g, const Assimp::Blender::bNode *texNode, BlendTexMap &out) {
