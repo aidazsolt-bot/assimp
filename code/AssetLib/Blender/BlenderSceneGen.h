@@ -266,6 +266,18 @@ template <> void Structure :: Convert<bNodeSocketValueRGBA> (
     ) const
 ;
 
+template <> void Structure :: Convert<CBData> (
+    CBData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ColorBand> (
+    ColorBand& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<NodeShaderUVMap> (
     NodeShaderUVMap& dest,
     const FileDatabase& db

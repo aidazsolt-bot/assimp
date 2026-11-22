@@ -2203,12 +2203,15 @@ void BlendEmitWorldEnv(const Assimp::Blender::Scene &in, Assimp::Blender::Conver
 std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         Assimp::Blender::ConversionData &conv) {
     using namespace Assimp::Blender;
+    (void)conv;
     if (!mat.nodetree) {
         return {};
     }
     const BlendNodeGraph g = BlendBuildGraph(*mat.nodetree);
     std::ostringstream nj;
-    nj << "{\"nodes\":[";
+    // Host-eval policy: emit authored socket defaults + ColorBand + links so the
+    // renderer Look can implement Brick/Ramp (no Assimp bake; no invent).
+    nj << "{\"schemaVersion\":1,\"eval\":\"host\",\"assimpEval\":false,\"nodes\":[";
     bool nfirst = true;
     bool sawBrick = false;
     bool sawRamp = false;
@@ -2237,16 +2240,110 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             sawRamp = true;
         } else if (BlendNodeIsAddShader(*n)) {
             nj << ",\"kind\":\"AddShader\"";
+        } else if (BlendNodeIsEmission(*n)) {
+            nj << ",\"kind\":\"Emission\"";
+        } else if (BlendNodeIsMixColor(*n)) {
+            nj << ",\"kind\":\"Mix\"";
+        }
+
+        // Unlinked input socket defaults (Presence - omit linked / unread).
+        nj << ",\"inputs\":[";
+        bool ifirst = true;
+        for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            const bool linked = g.FindLinkToSocket(*sock) != nullptr;
+            float f = 0.f;
+            float rgba[4] = { 0, 0, 0, 0 };
+            const bool gotF = !linked && BlendReadSocketFloat(*sock, f);
+            const bool gotC = !linked && BlendReadSocketColor(*sock, rgba);
+            if (gotF || gotC || linked) {
+                if (!ifirst) {
+                    nj << ',';
+                }
+                ifirst = false;
+                const char *sname = sock->identifier[0] != '\0' ? sock->identifier : sock->name;
+                nj << "{\"name\":\"" << BlendJsonEscape(sname) << '"';
+                if (linked) {
+                    nj << ",\"linked\":true";
+                } else if (gotC) {
+                    nj << ",\"rgba\":[" << rgba[0] << ',' << rgba[1] << ',' << rgba[2] << ',' << rgba[3] << ']';
+                } else if (gotF) {
+                    nj << ",\"value\":" << f;
+                }
+                nj << '}';
+            }
+            cur = sock->next;
+        }
+        nj << ']';
+
+        // ColorRamp storage (ColorBand stops).
+        if (n->storage && n->storage->dna_type != nullptr &&
+                std::strcmp(n->storage->dna_type, "ColorBand") == 0) {
+            const auto *band = static_cast<const ColorBand *>(n->storage.get());
+            const int tot = std::max(0, std::min(static_cast<int>(band->tot), 32));
+            nj << ",\"colorBand\":{\"tot\":" << tot << ",\"ipotype\":" << static_cast<int>(band->ipotype)
+               << ",\"elements\":[";
+            for (int ei = 0; ei < tot; ++ei) {
+                if (ei) {
+                    nj << ',';
+                }
+                const CBData &e = band->data[ei];
+                nj << "{\"pos\":" << e.pos << ",\"rgba\":[" << e.r << ',' << e.g << ',' << e.b << ',' << e.a << "]}";
+            }
+            nj << "]}";
         }
         nj << '}';
     }
-    nj << "],\"links\":" << g.links.size() << '}';
-    if (sawBrick) {
-        conv.skippedCategories.push_back("BLEND_shader_procedural_TexBrick");
+    nj << "],\"links\":[";
+    bool lfirst = true;
+    for (const bNodeLink *l : g.links) {
+        if (l == nullptr) {
+            continue;
+        }
+        const bNode *fn = BlendCastNode(l->fromnode.get());
+        const bNode *tn = BlendCastNode(l->tonode.get());
+        const bNodeSocket *fs = BlendCastSocket(l->fromsock.get());
+        const bNodeSocket *ts = BlendCastSocket(l->tosock.get());
+        if (fn == nullptr || tn == nullptr) {
+            continue;
+        }
+        if (!lfirst) {
+            nj << ',';
+        }
+        lfirst = false;
+        nj << "{\"from\":\"" << BlendJsonEscape(fn->name) << "\",\"to\":\"" << BlendJsonEscape(tn->name) << '"';
+        if (fs != nullptr) {
+            const char *sn = fs->identifier[0] != '\0' ? fs->identifier : fs->name;
+            nj << ",\"fromSock\":\"" << BlendJsonEscape(sn) << '"';
+        }
+        if (ts != nullptr) {
+            const char *sn = ts->identifier[0] != '\0' ? ts->identifier : ts->name;
+            nj << ",\"toSock\":\"" << BlendJsonEscape(sn) << '"';
+        }
+        nj << '}';
     }
-    if (sawRamp) {
-        conv.skippedCategories.push_back("BLEND_shader_procedural_ColorRamp");
+    nj << ']';
+    if (sawBrick || sawRamp) {
+        nj << ",\"hostProcedural\":[";
+        bool pfirst = true;
+        if (sawBrick) {
+            nj << "\"TexBrick\"";
+            pfirst = false;
+        }
+        if (sawRamp) {
+            if (!pfirst) {
+                nj << ',';
+            }
+            nj << "\"ColorRamp\"";
+        }
+        nj << ']';
     }
+    nj << '}';
+    // Honesty: Assimp does not CPU-eval the graph; Host Look may. Do not list
+    // TexBrick/ColorRamp under skipped[] when params were emitted for hostEval.
     return nj.str();
 }
 
