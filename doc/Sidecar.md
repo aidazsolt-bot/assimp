@@ -196,6 +196,26 @@ Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_
 - Collider `geometry.mesh` stays in the JSON bag only. Do **not** promote those
   meshes onto `aiNode::mMeshes` (proxies are often intentionally mesh-less).
 
+### SC4 orphan collider soups (`KHR_physics_collider_meshes`)
+
+Meshes referenced only via `collider.geometry.mesh` (not on any draw node) are
+Force-Retrieved into `aiScene::mMeshes` **without** attaching them to
+`aiNode::mMeshes`, and their triangle soups are also embedded in the physics
+JSON bag:
+
+```json
+"KHR_physics_collider_meshes": {
+  "meshes": [
+    { "index": 37, "name": "proxy-spiral", "positions": [x,y,z,...], "indices": [i0,i1,i2,...] }
+  ]
+}
+```
+
+- `index` = authored glTF mesh index (or BLEND `aiScene::mMeshes` index).
+- `positions` = tightly packed float xyz; `indices` = uint triangle list.
+- Host should prefer this bag for orphan soups (Presence); may also resolve by
+  mesh name from `mMeshes` when Force-Retrieve included them.
+
 Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/` (generic `BodyDynamic0` /
 `BodyKinematic0` names only for local geometry; tests walk JSON structure).
 
@@ -223,7 +243,13 @@ Fluid / smoke nodes additionally bind the visual mesh:
 
 `BLEND_physics_blast`: ExplodeModifier inventory (`index`/`settings`); Geometry Nodes fracture is listed under scene `skipped[]` (unevaluated - no invent chunks).
 
-KHR rigid (same bag): `collisionFilters` from `RigidBodyOb.col_groups` (`System_N` bits); `physicsJoints` + node `joint` from `RigidBodyCon` (limits/motors when flagged). Passive children under a parent emit collider-only (Host compounds).
+KHR rigid (same bag):
+
+- `collisionFilters` from `RigidBodyOb.col_groups` (`System_N` bits)
+- `physicsJoints` + node `joint` from `RigidBodyCon` (limits/motors/springs when flagged)
+- Passive children under a parent emit collider-only (Host compounds)
+- `Shape_Trimesh` / `Shape_ConvexH` -> `collider.geometry.mesh` + soup in `KHR_physics_collider_meshes` (not empty implicit hull)
+- `RBO_FLAG_DISABLED` -> node `trigger` (volume), not a simulated motion body
 
 Domain meshes stay on `aiNode::mMeshes`; Host may hide opaque domains via sidecar.
 

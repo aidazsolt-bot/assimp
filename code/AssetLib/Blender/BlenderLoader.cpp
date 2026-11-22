@@ -2587,10 +2587,49 @@ static const char *BlendRigidShapeName(short shape) {
     case R::Shape_Cylinder: return "cylinder";
     case R::Shape_Cone: return "cone";
     case R::Shape_ConvexH: return "convex";
-    case R::Shape_Trimesh: return "hull";
+    case R::Shape_Trimesh: return "trimesh";
     case R::Shape_Compound: return "compound";
     default: return "box";
     }
+}
+
+/** Emit one mesh triangle soup into KHR_physics_collider_meshes (Presence only). */
+static bool BlendAppendColliderMeshSoup(std::ostringstream &meshesJson, bool &first,
+        int meshIdx, const char *name, const aiMesh *mesh) {
+    if (mesh == nullptr || mesh->mVertices == nullptr || mesh->mNumVertices < 3 ||
+            mesh->mFaces == nullptr || mesh->mNumFaces == 0) {
+        return false;
+    }
+    if (!first) {
+        meshesJson << ',';
+    }
+    first = false;
+    meshesJson << "{\"index\":" << meshIdx << ",\"name\":\"" << BlendJsonEscape(name ? name : "")
+               << "\",\"positions\":[";
+    for (unsigned v = 0; v < mesh->mNumVertices; ++v) {
+        if (v) {
+            meshesJson << ',';
+        }
+        const aiVector3D &p = mesh->mVertices[v];
+        meshesJson << p.x << ',' << p.y << ',' << p.z;
+    }
+    meshesJson << "],\"indices\":[";
+    bool idxFirst = true;
+    for (unsigned f = 0; f < mesh->mNumFaces; ++f) {
+        const aiFace &face = mesh->mFaces[f];
+        if (face.mNumIndices < 3 || face.mIndices == nullptr) {
+            continue;
+        }
+        for (unsigned k = 1; k + 1 < face.mNumIndices; ++k) {
+            if (!idxFirst) {
+                meshesJson << ',';
+            }
+            idxFirst = false;
+            meshesJson << face.mIndices[0] << ',' << face.mIndices[k] << ',' << face.mIndices[k + 1];
+        }
+    }
+    meshesJson << "]}";
+    return !idxFirst;
 }
 
 // Append mesh indices + material bind for fluid/smoke domain/flow visual meshes.
@@ -2703,7 +2742,7 @@ static void BlendAppendLimit(std::ostringstream &limits, bool &first, const char
 }
 
 static void BlendEmitKhrPhysics(std::ostringstream &pjson, Assimp::Blender::ConversionData &conv,
-        const std::unordered_map<std::string, int> &nameToIndex) {
+        const std::unordered_map<std::string, int> &nameToIndex, const aiScene *scene) {
     using namespace Assimp::Blender;
     if (conv.khrBodies.empty() && conv.khrJoints.empty()) {
         return;
@@ -2779,16 +2818,49 @@ static void BlendEmitKhrPhysics(std::ostringstream &pjson, Assimp::Blender::Conv
 
         std::ostringstream drives;
         bool drvFirst = true;
+        auto appendSpringDrive = [&](const char *type, int axis, float stiffness, float damping) {
+            // Presence: only when spring flag is set (values may be 0).
+            if (!drvFirst) {
+                drives << ',';
+            }
+            drvFirst = false;
+            drives << "{\"type\":\"" << type << "\",\"mode\":\"force\",\"axis\":" << axis
+                   << ",\"positionTarget\":0,\"velocityTarget\":0"
+                   << ",\"stiffness\":" << stiffness
+                   << ",\"damping\":" << damping << '}';
+        };
+        if (jp.flag & RigidBodyCon::Flag_UseSpringX) {
+            appendSpringDrive("linear", 0, jp.spring_stiffness_x, jp.spring_damping_x);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringY) {
+            appendSpringDrive("linear", 1, jp.spring_stiffness_y, jp.spring_damping_y);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringZ) {
+            appendSpringDrive("linear", 2, jp.spring_stiffness_z, jp.spring_damping_z);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringAngX) {
+            appendSpringDrive("angular", 0, jp.spring_stiffness_ang_x, jp.spring_damping_ang_x);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringAngY) {
+            appendSpringDrive("angular", 1, jp.spring_stiffness_ang_y, jp.spring_damping_ang_y);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringAngZ) {
+            appendSpringDrive("angular", 2, jp.spring_stiffness_ang_z, jp.spring_damping_ang_z);
+        }
         if (jp.flag & RigidBodyCon::Flag_UseMotorLin) {
+            if (!drvFirst) {
+                drives << ',';
+            }
+            drvFirst = false;
             drives << "{\"type\":\"linear\",\"mode\":\"force\",\"axis\":0"
                    << ",\"velocityTarget\":" << jp.motor_lin_target_velocity
                    << ",\"maxForce\":" << jp.motor_lin_max_impulse << '}';
-            drvFirst = false;
         }
         if (jp.flag & RigidBodyCon::Flag_UseMotorAng) {
             if (!drvFirst) {
                 drives << ',';
             }
+            drvFirst = false;
             drives << "{\"type\":\"angular\",\"mode\":\"force\",\"axis\":0"
                    << ",\"velocityTarget\":" << jp.motor_ang_target_velocity
                    << ",\"maxForce\":" << jp.motor_ang_max_impulse << '}';
@@ -2852,7 +2924,10 @@ static void BlendEmitKhrPhysics(std::ostringstream &pjson, Assimp::Blender::Conv
     }
 
     std::ostringstream nodes;
+    std::ostringstream colliderMeshes;
     bool nodeFirst = true;
+    bool colliderMeshFirst = true;
+    std::set<int> emittedColliderMeshes;
     for (const auto &b : conv.khrBodies) {
         int idx = -1;
         const auto it = nameToIndex.find(b.name);
@@ -2872,15 +2947,44 @@ static void BlendEmitKhrPhysics(std::ostringstream &pjson, Assimp::Blender::Conv
         nodeFirst = false;
         nodes << "{\"index\":" << idx << ",\"name\":\"" << BlendJsonEscape(b.name)
               << "\",\"KHR_physics_rigid_bodies\":{";
-        if (!b.motionType.empty()) {
-            nodes << "\"motion\":{\"type\":\"" << b.motionType << "\",\"mass\":" << b.mass << "},";
+        if (b.isTrigger) {
+            // Disabled RBO -> trigger volume (KHR parity with Gravity* sensors).
+            nodes << "\"trigger\":{\"geometry\":{";
+            if (b.meshIdx >= 0) {
+                nodes << "\"mesh\":" << b.meshIdx;
+            } else {
+                nodes << "\"shape\":" << b.shapeIdx;
+            }
+            nodes << '}';
+            if (filterIdx >= 0) {
+                nodes << ",\"collisionFilter\":" << filterIdx;
+            }
+            nodes << '}';
+        } else {
+            if (!b.motionType.empty()) {
+                nodes << "\"motion\":{\"type\":\"" << b.motionType << "\",\"mass\":" << b.mass << "},";
+            }
+            nodes << "\"collider\":{\"geometry\":{";
+            if (b.meshIdx >= 0) {
+                nodes << "\"convexHull\":" << (b.convexHull ? "true" : "false")
+                      << ",\"mesh\":" << b.meshIdx;
+            } else {
+                nodes << "\"shape\":" << b.shapeIdx;
+            }
+            nodes << "},\"physicsMaterial\":" << b.matIdx;
+            if (filterIdx >= 0) {
+                nodes << ",\"collisionFilter\":" << filterIdx;
+            }
+            nodes << '}';
         }
-        nodes << "\"collider\":{\"geometry\":{\"shape\":" << b.shapeIdx
-              << "},\"physicsMaterial\":" << b.matIdx;
-        if (filterIdx >= 0) {
-            nodes << ",\"collisionFilter\":" << filterIdx;
+        nodes << "}}";
+
+        // Meshes already moved to aiScene (conv.meshes dismissed) before emit.
+        if (b.meshIdx >= 0 && emittedColliderMeshes.insert(b.meshIdx).second && scene != nullptr &&
+                b.meshIdx < static_cast<int>(scene->mNumMeshes) && scene->mMeshes != nullptr) {
+            const aiMesh *am = scene->mMeshes[static_cast<unsigned int>(b.meshIdx)];
+            BlendAppendColliderMeshSoup(colliderMeshes, colliderMeshFirst, b.meshIdx, b.name.c_str(), am);
         }
-        nodes << "}}}";
     }
     if (!jointNodeFirst) {
         if (!nodeFirst) {
@@ -2896,6 +3000,9 @@ static void BlendEmitKhrPhysics(std::ostringstream &pjson, Assimp::Blender::Conv
           << "],\"collisionFilters\":[" << filters.str()
           << "],\"physicsJoints\":[" << joints.str() << "]}";
     pjson << ",\"nodes\":[" << nodes.str() << ']';
+    if (!colliderMeshFirst) {
+        pjson << ",\"KHR_physics_collider_meshes\":{\"meshes\":[" << colliderMeshes.str() << "]}";
+    }
 }
 
 void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv,
@@ -2961,12 +3068,23 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                   << "}}";
         BlendPushPhysicsInv(conv.physicsRigidNodes, objName, rigidJson.str());
 
-        if (!conv.khrShapeFirst) {
-            conv.khrShapes << ',';
+        // Mesh-based shapes: Host needs geometry.mesh (+ soup), not an empty implicit hull.
+        const bool meshShape = (rb.shape == RigidBodyOb::Shape_Trimesh) ||
+                               (rb.shape == RigidBodyOb::Shape_ConvexH);
+        int meshIdx = -1;
+        if (meshShape && node != nullptr && node->mNumMeshes > 0) {
+            meshIdx = static_cast<int>(node->mMeshes[0]);
         }
-        conv.khrShapeFirst = false;
-        const int shapeIdx = conv.khrShapeCount++;
-        conv.khrShapes << "{\"type\":\"" << shapeName << "\"}";
+
+        int shapeIdx = -1;
+        if (!meshShape) {
+            if (!conv.khrShapeFirst) {
+                conv.khrShapes << ',';
+            }
+            conv.khrShapeFirst = false;
+            shapeIdx = conv.khrShapeCount++;
+            conv.khrShapes << "{\"type\":\"" << shapeName << "\"}";
+        }
 
         if (!conv.khrMatFirst) {
             conv.khrMaterials << ',';
@@ -2979,11 +3097,24 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
 
         ConversionData::KhrBodyPending body;
         body.name = objName ? objName : "";
-        body.motionType = colliderOnly ? std::string() : std::string(motionType);
+        // RBO_FLAG_DISABLED: not dynamically simulated -> KHR trigger volume.
+        body.isTrigger = (rb.flag & RigidBodyOb::Flag_Disabled) != 0;
+        body.motionType = (body.isTrigger || colliderOnly) ? std::string() : std::string(motionType);
         body.mass = rb.mass;
         body.shapeIdx = shapeIdx;
         body.matIdx = matIdx;
         body.colGroups = rb.col_groups;
+        body.meshIdx = meshIdx;
+        body.convexHull = (rb.shape == RigidBodyOb::Shape_ConvexH);
+        // Disabled + no shape/mesh: still need a shape for Host trigger geometry.
+        if (body.isTrigger && body.meshIdx < 0 && body.shapeIdx < 0) {
+            if (!conv.khrShapeFirst) {
+                conv.khrShapes << ',';
+            }
+            conv.khrShapeFirst = false;
+            body.shapeIdx = conv.khrShapeCount++;
+            conv.khrShapes << "{\"type\":\"" << shapeName << "\"}";
+        }
         conv.khrBodies.push_back(std::move(body));
     }
 
@@ -3028,6 +3159,18 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         jp.limit_ang_y_upper = jc.limit_ang_y_upper;
         jp.limit_ang_z_lower = jc.limit_ang_z_lower;
         jp.limit_ang_z_upper = jc.limit_ang_z_upper;
+        jp.spring_stiffness_x = jc.spring_stiffness_x;
+        jp.spring_stiffness_y = jc.spring_stiffness_y;
+        jp.spring_stiffness_z = jc.spring_stiffness_z;
+        jp.spring_stiffness_ang_x = jc.spring_stiffness_ang_x;
+        jp.spring_stiffness_ang_y = jc.spring_stiffness_ang_y;
+        jp.spring_stiffness_ang_z = jc.spring_stiffness_ang_z;
+        jp.spring_damping_x = jc.spring_damping_x;
+        jp.spring_damping_y = jc.spring_damping_y;
+        jp.spring_damping_z = jc.spring_damping_z;
+        jp.spring_damping_ang_x = jc.spring_damping_ang_x;
+        jp.spring_damping_ang_y = jc.spring_damping_ang_y;
+        jp.spring_damping_ang_z = jc.spring_damping_ang_z;
         jp.motor_lin_target_velocity = jc.motor_lin_target_velocity;
         jp.motor_ang_target_velocity = jc.motor_ang_target_velocity;
         jp.motor_lin_max_impulse = jc.motor_lin_max_impulse;
@@ -4112,7 +4255,7 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         }
         // Host Bullet/PhysX: KHR joints/filters/nodes (glTF-shaped).
         if (!conv.khrBodies.empty() || !conv.khrJoints.empty()) {
-            BlendEmitKhrPhysics(pjson, conv, nameToIndex);
+            BlendEmitKhrPhysics(pjson, conv, nameToIndex, out);
         }
         pjson << '}';
         auto *psc = new aiPhysicsSidecar();
