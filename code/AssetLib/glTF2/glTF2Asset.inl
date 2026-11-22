@@ -52,6 +52,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/writer.h>
 
 #include <cmath>
+#include <set>
+#include <sstream>
+#include <vector>
 
 // clang-format off
 #ifdef ASSIMP_ENABLE_DRACO
@@ -2311,6 +2314,40 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
     ReadExtensionsUsed(doc);
     ReadExtensionsRequired(doc);
 
+    // Collect collider.geometry.mesh indices while Document is alive (SC4 orphans).
+    std::set<unsigned int> physicsColliderMeshIndices;
+    auto collectColliderMesh = [&](Value &physObj) {
+        Value *col = FindObject(physObj, "collider");
+        if (!col) {
+            return;
+        }
+        Value *geo = FindObject(*col, "geometry");
+        if (!geo) {
+            return;
+        }
+        // FindUInt(Document&) overload shadows Value*; use member lookup.
+        auto it = geo->FindMember("mesh");
+        if (it != geo->MemberEnd() && it->value.IsUint()) {
+            physicsColliderMeshIndices.insert(it->value.GetUint());
+        }
+    };
+    if (Value *docNodes = FindArray(doc, "nodes")) {
+        for (rapidjson::SizeType i = 0; i < docNodes->Size(); ++i) {
+            Value &node = (*docNodes)[i];
+            if (!node.IsObject()) {
+                continue;
+            }
+            Value *nodeExt = FindObject(node, "extensions");
+            if (!nodeExt) {
+                continue;
+            }
+            Value *nodePhys = FindObject(*nodeExt, "KHR_physics_rigid_bodies");
+            if (nodePhys) {
+                collectColliderMesh(*nodePhys);
+            }
+        }
+    }
+
     // Build physics sidecar JSON while Document is alive (host Bullet / SV semantics).
     physicsSidecarJson.clear();
     if (extensionsUsed.KHR_implicit_shapes || extensionsUsed.KHR_physics_rigid_bodies) {
@@ -2414,6 +2451,139 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
     if (Value *animsArray = FindArray(doc, "animations")) {
         for (unsigned int i = 0; i < animsArray->Size(); ++i) {
             animations.Retrieve(i);
+        }
+    }
+
+    // SC4: Force-Retrieve orphan collider meshes + embed triangle soups in physics sidecar.
+    // Must stay after AttachToDocument / scene retrieve; before DetachFromDocument.
+    if (!physicsColliderMeshIndices.empty() && !physicsSidecarJson.empty()) {
+        rapidjson::Document bag;
+        bag.Parse(physicsSidecarJson.c_str());
+        if (!bag.HasParseError() && bag.IsObject()) {
+            rapidjson::Document::AllocatorType &cal = bag.GetAllocator();
+            rapidjson::Value meshesArr(rapidjson::kArrayType);
+            unsigned embedded = 0;
+
+            for (unsigned int meshId : physicsColliderMeshIndices) {
+                Ref<Mesh> meshRef = meshes.Retrieve(meshId);
+                if (!meshRef) {
+                    continue;
+                }
+                Mesh &mesh = *meshRef;
+                if (mesh.primitives.empty()) {
+                    continue;
+                }
+                // Collider proxies are authored as a single triangle primitive.
+                Mesh::Primitive &prim = mesh.primitives[0];
+                if (prim.attributes.position.empty() || !prim.attributes.position[0]) {
+                    continue;
+                }
+
+                aiVector3D *verts = nullptr;
+                size_t nVerts = 0;
+                try {
+                    nVerts = prim.attributes.position[0]->ExtractData(verts);
+                } catch (...) {
+                    delete[] verts;
+                    continue;
+                }
+                if (verts == nullptr || nVerts == 0) {
+                    delete[] verts;
+                    continue;
+                }
+
+                std::vector<unsigned int> indices;
+                if (prim.indices) {
+                    Accessor::Indexer indexer = prim.indices->GetIndexer();
+                    if (indexer.IsValid()) {
+                        indices.resize(prim.indices->count);
+                        for (size_t ii = 0; ii < prim.indices->count; ++ii) {
+                            indices[ii] = indexer.GetUInt(static_cast<unsigned int>(ii));
+                        }
+                    }
+                } else {
+                    indices.resize(nVerts);
+                    for (size_t ii = 0; ii < nVerts; ++ii) {
+                        indices[ii] = static_cast<unsigned int>(ii);
+                    }
+                }
+
+                // Expand to triangle list (TRIANGLES / strip / fan); default TRIANGLES.
+                std::vector<unsigned int> triIndices;
+                const PrimitiveMode mode = prim.mode;
+                if (mode == PrimitiveMode_TRIANGLE_STRIP && indices.size() >= 3) {
+                    const size_t nFaces = indices.size() - 2;
+                    triIndices.reserve(nFaces * 3);
+                    for (size_t i = 0; i < nFaces; ++i) {
+                        if ((i + 1) % 2 == 0) {
+                            triIndices.push_back(indices[i + 1]);
+                            triIndices.push_back(indices[i]);
+                            triIndices.push_back(indices[i + 2]);
+                        } else {
+                            triIndices.push_back(indices[i]);
+                            triIndices.push_back(indices[i + 1]);
+                            triIndices.push_back(indices[i + 2]);
+                        }
+                    }
+                } else if (mode == PrimitiveMode_TRIANGLE_FAN && indices.size() >= 3) {
+                    const size_t nFaces = indices.size() - 2;
+                    triIndices.reserve(nFaces * 3);
+                    for (size_t i = 0; i < nFaces; ++i) {
+                        triIndices.push_back(indices[0]);
+                        triIndices.push_back(indices[i + 1]);
+                        triIndices.push_back(indices[i + 2]);
+                    }
+                } else {
+                    // TRIANGLES (and unknown): keep triples; drop trailing leftovers.
+                    const size_t nFaces = indices.size() / 3;
+                    triIndices.assign(indices.begin(), indices.begin() + nFaces * 3);
+                }
+
+                if (nVerts < 3 || triIndices.size() < 3) {
+                    delete[] verts;
+                    continue;
+                }
+
+                rapidjson::Value entry(rapidjson::kObjectType);
+                entry.AddMember("index", meshId, cal);
+                const std::string meshName = mesh.name.empty() ? mesh.id : mesh.name;
+                entry.AddMember("name", rapidjson::Value(meshName.c_str(), cal).Move(), cal);
+
+                rapidjson::Value posArr(rapidjson::kArrayType);
+                posArr.Reserve(static_cast<rapidjson::SizeType>(nVerts * 3), cal);
+                for (size_t v = 0; v < nVerts; ++v) {
+                    posArr.PushBack(verts[v].x, cal);
+                    posArr.PushBack(verts[v].y, cal);
+                    posArr.PushBack(verts[v].z, cal);
+                }
+                entry.AddMember("positions", posArr, cal);
+
+                rapidjson::Value idxArr(rapidjson::kArrayType);
+                idxArr.Reserve(static_cast<rapidjson::SizeType>(triIndices.size()), cal);
+                for (unsigned int idx : triIndices) {
+                    idxArr.PushBack(idx, cal);
+                }
+                entry.AddMember("indices", idxArr, cal);
+
+                meshesArr.PushBack(entry, cal);
+                ++embedded;
+                delete[] verts;
+            }
+
+            if (embedded > 0) {
+                rapidjson::Value coll(rapidjson::kObjectType);
+                coll.AddMember("meshes", meshesArr, cal);
+                if (bag.HasMember("KHR_physics_collider_meshes")) {
+                    bag.RemoveMember("KHR_physics_collider_meshes");
+                }
+                bag.AddMember("KHR_physics_collider_meshes", coll, cal);
+                rapidjson::StringBuffer sbuf;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(sbuf);
+                bag.Accept(writer);
+                physicsSidecarJson = sbuf.GetString();
+                ASSIMP_LOG_INFO("GLTF: SC4 embedded ", embedded,
+                        " orphan physics collider mesh soup(s) in sidecar");
+            }
         }
     }
 
