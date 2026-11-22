@@ -3391,6 +3391,46 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
          << ",\"blenderFileVersion\":" << file.blender_file_version
          << '}';
 
+    // Scene DNA already loaded: active camera / world (Presence - no invent).
+    const char *sceneCameraName = nullptr;
+    int sceneCameraIndex = -1;
+    if (in.camera && in.camera->id.name[0] != '\0') {
+        sceneCameraName = in.camera->id.name + 2;
+        for (unsigned int ci = 0; ci < out->mNumCameras; ++ci) {
+            if (std::strcmp(out->mCameras[ci]->mName.C_Str(), sceneCameraName) == 0) {
+                sceneCameraIndex = static_cast<int>(ci);
+                break;
+            }
+        }
+    }
+    json << ",\"BLEND_scene\":{";
+    {
+        bool sfirst = true;
+        auto ssep = [&]() {
+            if (!sfirst) {
+                json << ',';
+            }
+            sfirst = false;
+        };
+        if (in.id.name[0] != '\0') {
+            ssep();
+            json << "\"name\":\"" << BlendJsonEscape(in.id.name + 2) << '"';
+        }
+        if (sceneCameraName != nullptr) {
+            ssep();
+            json << "\"camera\":\"" << BlendJsonEscape(sceneCameraName) << '"';
+            if (sceneCameraIndex >= 0) {
+                ssep();
+                json << "\"cameraIndex\":" << sceneCameraIndex;
+            }
+        }
+        if (in.world && in.world->id.name[0] != '\0') {
+            ssep();
+            json << "\"world\":\"" << BlendJsonEscape(in.world->id.name + 2) << '"';
+        }
+    }
+    json << '}';
+
     // S4 cameras / lights (typed already; bag for host inject inventory)
     json << ",\"cameras\":[";
     for (unsigned int ci = 0; ci < out->mNumCameras; ++ci) {
@@ -3399,6 +3439,9 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         }
         const char *cname = out->mCameras[ci]->mName.C_Str();
         json << "{\"index\":" << ci << ",\"name\":\"" << BlendJsonEscape(cname) << '"';
+        if (sceneCameraName != nullptr && std::strcmp(cname, sceneCameraName) == 0) {
+            json << ",\"sceneCamera\":true";
+        }
         const auto itEx = conv.cameraSidecarExtras.find(cname);
         if (itEx != conv.cameraSidecarExtras.end() && !itEx->second.empty()) {
             json << ',' << itEx->second;
