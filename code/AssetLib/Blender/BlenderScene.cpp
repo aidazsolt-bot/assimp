@@ -613,6 +613,7 @@ void Structure ::Convert<ParticleSettings>(
     } else {
         ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_ob, "*dup_ob", db);
     }
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.mtex, "*mtex", db);
     db.reader->IncPtr(size);
 }
 
@@ -1272,6 +1273,7 @@ void Structure ::Convert<World>(
         const FileDatabase &db) const {
 
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.nodetree, "*nodetree", db);
 
     db.reader->IncPtr(size);
 }

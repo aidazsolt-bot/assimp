@@ -109,13 +109,19 @@ std::string BlendJsonEscape(const std::string &in) {
 // Legacy DNA node type ints (BKE_node_legacy_types.hh) - used when idname is absent.
 enum BlendShaderNodeType : short {
     kSH_NODE_OUTPUT_MATERIAL = 124,
+    kSH_NODE_OUTPUT_WORLD = 125,
     kSH_NODE_MIX_SHADER = 128,
+    kSH_NODE_BACKGROUND = 130,
     kSH_NODE_BSDF_GLOSSY = 131,
     kSH_NODE_BSDF_DIFFUSE = 132,
     kSH_NODE_BSDF_GLOSSY_LEGACY = 133,
     kSH_NODE_BSDF_GLASS = 134,
     kSH_NODE_EMISSION = 140,
     kSH_NODE_TEX_IMAGE = 143,
+    kSH_NODE_ADD_SHADER = 156,
+    kSH_NODE_TEX_ENVIRONMENT = 157,
+    kSH_NODE_TEX_BRICK = 169,
+    kSH_NODE_VALTORGB = 104,
     kSH_NODE_BSDF_PRINCIPLED = 193,
     kSH_NODE_VOLUME_PRINCIPLED = 200,
     kSH_NODE_NORMAL_MAP = 175,
@@ -139,6 +145,7 @@ struct BlendTexMap {
 struct BlendShaderFlat {
     bool ok{ false };
     bool mixedGraph{ false };
+    bool addShader{ false };
     const char *output{ nullptr };
     // Presence: only emit typed keys that were resolved from DNA default_value
     // or a linked constant / node-type-fixed factor (never invent ns zeros).
@@ -295,6 +302,34 @@ bool BlendNodeIsOutput(const Assimp::Blender::bNode &n) {
     return n.type == kSH_NODE_OUTPUT_MATERIAL;
 }
 
+bool BlendNodeIsOutputWorld(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeOutputWorld") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_OUTPUT_WORLD;
+}
+
+bool BlendNodeIsBackground(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeBackground") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_BACKGROUND;
+}
+
+bool BlendNodeIsTexEnvironment(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexEnvironment") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_TEX_ENVIRONMENT;
+}
+
+bool BlendNodeIsAddShader(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeAddShader") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_ADD_SHADER;
+}
+
 bool BlendNodeIsEmission(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeEmission") == 0) {
         return true;
@@ -307,6 +342,22 @@ bool BlendNodeIsTexImage(const Assimp::Blender::bNode &n) {
         return true;
     }
     return n.type == kSH_NODE_TEX_IMAGE;
+}
+
+bool BlendNodeIsTexBrick(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexBrick") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_TEX_BRICK;
+}
+
+bool BlendNodeIsColorRamp(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' &&
+            (std::strcmp(n.idname, "ShaderNodeValToRGB") == 0 ||
+                    std::strcmp(n.idname, "ShaderNodeRGBCurve") == 0)) {
+        return true;
+    }
+    return n.type == kSH_NODE_VALTORGB;
 }
 
 bool BlendNodeIsUVMap(const Assimp::Blender::bNode &n) {
@@ -421,7 +472,8 @@ bool BlendNodeIsFlattenable(const Assimp::Blender::bNode &n) {
 
 /** Nodes that end a Tex-Image upstream walk (shader roots / mix), not image filters. */
 bool BlendNodeIsTexWalkBarrier(const Assimp::Blender::bNode &n) {
-    return BlendNodeIsFlattenable(n) || BlendNodeIsOutput(n) || BlendNodeIsMixShader(n);
+    return BlendNodeIsFlattenable(n) || BlendNodeIsOutput(n) || BlendNodeIsMixShader(n) ||
+           BlendNodeIsAddShader(n) || BlendNodeIsOutputWorld(n) || BlendNodeIsBackground(n);
 }
 
 /** Higher = try first when several inputs are linked (Fac/Scale last). */
@@ -1218,7 +1270,8 @@ struct BlendNodeGraph {
         return sa >= sb ? a : b;
     }
 
-    const Assimp::Blender::bNode *ResolveSurface(const Assimp::Blender::bNode *n, bool &sawMix, int depth = 0) const {
+    const Assimp::Blender::bNode *ResolveSurface(const Assimp::Blender::bNode *n, bool &sawMix,
+            bool *sawAdd = nullptr, int depth = 0) const {
         using namespace Assimp::Blender;
         if (n == nullptr || depth > 10) {
             return nullptr;
@@ -1229,8 +1282,13 @@ struct BlendNodeGraph {
         if (BlendNodeIsEmission(*n)) {
             return n;
         }
-        if (BlendNodeIsMixShader(*n)) {
-            sawMix = true;
+        if (BlendNodeIsMixShader(*n) || BlendNodeIsAddShader(*n)) {
+            if (BlendNodeIsMixShader(*n)) {
+                sawMix = true;
+            }
+            if (BlendNodeIsAddShader(*n) && sawAdd != nullptr) {
+                *sawAdd = true;
+            }
             const bNode *best = nullptr;
             for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
                 const bNodeSocket *sock = BlendCastSocket(cur.get());
@@ -1241,19 +1299,48 @@ struct BlendNodeGraph {
                         BlendSockNameIs(*sock, "Shader")) {
                     const bNodeLink *l = FindLinkToSocket(*sock);
                     if (l) {
-                        best = PickBest(best, ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, depth + 1));
+                        best = PickBest(best,
+                                ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, sawAdd, depth + 1));
                     }
                 }
-                // Mix Shader inputs are often just named "Shader" twice - take every linked input.
+                // Mix/Add Shader inputs are often just named "Shader" twice - take every linked input.
                 const bNodeLink *l = FindLinkToSocket(*sock);
                 if (l && !BlendSockNameIs(*sock, "Fac")) {
-                    best = PickBest(best, ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, depth + 1));
+                    best = PickBest(best,
+                            ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, sawAdd, depth + 1));
                 }
                 cur = sock->next;
             }
             return best;
         }
         return nullptr;
+    }
+
+    /** Walk Mix/Add chains and collect every Emission leaf (Presence merge later). */
+    void CollectEmissionLeaves(const Assimp::Blender::bNode *n,
+            std::vector<const Assimp::Blender::bNode *> &out, int depth = 0) const {
+        using namespace Assimp::Blender;
+        if (n == nullptr || depth > 10) {
+            return;
+        }
+        if (BlendNodeIsEmission(*n)) {
+            out.push_back(n);
+            return;
+        }
+        if (!BlendNodeIsMixShader(*n) && !BlendNodeIsAddShader(*n)) {
+            return;
+        }
+        for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            const bNodeLink *l = FindLinkToSocket(*sock);
+            if (l && !BlendSockNameIs(*sock, "Fac")) {
+                CollectEmissionLeaves(BlendCastNode(l->fromnode.get()), out, depth + 1);
+            }
+            cur = sock->next;
+        }
     }
 };
 
@@ -1610,21 +1697,51 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
         foreachInput([&](const bNodeSocket &sock) {
             if (BlendSockNameIs(sock, "Color")) {
                 float tmp[4]{};
-                if (BlendReadLinkedOrDefaultColor(g, sock, tmp, &flat.mapEmission)) {
+                const bNodeLink *l = g.FindLinkToSocket(sock);
+                if (l) {
+                    // Linked: only Image Tex or constant nodes count (no invent from unread Brick/Ramp).
+                    const bNode *src = BlendCastNode(l->fromnode.get());
+                    const bNode *tex = g.FollowToTexImage(src, 0, BlendCastSocket(l->fromsock.get()));
+                    if (tex) {
+                        BlendFillTexMap(g, tex, flat.mapEmission);
+                    }
+                    if (g.ReadConstantColor(src, tmp)) {
+                        flat.baseColor[0] = flat.emissionColor[0] = tmp[0];
+                        flat.baseColor[1] = flat.emissionColor[1] = tmp[1];
+                        flat.baseColor[2] = flat.emissionColor[2] = tmp[2];
+                        flat.baseColor[3] = tmp[3];
+                        flat.hasBaseColor = true;
+                        flat.hasEmissionColor = true;
+                    } else if (flat.mapEmission) {
+                        // Image-backed emission: no constant color key.
+                        flat.mapBaseColor = flat.mapEmission;
+                    }
+                } else if (BlendReadSocketColor(sock, tmp)) {
                     flat.baseColor[0] = flat.emissionColor[0] = tmp[0];
                     flat.baseColor[1] = flat.emissionColor[1] = tmp[1];
                     flat.baseColor[2] = flat.emissionColor[2] = tmp[2];
                     flat.baseColor[3] = tmp[3];
                     flat.hasBaseColor = true;
                     flat.hasEmissionColor = true;
+                }
+                if (flat.mapEmission && !flat.hasBaseColor) {
                     // Splash / toon Emission surfaces: same Image is the visible albedo.
-                    if (flat.mapEmission) {
-                        flat.mapBaseColor = flat.mapEmission;
-                    }
+                    flat.mapBaseColor = flat.mapEmission;
                 }
             } else if (BlendSockNameIs(sock, "Strength")) {
-                if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
-                    flat.hasEmissionStrength = true;
+                // Strength default is authored when unlinked; linked unread procedural => omit.
+                if (!g.FindLinkToSocket(sock)) {
+                    if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
+                        flat.hasEmissionStrength = true;
+                    }
+                } else {
+                    float linked = 0.f;
+                    const bNodeLink *l = g.FindLinkToSocket(sock);
+                    const bNode *src = l ? BlendCastNode(l->fromnode.get()) : nullptr;
+                    if (src && g.ReadConstantFloat(src, linked)) {
+                        flat.emissionStrength = linked;
+                        flat.hasEmissionStrength = true;
+                    }
                 }
             }
         });
@@ -1651,6 +1768,8 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
     }
 
     bool sawMix = false;
+    bool sawAdd = false;
+    const bNode *surfaceRoot = nullptr;
     const bNode *chosen = nullptr;
     if (outputNode != nullptr) {
         for (std::shared_ptr<ElemBase> cur = outputNode->inputs.first; cur;) {
@@ -1662,7 +1781,8 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
                 if (BlendSockNameIs(*sock, "Surface") || BlendSockNameIs(*sock, "surface")) {
                     const bNodeLink *l = g.FindLinkToSocket(*sock);
                     if (l) {
-                        chosen = g.ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix);
+                        surfaceRoot = BlendCastNode(l->fromnode.get());
+                        chosen = g.ResolveSurface(surfaceRoot, sawMix, &sawAdd);
                     }
                 }
             }
@@ -1672,7 +1792,8 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
         if (chosen == nullptr) {
             for (const bNodeLink *l : g.links) {
                 if (BlendCastNode(l->tonode.get()) == outputNode) {
-                    chosen = g.ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix);
+                    surfaceRoot = BlendCastNode(l->fromnode.get());
+                    chosen = g.ResolveSurface(surfaceRoot, sawMix, &sawAdd);
                     if (chosen) {
                         break;
                     }
@@ -1690,6 +1811,45 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
     if (chosen != nullptr) {
         flat = BlendFlattenFromNode(g, *chosen);
         flat.mixedGraph = sawMix;
+        flat.addShader = sawAdd;
+    }
+
+    // C7 Phase 1: Presence-merge Emission siblings under Add/Mix (constants / Image only).
+    // Emission leaf wins over Principled socket defaults (do not keep invent-black Emission Color).
+    if (surfaceRoot != nullptr) {
+        std::vector<const bNode *> emitLeaves;
+        g.CollectEmissionLeaves(surfaceRoot, emitLeaves);
+        for (const bNode *en : emitLeaves) {
+            if (en == nullptr || en == chosen) {
+                continue;
+            }
+            const BlendShaderFlat emitFlat = BlendFlattenFromNode(g, *en);
+            bool merged = false;
+            if (emitFlat.hasEmissionColor) {
+                flat.emissionColor[0] = emitFlat.emissionColor[0];
+                flat.emissionColor[1] = emitFlat.emissionColor[1];
+                flat.emissionColor[2] = emitFlat.emissionColor[2];
+                flat.hasEmissionColor = true;
+                merged = true;
+            } else if (emitFlat.mapEmission || emitFlat.hasEmissionStrength) {
+                // Procedural Color link unread: drop Principled default emissionColor key.
+                flat.hasEmissionColor = false;
+                flat.emissionColor[0] = flat.emissionColor[1] = flat.emissionColor[2] = 0.f;
+            }
+            if (emitFlat.hasEmissionStrength) {
+                flat.emissionStrength = emitFlat.emissionStrength;
+                flat.hasEmissionStrength = true;
+                merged = true;
+            }
+            if (emitFlat.mapEmission) {
+                flat.mapEmission = emitFlat.mapEmission;
+                merged = true;
+            }
+            if (merged || emitFlat.hasEmissionStrength || emitFlat.mapEmission) {
+                flat.ok = true;
+                flat.addShader = true;
+            }
+        }
     }
 
     // Principled Volume on Material Output Volume socket (Water Caustics Material.002).
@@ -1792,14 +1952,13 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
     return flat;
 }
 
-void BlendAttachNodeImage(aiMaterial *mout, const BlendTexMap &map, aiTextureType type,
-        Assimp::Blender::ConversionData &conv_data, unsigned matIndex) {
+/** Embed packed Image into conv.textures (dedupe by Image*). Returns true when *N or filepath usable. */
+bool BlendEnsureEmbeddedImage(const Assimp::Blender::Image *img, Assimp::Blender::ConversionData &conv_data,
+        aiString &outName, int *outEmbedIndex = nullptr) {
     using namespace Assimp::Blender;
-    if (mout == nullptr || map.img == nullptr) {
-        return;
+    if (img == nullptr) {
+        return false;
     }
-    const Image *img = map.img;
-    aiString name;
     const PackedFile *packed = BlendImageGetPacked(img);
     const char *dispPath = BlendImageDisplayPath(img);
     if (packed != nullptr && packed->data && packed->size > 0) {
@@ -1830,16 +1989,265 @@ void BlendAttachNodeImage(aiMaterial *mout, const BlendTexMap &map, aiTextureTyp
                 curTex->mFilename = aiString(dispPath);
             }
         }
-        name.data[0] = '*';
-        name.length = 1 + Assimp::ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1),
+        outName.data[0] = '*';
+        outName.length = 1 + Assimp::ASSIMP_itoa10(outName.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1),
                 static_cast<int32_t>(texIndex));
-    } else {
-        name = aiString(dispPath);
+        if (outEmbedIndex != nullptr) {
+            *outEmbedIndex = static_cast<int>(texIndex);
+        }
+        return true;
+    }
+    if (dispPath == nullptr || dispPath[0] == '\0') {
+        return false;
+    }
+    outName = aiString(dispPath);
+    if (outEmbedIndex != nullptr) {
+        *outEmbedIndex = -1;
+    }
+    return true;
+}
+
+void BlendAttachNodeImage(aiMaterial *mout, const BlendTexMap &map, aiTextureType type,
+        Assimp::Blender::ConversionData &conv_data, unsigned matIndex) {
+    using namespace Assimp::Blender;
+    if (mout == nullptr || map.img == nullptr) {
+        return;
+    }
+    aiString name;
+    if (!BlendEnsureEmbeddedImage(map.img, conv_data, name)) {
+        return;
     }
     const unsigned slot = conv_data.next_texture[type]++;
     mout->AddProperty(&name, AI_MATKEY_TEXTURE(type, slot));
     const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
     BlendEmitUvWsrc(mout, type, slot, uvIndex);
+}
+
+/** Inventory: every ShaderNodeTexImage (incl. nested groups), linked or not. */
+struct BlendMapInventoryEntry {
+    const Assimp::Blender::Image *img{ nullptr };
+    const Assimp::Blender::bNode *node{ nullptr };
+    bool linked{ false };
+};
+
+void BlendCollectTexImageInventory(const BlendNodeGraph &g, const BlendNodeGraph &rootLinks,
+        std::vector<BlendMapInventoryEntry> &out, int depth = 0) {
+    using namespace Assimp::Blender;
+    if (depth > 8) {
+        return;
+    }
+    auto nodeHasOutboundLink = [&](const bNode *n) -> bool {
+        for (const bNodeLink *l : rootLinks.links) {
+            if (BlendCastNode(l->fromnode.get()) == n) {
+                return true;
+            }
+        }
+        for (const bNodeLink *l : g.links) {
+            if (BlendCastNode(l->fromnode.get()) == n) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (const bNode *n : g.nodes) {
+        if (n == nullptr) {
+            continue;
+        }
+        if (BlendNodeIsTexImage(*n)) {
+            const Image *img = BlendNodeImage(*n);
+            if (img != nullptr) {
+                BlendMapInventoryEntry e;
+                e.img = img;
+                e.node = n;
+                e.linked = nodeHasOutboundLink(n);
+                out.push_back(e);
+            }
+        }
+        if (BlendNodeIsGroup(*n)) {
+            const bNodeTree *gt = BlendNodeGroupTree(*n);
+            if (gt != nullptr) {
+                const BlendNodeGraph sub = BlendBuildGraph(*gt);
+                BlendCollectTexImageInventory(sub, rootLinks, out, depth + 1);
+            }
+        }
+    }
+}
+
+struct BlendWorldEnvFlat {
+    const Assimp::Blender::Image *img{ nullptr };
+    bool hasStrength{ false };
+    float strength{ 0.f };
+};
+
+BlendWorldEnvFlat BlendFlattenWorldNodes(const Assimp::Blender::World &world) {
+    using namespace Assimp::Blender;
+    BlendWorldEnvFlat out;
+    if (!world.nodetree) {
+        return out;
+    }
+    const BlendNodeGraph g = BlendBuildGraph(*world.nodetree);
+    const bNode *outputNode = nullptr;
+    for (const bNode *n : g.nodes) {
+        if (n != nullptr && BlendNodeIsOutputWorld(*n)) {
+            outputNode = n;
+            break;
+        }
+    }
+    if (outputNode == nullptr) {
+        return out;
+    }
+    const bNode *bg = nullptr;
+    for (std::shared_ptr<ElemBase> cur = outputNode->inputs.first; cur;) {
+        const bNodeSocket *sock = BlendCastSocket(cur.get());
+        if (sock == nullptr) {
+            break;
+        }
+        if (BlendSockNameIs(*sock, "Surface") || BlendSockNameIs(*sock, "surface")) {
+            const bNodeLink *l = g.FindLinkToSocket(*sock);
+            if (l) {
+                bg = BlendCastNode(l->fromnode.get());
+            }
+        }
+        cur = sock->next;
+    }
+    if (bg == nullptr) {
+        return out;
+    }
+    // Peel single Reroute.
+    if ((bg->idname[0] != '\0' && std::strcmp(bg->idname, "NodeReroute") == 0) || bg->type == kSH_NODE_REROUTE) {
+        for (const bNodeLink *rl : g.links) {
+            if (BlendCastNode(rl->tonode.get()) == bg) {
+                bg = BlendCastNode(rl->fromnode.get());
+                break;
+            }
+        }
+    }
+    if (bg == nullptr || !BlendNodeIsBackground(*bg)) {
+        return out;
+    }
+    for (std::shared_ptr<ElemBase> cur = bg->inputs.first; cur;) {
+        const bNodeSocket *sock = BlendCastSocket(cur.get());
+        if (sock == nullptr) {
+            break;
+        }
+        if (BlendSockNameIs(*sock, "Color") || BlendSockNameIs(*sock, "color")) {
+            const bNodeLink *l = g.FindLinkToSocket(*sock);
+            if (l) {
+                const bNode *src = BlendCastNode(l->fromnode.get());
+                if (src != nullptr && (BlendNodeIsTexEnvironment(*src) || BlendNodeIsTexImage(*src))) {
+                    out.img = BlendNodeImage(*src);
+                }
+            }
+        } else if (BlendSockNameIs(*sock, "Strength") || BlendSockNameIs(*sock, "strength")) {
+            if (!g.FindLinkToSocket(*sock)) {
+                float s = 0.f;
+                if (BlendReadSocketFloat(*sock, s)) {
+                    out.hasStrength = true;
+                    out.strength = s;
+                }
+            }
+        }
+        cur = sock->next;
+    }
+    return out;
+}
+
+void BlendEmitWorldEnv(const Assimp::Blender::Scene &in, Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    conv.worldEnvJson.clear();
+    if (!in.world) {
+        return;
+    }
+    const BlendWorldEnvFlat flat = BlendFlattenWorldNodes(*in.world);
+    if (flat.img == nullptr) {
+        return;
+    }
+    aiString embedName;
+    int embedIndex = -1;
+    if (!BlendEnsureEmbeddedImage(flat.img, conv, embedName, &embedIndex)) {
+        return;
+    }
+    // Presence: only emit worldEnv when an Environment/Image Texture Image was resolved.
+    std::ostringstream wj;
+    wj << '{';
+    const char *disp = BlendImageDisplayPath(flat.img);
+    bool first = true;
+    auto sep = [&]() {
+        if (!first) {
+            wj << ',';
+        }
+        first = false;
+    };
+    if (flat.img->name[0] != '\0') {
+        sep();
+        wj << "\"image\":\"" << BlendJsonEscape(flat.img->name + 2) << '"';
+    }
+    if (disp != nullptr && disp[0] != '\0') {
+        sep();
+        wj << "\"path\":\"" << BlendJsonEscape(disp) << '"';
+    }
+    if (embedIndex >= 0) {
+        sep();
+        wj << "\"embed\":\"*" << embedIndex << '"';
+    }
+    sep();
+    wj << "\"projection\":\"equirectangular\"";
+    if (flat.hasStrength) {
+        sep();
+        wj << "\"strength\":" << flat.strength;
+    }
+    wj << '}';
+    conv.worldEnvJson = wj.str();
+}
+
+std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
+        Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    if (!mat.nodetree) {
+        return {};
+    }
+    const BlendNodeGraph g = BlendBuildGraph(*mat.nodetree);
+    std::ostringstream nj;
+    nj << "{\"nodes\":[";
+    bool nfirst = true;
+    bool sawBrick = false;
+    bool sawRamp = false;
+    for (const bNode *n : g.nodes) {
+        if (n == nullptr) {
+            continue;
+        }
+        if (!nfirst) {
+            nj << ',';
+        }
+        nfirst = false;
+        nj << '{';
+        if (n->idname[0] != '\0') {
+            nj << "\"idname\":\"" << BlendJsonEscape(n->idname) << '"';
+        } else {
+            nj << "\"type\":" << n->type;
+        }
+        if (n->name[0] != '\0') {
+            nj << ",\"name\":\"" << BlendJsonEscape(n->name) << '"';
+        }
+        if (BlendNodeIsTexBrick(*n)) {
+            nj << ",\"procedural\":\"TexBrick\"";
+            sawBrick = true;
+        } else if (BlendNodeIsColorRamp(*n)) {
+            nj << ",\"procedural\":\"ColorRamp\"";
+            sawRamp = true;
+        } else if (BlendNodeIsAddShader(*n)) {
+            nj << ",\"kind\":\"AddShader\"";
+        }
+        nj << '}';
+    }
+    nj << "],\"links\":" << g.links.size() << '}';
+    if (sawBrick) {
+        conv.skippedCategories.push_back("BLEND_shader_procedural_TexBrick");
+    }
+    if (sawRamp) {
+        conv.skippedCategories.push_back("BLEND_shader_procedural_ColorRamp");
+    }
+    return nj.str();
 }
 
 void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
@@ -1899,7 +2307,9 @@ static std::string BlendMapJson(const BlendTexMap &map) {
     return std::string("\"") + BlendJsonEscape(map.img->name) + '"';
 }
 
-std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, const BlendShaderFlat &flat) {
+std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, const BlendShaderFlat &flat,
+        Assimp::Blender::ConversionData &conv_data,
+        const std::vector<BlendMapInventoryEntry> &inventory) {
     std::ostringstream mjson;
     mjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"BLEND_shader\":{";
     mjson << "\"name\":\"" << BlendJsonEscape(mat.id.name + 2) << '"';
@@ -1910,6 +2320,9 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
         }
         if (flat.mixedGraph) {
             mjson << ",\"mixedGraph\":true";
+        }
+        if (flat.addShader) {
+            mjson << ",\"addShader\":true";
         }
     } else {
         mjson << ",\"use_nodes\":false,\"engine\":\"INTERNAL\"";
@@ -1976,6 +2389,37 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
         }
         mjson << '}';
     }
+    if (!inventory.empty()) {
+        mjson << ",\"maps\":{\"inventory\":[";
+        bool ifirst = true;
+        for (const BlendMapInventoryEntry &e : inventory) {
+            if (e.img == nullptr) {
+                continue;
+            }
+            aiString embedName;
+            int embedIndex = -1;
+            if (!BlendEnsureEmbeddedImage(e.img, conv_data, embedName, &embedIndex)) {
+                continue;
+            }
+            if (!ifirst) {
+                mjson << ',';
+            }
+            ifirst = false;
+            mjson << '{';
+            if (e.img->name[0] != '\0') {
+                mjson << "\"image\":\"" << BlendJsonEscape(e.img->name + 2) << '"';
+            }
+            if (e.node != nullptr && e.node->name[0] != '\0') {
+                mjson << ",\"node\":\"" << BlendJsonEscape(e.node->name) << '"';
+            }
+            mjson << ",\"linked\":" << (e.linked ? "true" : "false");
+            if (embedIndex >= 0) {
+                mjson << ",\"embed\":\"*" << embedIndex << '"';
+            }
+            mjson << '}';
+        }
+        mjson << "]}";
+    }
     if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityAttribute) {
         mjson << ",\"BLEND_shader_volume\":{";
         bool vfirst = true;
@@ -2001,6 +2445,12 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
             mjson << "\"densityAttribute\":\"" << BlendJsonEscape(flat.volumeDensityAttribute) << '"';
         }
         mjson << '}';
+    }
+    {
+        const std::string net = BlendBuildShaderNetworkJson(mat, conv_data);
+        if (!net.empty()) {
+            mjson << ",\"BLEND_shader_network\":" << net;
+        }
     }
     mjson << '}';
     return mjson.str();
@@ -2513,6 +2963,36 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                      << ",\"seed\":" << ps->seed;
             if (p.id.name[0] != '\0') {
                 partJson << ",\"settings_name\":\"" << BlendJsonEscape(p.id.name + 2) << '"';
+            }
+            // Particle texture slots (Fur density maps) - Presence: only when Image resolves.
+            bool texFirst = true;
+            for (size_t ti = 0; ti < sizeof(p.mtex) / sizeof(p.mtex[0]); ++ti) {
+                if (!p.mtex[ti] || !p.mtex[ti]->tex || !p.mtex[ti]->tex->ima) {
+                    continue;
+                }
+                const Image *img = p.mtex[ti]->tex->ima.get();
+                aiString embedName;
+                int embedIndex = -1;
+                if (!BlendEnsureEmbeddedImage(img, conv, embedName, &embedIndex)) {
+                    continue;
+                }
+                if (texFirst) {
+                    partJson << ",\"textures\":[";
+                    texFirst = false;
+                } else {
+                    partJson << ',';
+                }
+                partJson << "{\"slot\":" << ti;
+                if (img->name[0] != '\0') {
+                    partJson << ",\"image\":\"" << BlendJsonEscape(img->name + 2) << '"';
+                }
+                if (embedIndex >= 0) {
+                    partJson << ",\"embed\":\"*" << embedIndex << '"';
+                }
+                partJson << '}';
+            }
+            if (!texFirst) {
+                partJson << ']';
             }
         } else {
             partJson << "\"source\":\"ParticleSystem\"";
@@ -3325,6 +3805,7 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     }
 
     BuildMaterials(conv);
+    BlendEmitWorldEnv(in, conv);
 
     if (conv.meshes->size()) {
         out->mMeshes = new aiMesh *[out->mNumMeshes = static_cast<unsigned int>(conv.meshes->size())];
@@ -3684,6 +4165,10 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         if (in.world && in.world->id.name[0] != '\0') {
             ssep();
             json << "\"world\":\"" << BlendJsonEscape(in.world->id.name + 2) << '"';
+        }
+        if (!conv.worldEnvJson.empty()) {
+            ssep();
+            json << "\"worldEnv\":" << conv.worldEnvJson;
         }
     }
     json << '}';
@@ -4130,7 +4615,12 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
         }
 
         AddBlendParams(mout, mat.get());
-        conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat));
+        std::vector<BlendMapInventoryEntry> inventory;
+        if (mat->nodetree) {
+            const BlendNodeGraph rootG = BlendBuildGraph(*mat->nodetree);
+            BlendCollectTexImageInventory(rootG, rootG, inventory);
+        }
+        conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat, conv_data, inventory));
         if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityAttribute) {
             if (conv_data.materialHasPrincipledVolume.size() < conv_data.materials_raw.size()) {
                 conv_data.materialHasPrincipledVolume.resize(conv_data.materials_raw.size(), 0);

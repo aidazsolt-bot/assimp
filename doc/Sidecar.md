@@ -236,6 +236,37 @@ deprecated `Image.packedfile`. Assimp reads both and emits `aiTexture` (`*N`) +
 matched by material name (e.g. splash House of Chores). Grease Pencil strokes are
 out of scope.
 
+**Map inventory (2026-11-22):** `aiMaterialSidecar` may include `maps.inventory[]`
+(`image` / `node` / `linked` / `embed`) for every `ShaderNodeTexImage` in the
+material nodetree (incl. nested groups) - unlinked Previz nodes are inventory-only
+(no typed BASE invent). Particle Fur slots: Physics `BLEND_physics_particles`
+`settings.textures[]` from `ParticleSettings.mtex[]` when Image resolves.
+
+### BLEND World Env / Skymap (Arris)
+
+When `World.nodetree` has Environment Texture (or Image Tex) -> Background ->
+World Output with a resolved Image, Assimp embeds it as `aiTexture` and emits
+`SceneSidecarJson.BLEND_scene.worldEnv`:
+
+| Key | Meaning |
+|-----|---------|
+| `image` / `path` | Image datablock name / filepath when present |
+| `embed` | `*N` scene texture index when packed |
+| `projection` | `equirectangular` (authored Env Texture) |
+| `strength` | Background Strength only when socket resolved |
+
+Presence: omit `worldEnv` entirely if no Image (solid Background is not a skymap).
+BI procedural `TEX_ENVMAP` without Image stays in `skipped[]` (unchanged).
+
+### BLEND C7 Phase 1 (Add Shader + network dump)
+
+- `BLEND_shader.addShader:true` when Material Output peels `ShaderNodeAddShader`.
+- Emission sibling under Add: merge `emissionStrength` / Image emission maps when
+  resolved; procedural Emission Color (Brick/ColorRamp) is omitted (no invent).
+- `BLEND_shader_network`: compact node idname/name + `procedural` tags
+  (`TexBrick`, `ColorRamp`); scene `skipped[]` may list
+  `BLEND_shader_procedural_TexBrick` / `ColorRamp`. Full Brick/Ramp eval = later.
+
 ## USD scene timing / units (C0 / S0)
 
 No new C API. Stage metas are emitted on `aiScene::mMetaData`:
