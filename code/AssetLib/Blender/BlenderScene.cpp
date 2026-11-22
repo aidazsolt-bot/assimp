@@ -401,6 +401,45 @@ void Structure ::Convert<FluidModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<OceanModifierData>(
+        OceanModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.resolution, "resolution", db);
+    ReadField<ErrorPolicy_Igno>(dest.spatial_size, "spatial_size", db);
+    ReadField<ErrorPolicy_Igno>(dest.depth, "depth", db);
+    ReadField<ErrorPolicy_Igno>(dest.wave_scale, "wave_scale", db);
+    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
+    ReadField<ErrorPolicy_Igno>(dest.chop_amount, "chop_amount", db);
+    ReadField<ErrorPolicy_Igno>(dest.wind_velocity, "wind_velocity", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.cachepath, "cachepath", db);
+    ReadField<ErrorPolicy_Igno>(dest.cached, "cached", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<DynamicPaintModifierData>(
+        DynamicPaintModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<SolidifyModifierData>(
+        SolidifyModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.offset, "offset", db);
+    db.reader->IncPtr(size);
+}
+
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<SoftBody>(
         SoftBody &dest,
         const FileDatabase &db) const {
@@ -849,6 +888,16 @@ void Structure ::Convert<bNodeSocketValueRGBA>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<bNodeSocketValueString>(
+        bNodeSocketValueString &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.value, "value", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<NodeShaderUVMap>(
         NodeShaderUVMap &dest,
         const FileDatabase &db) const {
@@ -890,6 +939,8 @@ void Structure ::Convert<bNodeSocket>(
             valueStruct = "bNodeSocketValueFloat";
         } else if (dest.type == 2) {
             valueStruct = "bNodeSocketValueRGBA";
+        } else if (dest.type == 7) { // SOCK_STRING
+            valueStruct = "bNodeSocketValueString";
         }
         if (ptrval.val && valueStruct != nullptr) {
             const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
@@ -1519,6 +1570,9 @@ void DNA::RegisterConverters() {
     converters["TFace"] = DNA::FactoryPair(&Structure::Allocate<TFace>, &Structure::Convert<TFace>);
     converters["SubsurfModifierData"] = DNA::FactoryPair(&Structure::Allocate<SubsurfModifierData>, &Structure::Convert<SubsurfModifierData>);
     converters["FluidModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidModifierData>, &Structure::Convert<FluidModifierData>);
+    converters["OceanModifierData"] = DNA::FactoryPair(&Structure::Allocate<OceanModifierData>, &Structure::Convert<OceanModifierData>);
+    converters["DynamicPaintModifierData"] = DNA::FactoryPair(&Structure::Allocate<DynamicPaintModifierData>, &Structure::Convert<DynamicPaintModifierData>);
+    converters["SolidifyModifierData"] = DNA::FactoryPair(&Structure::Allocate<SolidifyModifierData>, &Structure::Convert<SolidifyModifierData>);
     converters["FluidDomainSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidDomainSettings>, &Structure::Convert<FluidDomainSettings>);
     converters["FluidFlowSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidFlowSettings>, &Structure::Convert<FluidFlowSettings>);
     converters["ClothModifierData"] = DNA::FactoryPair(&Structure::Allocate<ClothModifierData>, &Structure::Convert<ClothModifierData>);
@@ -1553,6 +1607,7 @@ void DNA::RegisterConverters() {
     converters["bNodeStack"] = DNA::FactoryPair(&Structure::Allocate<bNodeStack>, &Structure::Convert<bNodeStack>);
     converters["bNodeSocketValueFloat"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueFloat>, &Structure::Convert<bNodeSocketValueFloat>);
     converters["bNodeSocketValueRGBA"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueRGBA>, &Structure::Convert<bNodeSocketValueRGBA>);
+    converters["bNodeSocketValueString"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueString>, &Structure::Convert<bNodeSocketValueString>);
     converters["NodeShaderUVMap"] = DNA::FactoryPair(&Structure::Allocate<NodeShaderUVMap>, &Structure::Convert<NodeShaderUVMap>);
     converters["bNodeSocket"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocket>, &Structure::Convert<bNodeSocket>);
     converters["bNode"] = DNA::FactoryPair(&Structure::Allocate<bNode>, &Structure::Convert<bNode>);

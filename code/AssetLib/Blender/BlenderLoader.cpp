@@ -117,6 +117,7 @@ enum BlendShaderNodeType : short {
     kSH_NODE_EMISSION = 140,
     kSH_NODE_TEX_IMAGE = 143,
     kSH_NODE_BSDF_PRINCIPLED = 193,
+    kSH_NODE_VOLUME_PRINCIPLED = 200,
     kSH_NODE_NORMAL_MAP = 175,
     kSH_NODE_BUMP = 170,
     kSH_NODE_INVERT = 119,
@@ -151,6 +152,9 @@ struct BlendShaderFlat {
     bool hasEmissionStrength{ false };
     bool hasCoatWeight{ false };
     bool hasCoatRoughness{ false };
+    bool hasVolumeColor{ false };
+    bool hasVolumeDensity{ false };
+    bool hasVolumeDensityAttribute{ false };
     float baseColor[4]{};
     float metallic{ 0.f };
     float roughness{ 0.f };
@@ -161,6 +165,9 @@ struct BlendShaderFlat {
     float emissionStrength{ 0.f };
     float coatWeight{ 0.f };
     float coatRoughness{ 0.f };
+    float volumeColor[4]{};
+    float volumeDensity{ 0.f };
+    std::string volumeDensityAttribute;
     BlendTexMap mapBaseColor;
     BlendTexMap mapRoughness;
     BlendTexMap mapNormal;
@@ -251,6 +258,13 @@ bool BlendNodeIsPrincipled(const Assimp::Blender::bNode &n) {
         return true;
     }
     return n.type == kSH_NODE_BSDF_PRINCIPLED;
+}
+
+bool BlendNodeIsVolumePrincipled(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeVolumePrincipled") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_VOLUME_PRINCIPLED;
 }
 
 bool BlendNodeIsGlass(const Assimp::Blender::bNode &n) {
@@ -1673,6 +1687,75 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
         flat.mixedGraph = sawMix;
     }
 
+    // Principled Volume on Material Output Volume socket (Water Caustics Material.002).
+    if (outputNode != nullptr) {
+        for (std::shared_ptr<ElemBase> cur = outputNode->inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            if (BlendSockNameIs(*sock, "Volume") || BlendSockNameIs(*sock, "volume")) {
+                const bNodeLink *l = g.FindLinkToSocket(*sock);
+                const bNode *vn = l ? BlendCastNode(l->fromnode.get()) : nullptr;
+                if (vn != nullptr &&
+                        ((vn->idname[0] != '\0' && std::strcmp(vn->idname, "NodeReroute") == 0) ||
+                                vn->type == kSH_NODE_REROUTE)) {
+                    for (const bNodeLink *rl : g.links) {
+                        if (BlendCastNode(rl->tonode.get()) == vn) {
+                            vn = BlendCastNode(rl->fromnode.get());
+                            break;
+                        }
+                    }
+                }
+                if (vn != nullptr && BlendNodeIsVolumePrincipled(*vn)) {
+                    flat.ok = true;
+                    if (flat.output == nullptr) {
+                        flat.output = "Principled Volume";
+                    }
+                    for (std::shared_ptr<ElemBase> sc = vn->inputs.first; sc;) {
+                        const bNodeSocket *vs = BlendCastSocket(sc.get());
+                        if (vs == nullptr) {
+                            break;
+                        }
+                        if ((BlendSockNameIs(*vs, "Color") || BlendSockNameIs(*vs, "color")) &&
+                                !g.FindLinkToSocket(*vs)) {
+                            float rgba[4] = { 0, 0, 0, 0 };
+                            if (BlendReadSocketColor(*vs, rgba)) {
+                                flat.hasVolumeColor = true;
+                                flat.volumeColor[0] = rgba[0];
+                                flat.volumeColor[1] = rgba[1];
+                                flat.volumeColor[2] = rgba[2];
+                                flat.volumeColor[3] = rgba[3];
+                            }
+                        }
+                        if ((BlendSockNameIs(*vs, "Density") || BlendSockNameIs(*vs, "density")) &&
+                                !g.FindLinkToSocket(*vs)) {
+                            float dens = 0.f;
+                            if (BlendReadSocketFloat(*vs, dens)) {
+                                flat.hasVolumeDensity = true;
+                                flat.volumeDensity = dens;
+                            }
+                        }
+                        if (BlendSockNameIs(*vs, "Density Attribute") ||
+                                BlendSockNameIs(*vs, "density_attribute")) {
+                            if (vs->default_value && vs->default_value->dna_type &&
+                                    std::strcmp(vs->default_value->dna_type, "bNodeSocketValueString") == 0) {
+                                const auto *sv = static_cast<const bNodeSocketValueString *>(
+                                        vs->default_value.get());
+                                if (sv->value[0] != '\0') {
+                                    flat.hasVolumeDensityAttribute = true;
+                                    flat.volumeDensityAttribute = sv->value;
+                                }
+                            }
+                        }
+                        sc = vs->next;
+                    }
+                }
+            }
+            cur = sock->next;
+        }
+    }
+
     // Splash / toon setups: Principled often inside ShaderNodeGroup; flatten there with that graph.
     if (!flat.mapBaseColor) {
         for (const bNode *n : g.nodes) {
@@ -1827,7 +1910,7 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
         mjson << ",\"use_nodes\":false,\"engine\":\"INTERNAL\"";
     }
     mjson << '}';
-    if (flat.ok) {
+    if (flat.HasAnyFactor()) {
         mjson << ",\"BLEND_shader_principled\":{";
         bool first = true;
         auto sep = [&]() {
@@ -1885,6 +1968,32 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
                   << ",\"metallic\":" << BlendMapJson(flat.mapMetallic)
                   << ",\"normal\":" << BlendMapJson(flat.mapNormal)
                   << ",\"emission\":" << BlendMapJson(flat.mapEmission) << '}';
+        }
+        mjson << '}';
+    }
+    if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityAttribute) {
+        mjson << ",\"BLEND_shader_volume\":{";
+        bool vfirst = true;
+        auto vsep = [&]() {
+            if (!vfirst) {
+                mjson << ',';
+            }
+            vfirst = false;
+        };
+        vsep();
+        mjson << "\"output\":\"Principled Volume\"";
+        if (flat.hasVolumeColor) {
+            vsep();
+            mjson << "\"color\":[" << flat.volumeColor[0] << ',' << flat.volumeColor[1] << ','
+                  << flat.volumeColor[2] << ',' << flat.volumeColor[3] << ']';
+        }
+        if (flat.hasVolumeDensity) {
+            vsep();
+            mjson << "\"density\":" << flat.volumeDensity;
+        }
+        if (flat.hasVolumeDensityAttribute) {
+            vsep();
+            mjson << "\"densityAttribute\":\"" << BlendJsonEscape(flat.volumeDensityAttribute) << '"';
         }
         mjson << '}';
     }
@@ -2137,8 +2246,29 @@ static void BlendEmitKhrPhysics(std::ostringstream &pjson, Assimp::Blender::Conv
             joints << ',';
         }
         const int defIdx = emittedJointDefs++;
+        const char *jointTypeName = "generic";
+        switch (jp.type) {
+        case RigidBodyCon::Type_Point: jointTypeName = "point"; break;
+        case RigidBodyCon::Type_Hinge: jointTypeName = "hinge"; break;
+        case RigidBodyCon::Type_Slider: jointTypeName = "slider"; break;
+        case RigidBodyCon::Type_6Dof: jointTypeName = "generic"; break; // limits encode free axes
+        case RigidBodyCon::Type_6DofSpring: jointTypeName = "generic"; break;
+        case RigidBodyCon::Type_Fixed: jointTypeName = "fixed"; break;
+        case RigidBodyCon::Type_Piston: jointTypeName = "slider"; break;
+        case RigidBodyCon::Type_Motor: jointTypeName = "generic"; break;
+        default: break;
+        }
+        // Hinge without explicit ang-limit flags: Blender hinge frees X rotation by default.
+        if (jp.type == RigidBodyCon::Type_Hinge && limFirst) {
+            BlendAppendLimit(limits, limFirst, "linearAxes", 0, 0.f, 0.f);
+            BlendAppendLimit(limits, limFirst, "linearAxes", 1, 0.f, 0.f);
+            BlendAppendLimit(limits, limFirst, "linearAxes", 2, 0.f, 0.f);
+            BlendAppendLimit(limits, limFirst, "angularAxes", 1, 0.f, 0.f);
+            BlendAppendLimit(limits, limFirst, "angularAxes", 2, 0.f, 0.f);
+        }
         joints << "{\"limits\":[" << limits.str() << "],\"drives\":[" << drives.str() << ']'
                << ",\"constraintType\":" << jp.type
+               << ",\"jointType\":\"" << jointTypeName << '"'
                << ",\"breakingThreshold\":" << jp.breaking_threshold << '}';
 
         // Attach joint on constraint Empty; connectedNode = ob2 (DFS index).
@@ -2416,6 +2546,19 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             bagKey = "blast";
             wantMeshMatBind = true;
             break;
+        case ModifierData::eModifierType_Ocean:
+            bag = &conv.physicsOceanNodes;
+            bagKey = "ocean";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_DynamicPaint:
+            bag = &conv.physicsDynamicPaintNodes;
+            bagKey = "dynamic_paint";
+            break;
+        case ModifierData::eModifierType_Solidify:
+            bag = &conv.physicsSolidifyNodes;
+            bagKey = "solidify";
+            break;
         case ModifierData::eModifierType_Nodes: {
 
             // Blender 3+ often drives cloth/soft via Geometry Nodes - map by name heuristic.
@@ -2536,6 +2679,43 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                          << ",\"temperature\":" << fluid->flow->temperature << '}';
             }
         }
+
+        if (dat.type == ModifierData::eModifierType_Ocean &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "OceanModifierData") == 0) {
+            const auto *ocean = static_cast<const OceanModifierData *>(cur);
+            settings << ",\"source\":\"OceanModifierData\""
+                     << ",\"resolution\":" << ocean->resolution
+                     << ",\"spatial_size\":" << ocean->spatial_size
+                     << ",\"depth\":" << ocean->depth
+                     << ",\"wave_scale\":" << ocean->wave_scale
+                     << ",\"time\":" << ocean->time
+                     << ",\"chop_amount\":" << ocean->chop_amount
+                     << ",\"wind_velocity\":" << ocean->wind_velocity
+                     << ",\"cached\":" << (ocean->cached ? "true" : "false")
+                     << ",\"timeDrivenByFrame\":true";
+            if (ocean->cachepath[0] != '\0') {
+                settings << ",\"cachepath\":\"" << BlendJsonEscape(ocean->cachepath) << '"';
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_DynamicPaint &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "DynamicPaintModifierData") == 0) {
+            const auto *dp = static_cast<const DynamicPaintModifierData *>(cur);
+            const char *ui = "unknown";
+            if (dp->type & DynamicPaintModifierData::Type_Brush) {
+                ui = "brush";
+            } else if (dp->type & DynamicPaintModifierData::Type_Canvas) {
+                ui = "canvas";
+            }
+            settings << ",\"source\":\"DynamicPaintModifierData\",\"ui_type\":\"" << ui << '"';
+        }
+        if (dat.type == ModifierData::eModifierType_Solidify &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "SolidifyModifierData") == 0) {
+            const auto *sol = static_cast<const SolidifyModifierData *>(cur);
+            settings << ",\"source\":\"SolidifyModifierData\",\"thickness\":" << sol->offset;
+        }
         settings << '}';
 
         std::ostringstream nodeJson;
@@ -2547,6 +2727,65 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         nodeJson << ",\"settings\":" << settings.str() << '}';
         BlendPushPhysicsInv(*bag, objName, nodeJson.str());
+    }
+
+    // C5: non-TRS Action FCurves (modifier props etc.) -> animPointerChannels.
+    auto collectAct = [&](const std::shared_ptr<bAction> &act) {
+        if (!act) {
+            return;
+        }
+        const char *actName = (act->id.name[0] != '\0') ? (act->id.name + 2) : "";
+        for (std::shared_ptr<ElemBase> cur = act->curves.first; cur;) {
+            const FCurve *fc = BlendCastFCurve(cur.get());
+            if (fc == nullptr) {
+                break;
+            }
+            cur = fc->next;
+            if (fc->rna_path.empty() || fc->bezt.empty()) {
+                continue;
+            }
+            if (fc->rna_path == "location" || fc->rna_path == "rotation_euler" ||
+                    fc->rna_path == "rotation_quaternion" || fc->rna_path == "scale" ||
+                    fc->rna_path == "delta_location" || fc->rna_path == "delta_scale") {
+                continue;
+            }
+            ConversionData::AnimPointerChannel ch;
+            ch.actionName = actName ? actName : "";
+            ch.nodeName = objName ? objName : "";
+            ch.rnaPath = fc->rna_path;
+            ch.arrayIndex = fc->array_index;
+            ch.times.reserve(fc->bezt.size());
+            ch.values.reserve(fc->bezt.size());
+            for (const BezTriple &bz : fc->bezt) {
+                ch.times.push_back(bz.vec[1][0]);
+                ch.values.push_back(bz.vec[1][1]);
+            }
+            conv.animPointerChannels.push_back(std::move(ch));
+        }
+    };
+    if (obj->adt) {
+        collectAct(obj->adt->action);
+        for (std::shared_ptr<ElemBase> tcur = obj->adt->nla_tracks.first; tcur;) {
+            const NlaTrack *track = nullptr;
+            if (tcur->dna_type == nullptr || std::strcmp(tcur->dna_type, "NlaTrack") == 0) {
+                track = static_cast<const NlaTrack *>(tcur.get());
+            }
+            if (track == nullptr) {
+                break;
+            }
+            for (std::shared_ptr<ElemBase> scur = track->strips.first; scur;) {
+                const NlaStrip *strip = nullptr;
+                if (scur->dna_type == nullptr || std::strcmp(scur->dna_type, "NlaStrip") == 0) {
+                    strip = static_cast<const NlaStrip *>(scur.get());
+                }
+                if (strip == nullptr) {
+                    break;
+                }
+                collectAct(strip->act);
+                scur = strip->next;
+            }
+            tcur = track->next;
+        }
     }
 }
 } // namespace
@@ -2994,12 +3233,20 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     if (conv.physicsRigidNodes.empty()) {
         conv.skippedCategories.push_back("BLEND_physics_rigidbody_object_pointer");
     }
-    conv.skippedCategories.push_back("BLEND_action_nla_animation_sidecar");
     conv.skippedCategories.push_back("BLEND_shader_network_full_nodegraph");
+    // C5: only blanket-skip Action/NLA when nothing was collected into anim sidecar
+    // and no typed aiAnimation exists for those channels.
+    if (conv.animPointerChannels.empty() && out->mNumAnimations == 0) {
+        // Still avoid silent drop: specific skip only when we truly have no Action DNA walk result.
+        // Water Caustics has PlaneAction -> channels; this branch then does not fire.
+        conv.skippedCategories.push_back("BLEND_action_nla_animation_sidecar");
+    }
     const bool hasPhys = !conv.physicsSoftNodes.empty() || !conv.physicsClothNodes.empty() ||
                          !conv.physicsFluidNodes.empty() || !conv.physicsSmokeNodes.empty() ||
                          !conv.physicsRigidNodes.empty() || !conv.physicsParticleNodes.empty() ||
                          !conv.physicsJointNodes.empty() || !conv.physicsBlastNodes.empty() ||
+                         !conv.physicsOceanNodes.empty() || !conv.physicsDynamicPaintNodes.empty() ||
+                         !conv.physicsSolidifyNodes.empty() ||
                          !conv.khrBodies.empty() || !conv.khrJoints.empty();
     if (hasPhys) {
         std::unordered_map<std::string, int> nameToIndex;
@@ -3020,6 +3267,9 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         BlendEmitPhysicsInvBag(pjson, "BLEND_physics_particles", conv.physicsParticleNodes, nameToIndex);
         BlendEmitPhysicsInvBag(pjson, "BLEND_physics_constraints", conv.physicsJointNodes, nameToIndex);
         BlendEmitPhysicsInvBag(pjson, "BLEND_physics_blast", conv.physicsBlastNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_ocean", conv.physicsOceanNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_dynamic_paint", conv.physicsDynamicPaintNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_solidify", conv.physicsSolidifyNodes, nameToIndex);
         // Host Bullet/PhysX: KHR joints/filters/nodes (glTF-shaped).
         if (!conv.khrBodies.empty() || !conv.khrJoints.empty()) {
             BlendEmitKhrPhysics(pjson, conv, nameToIndex);
@@ -3028,6 +3278,89 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         auto *psc = new aiPhysicsSidecar();
         psc->mExtensionsJson = BlendDupJson(pjson.str(), psc->mExtensionsJsonLength);
         AttachPhysicsSidecar(out, psc);
+    }
+
+    // C5 Animation sidecar for modifier/pointer FCurves (PlaneAction Ocean wave_scale).
+    if (!conv.animPointerChannels.empty()) {
+        std::map<std::string, std::vector<size_t>> byAction;
+        for (size_t ci = 0; ci < conv.animPointerChannels.size(); ++ci) {
+            const std::string &an = conv.animPointerChannels[ci].actionName;
+            byAction[an.empty() ? std::string("Action") : an].push_back(ci);
+        }
+        const unsigned baseAnim = out->mNumAnimations;
+        const unsigned addCount = static_cast<unsigned>(byAction.size());
+        aiAnimation **newAnims = new aiAnimation *[baseAnim + addCount];
+        for (unsigned i = 0; i < baseAnim; ++i) {
+            newAnims[i] = out->mAnimations[i];
+        }
+        if (out->mAnimations) {
+            delete[] out->mAnimations;
+        }
+        out->mAnimations = newAnims;
+        out->mNumAnimations = baseAnim + addCount;
+        unsigned aidx = baseAnim;
+        for (const auto &kv : byAction) {
+            const std::vector<size_t> &chs = kv.second;
+            aiAnimation *anim = new aiAnimation();
+            anim->mName.Set(kv.first);
+            anim->mTicksPerSecond = fps > 0.f ? fps : 24.0;
+            anim->mNumChannels = 0;
+            anim->mChannels = nullptr;
+            double tmax = 0.0;
+            for (size_t ci : chs) {
+                for (float tt : conv.animPointerChannels[ci].times) {
+                    tmax = std::max(tmax, static_cast<double>(tt));
+                }
+            }
+            anim->mDuration = tmax;
+            out->mAnimations[aidx] = anim;
+
+            const unsigned nBuf = static_cast<unsigned>(chs.size() * 2u);
+            auto *asc = new aiAnimationSidecar();
+            asc->mNumBuffers = nBuf;
+            asc->mBuffers = new aiSidecarBuffer[nBuf];
+            std::ostringstream ajson;
+            ajson.setf(std::ios::fixed);
+            ajson.precision(9);
+            ajson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},"
+                  << "\"BLEND_animation_pointer\":{\"action\":\"" << BlendJsonEscape(kv.first)
+                  << "\",\"channels\":[";
+            for (size_t i = 0; i < chs.size(); ++i) {
+                const auto &ch = conv.animPointerChannels[chs[i]];
+                const unsigned biTimes = static_cast<unsigned>(i * 2u);
+                const unsigned biVals = biTimes + 1u;
+                const std::string tName = "ch" + std::to_string(i) + "_times";
+                const std::string vName = "ch" + std::to_string(i) + "_values";
+                auto fillBuf = [](aiSidecarBuffer &buf, const std::string &name, const std::vector<float> &data) {
+                    buf.mName.Set(name);
+                    buf.mNumElements = static_cast<unsigned>(data.size());
+                    buf.mNumComponents = 1;
+                    buf.mComponentType = static_cast<unsigned>(aiSidecarComponentType_Float);
+                    buf.mByteLength = data.size() * sizeof(float);
+                    buf.mData = new uint8_t[buf.mByteLength];
+                    if (!data.empty()) {
+                        std::memcpy(buf.mData, data.data(), buf.mByteLength);
+                    }
+                };
+                fillBuf(asc->mBuffers[biTimes], tName, ch.times);
+                fillBuf(asc->mBuffers[biVals], vName, ch.values);
+                if (i) {
+                    ajson << ',';
+                }
+                ajson << "{\"node\":\"" << BlendJsonEscape(ch.nodeName)
+                      << "\",\"rnaPath\":\"" << BlendJsonEscape(ch.rnaPath)
+                      << "\",\"arrayIndex\":" << ch.arrayIndex
+                      << ",\"pointer\":\"/nodes/" << BlendJsonEscape(ch.nodeName) << "/"
+                      << BlendJsonEscape(ch.rnaPath) << "\""
+                      << ",\"inputBuffer\":\"" << tName << "\""
+                      << ",\"outputBuffer\":\"" << vName << "\""
+                      << ",\"outputComponents\":1,\"interpolation\":\"LINEAR\"}";
+            }
+            ajson << "]}}";
+            asc->mExtensionsJson = BlendDupJson(ajson.str(), asc->mExtensionsJsonLength);
+            AttachAnimationSidecar(out, aidx, asc);
+            ++aidx;
+        }
     }
 
     std::ostringstream json;
@@ -3068,7 +3401,14 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         }
         json << "{\"index\":" << li << ",\"name\":\"" << BlendJsonEscape(out->mLights[li]->mName.C_Str()) << "\"}";
     }
-    json << "],\"volumes\":[],\"pointInstancers\":[],\"composition\":{},\"skipped\":[";
+    json << "],\"volumes\":[";
+    for (size_t vi = 0; vi < conv.volumeJsonEntries.size(); ++vi) {
+        if (vi) {
+            json << ',';
+        }
+        json << conv.volumeJsonEntries[vi];
+    }
+    json << "],\"pointInstancers\":[],\"composition\":{},\"skipped\":[";
     for (size_t si = 0; si < conv.skippedCategories.size(); ++si) {
         if (si) {
             json << ',';
@@ -3474,6 +3814,31 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
 
         AddBlendParams(mout, mat.get());
         conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat));
+        if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityAttribute) {
+            if (conv_data.materialHasPrincipledVolume.size() < conv_data.materials_raw.size()) {
+                conv_data.materialHasPrincipledVolume.resize(conv_data.materials_raw.size(), 0);
+            }
+            const unsigned mi = static_cast<unsigned>(conv_data.materials->size() - 1u);
+            if (mi < conv_data.materialHasPrincipledVolume.size()) {
+                conv_data.materialHasPrincipledVolume[mi] = 1;
+            }
+            std::ostringstream vj;
+            vj << "{\"materialIndex\":" << mi
+               << ",\"name\":\"" << BlendJsonEscape(mat->id.name + 2)
+               << "\",\"source\":\"Principled Volume\"";
+            if (flat.hasVolumeDensity) {
+                vj << ",\"density\":" << flat.volumeDensity;
+            }
+            if (flat.hasVolumeColor) {
+                vj << ",\"color\":[" << flat.volumeColor[0] << ',' << flat.volumeColor[1] << ','
+                   << flat.volumeColor[2] << ',' << flat.volumeColor[3] << ']';
+            }
+            if (flat.hasVolumeDensityAttribute) {
+                vj << ",\"densityAttribute\":\"" << BlendJsonEscape(flat.volumeDensityAttribute) << '"';
+            }
+            vj << '}';
+            conv_data.volumeJsonEntries.push_back(vj.str());
+        }
         if (mat->nodetree && !flat.ok) {
             conv_data.skippedCategories.push_back("BLEND_shader_nodegraph");
         }
