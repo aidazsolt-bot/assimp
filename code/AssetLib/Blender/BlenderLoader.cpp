@@ -161,7 +161,13 @@ struct BlendShaderFlat {
     bool hasCoatRoughness{ false };
     bool hasVolumeColor{ false };
     bool hasVolumeDensity{ false };
+    bool hasVolumeDensityDefault{ false };
+    bool hasVolumeDensityLinked{ false };
     bool hasVolumeDensityAttribute{ false };
+    bool hasVolumeAnisotropy{ false };
+    bool hasVolumeAbsorptionColor{ false };
+    bool hasVolumeEmissionColor{ false };
+    bool hasVolumeEmissionStrength{ false };
     float baseColor[4]{};
     float metallic{ 0.f };
     float roughness{ 0.f };
@@ -174,6 +180,11 @@ struct BlendShaderFlat {
     float coatRoughness{ 0.f };
     float volumeColor[4]{};
     float volumeDensity{ 0.f };
+    float volumeDensityDefault{ 0.f };
+    float volumeAnisotropy{ 0.f };
+    float volumeAbsorptionColor[4]{};
+    float volumeEmissionColor[4]{};
+    float volumeEmissionStrength{ 0.f };
     std::string volumeDensityAttribute;
     BlendTexMap mapBaseColor;
     BlendTexMap mapRoughness;
@@ -2585,27 +2596,35 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
                         if (vs == nullptr) {
                             break;
                         }
-                        if ((BlendSockNameIs(*vs, "Color") || BlendSockNameIs(*vs, "color")) &&
-                                !g.FindLinkToSocket(*vs)) {
-                            float rgba[4] = { 0, 0, 0, 0 };
-                            if (BlendReadSocketColor(*vs, rgba)) {
-                                flat.hasVolumeColor = true;
-                                flat.volumeColor[0] = rgba[0];
-                                flat.volumeColor[1] = rgba[1];
-                                flat.volumeColor[2] = rgba[2];
-                                flat.volumeColor[3] = rgba[3];
+                        const bool linked = (g.FindLinkToSocket(*vs) != nullptr);
+                        if (BlendSockNameIs(*vs, "Color") || BlendSockNameIs(*vs, "color")) {
+                            if (!linked) {
+                                float rgba[4] = { 0, 0, 0, 0 };
+                                if (BlendReadSocketColor(*vs, rgba)) {
+                                    flat.hasVolumeColor = true;
+                                    flat.volumeColor[0] = rgba[0];
+                                    flat.volumeColor[1] = rgba[1];
+                                    flat.volumeColor[2] = rgba[2];
+                                    flat.volumeColor[3] = rgba[3];
+                                }
                             }
-                        }
-                        if ((BlendSockNameIs(*vs, "Density") || BlendSockNameIs(*vs, "density")) &&
-                                !g.FindLinkToSocket(*vs)) {
+                        } else if (BlendSockNameIs(*vs, "Density") || BlendSockNameIs(*vs, "density")) {
+                            // Presence C12: unlinked -> density; linked -> densityLinked (+
+                            // densityDefault only when socket default_value is readable).
                             float dens = 0.f;
-                            if (BlendReadSocketFloat(*vs, dens)) {
+                            const bool gotDefault = BlendReadSocketFloat(*vs, dens);
+                            if (linked) {
+                                flat.hasVolumeDensityLinked = true;
+                                if (gotDefault) {
+                                    flat.hasVolumeDensityDefault = true;
+                                    flat.volumeDensityDefault = dens;
+                                }
+                            } else if (gotDefault) {
                                 flat.hasVolumeDensity = true;
                                 flat.volumeDensity = dens;
                             }
-                        }
-                        if (BlendSockNameIs(*vs, "Density Attribute") ||
-                                BlendSockNameIs(*vs, "density_attribute")) {
+                        } else if (BlendSockNameIs(*vs, "Density Attribute") ||
+                                   BlendSockNameIs(*vs, "density_attribute")) {
                             if (vs->default_value && vs->default_value->dna_type &&
                                     std::strcmp(vs->default_value->dna_type, "bNodeSocketValueString") == 0) {
                                 const auto *sv = static_cast<const bNodeSocketValueString *>(
@@ -2614,6 +2633,44 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
                                     flat.hasVolumeDensityAttribute = true;
                                     flat.volumeDensityAttribute = sv->value;
                                 }
+                            }
+                        } else if ((BlendSockNameIs(*vs, "Anisotropy") ||
+                                           BlendSockNameIs(*vs, "anisotropy")) &&
+                                   !linked) {
+                            float a = 0.f;
+                            if (BlendReadSocketFloat(*vs, a)) {
+                                flat.hasVolumeAnisotropy = true;
+                                flat.volumeAnisotropy = a;
+                            }
+                        } else if ((BlendSockNameIs(*vs, "Absorption Color") ||
+                                           BlendSockNameIs(*vs, "absorption_color")) &&
+                                   !linked) {
+                            float rgba[4] = { 0, 0, 0, 0 };
+                            if (BlendReadSocketColor(*vs, rgba)) {
+                                flat.hasVolumeAbsorptionColor = true;
+                                flat.volumeAbsorptionColor[0] = rgba[0];
+                                flat.volumeAbsorptionColor[1] = rgba[1];
+                                flat.volumeAbsorptionColor[2] = rgba[2];
+                                flat.volumeAbsorptionColor[3] = rgba[3];
+                            }
+                        } else if ((BlendSockNameIs(*vs, "Emission Strength") ||
+                                           BlendSockNameIs(*vs, "emission_strength")) &&
+                                   !linked) {
+                            float s = 0.f;
+                            if (BlendReadSocketFloat(*vs, s)) {
+                                flat.hasVolumeEmissionStrength = true;
+                                flat.volumeEmissionStrength = s;
+                            }
+                        } else if ((BlendSockNameIs(*vs, "Emission Color") ||
+                                           BlendSockNameIs(*vs, "emission_color")) &&
+                                   !linked) {
+                            float rgba[4] = { 0, 0, 0, 0 };
+                            if (BlendReadSocketColor(*vs, rgba)) {
+                                flat.hasVolumeEmissionColor = true;
+                                flat.volumeEmissionColor[0] = rgba[0];
+                                flat.volumeEmissionColor[1] = rgba[1];
+                                flat.volumeEmissionColor[2] = rgba[2];
+                                flat.volumeEmissionColor[3] = rgba[3];
                             }
                         }
                         sc = vs->next;
@@ -3193,7 +3250,9 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
         }
         mjson << "]}";
     }
-    if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityAttribute) {
+    if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityDefault ||
+            flat.hasVolumeDensityLinked || flat.hasVolumeDensityAttribute || flat.hasVolumeAnisotropy ||
+            flat.hasVolumeAbsorptionColor || flat.hasVolumeEmissionColor || flat.hasVolumeEmissionStrength) {
         mjson << ",\"BLEND_shader_volume\":{";
         bool vfirst = true;
         auto vsep = [&]() {
@@ -3213,9 +3272,37 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
             vsep();
             mjson << "\"density\":" << flat.volumeDensity;
         }
+        if (flat.hasVolumeDensityLinked) {
+            vsep();
+            mjson << "\"densityLinked\":true";
+        }
+        if (flat.hasVolumeDensityDefault) {
+            vsep();
+            mjson << "\"densityDefault\":" << flat.volumeDensityDefault;
+        }
         if (flat.hasVolumeDensityAttribute) {
             vsep();
             mjson << "\"densityAttribute\":\"" << BlendJsonEscape(flat.volumeDensityAttribute) << '"';
+        }
+        if (flat.hasVolumeAnisotropy) {
+            vsep();
+            mjson << "\"anisotropy\":" << flat.volumeAnisotropy;
+        }
+        if (flat.hasVolumeAbsorptionColor) {
+            vsep();
+            mjson << "\"absorptionColor\":[" << flat.volumeAbsorptionColor[0] << ','
+                  << flat.volumeAbsorptionColor[1] << ',' << flat.volumeAbsorptionColor[2] << ','
+                  << flat.volumeAbsorptionColor[3] << ']';
+        }
+        if (flat.hasVolumeEmissionStrength) {
+            vsep();
+            mjson << "\"emissionStrength\":" << flat.volumeEmissionStrength;
+        }
+        if (flat.hasVolumeEmissionColor) {
+            vsep();
+            mjson << "\"emissionColor\":[" << flat.volumeEmissionColor[0] << ','
+                  << flat.volumeEmissionColor[1] << ',' << flat.volumeEmissionColor[2] << ','
+                  << flat.volumeEmissionColor[3] << ']';
         }
         mjson << '}';
     }
@@ -5677,7 +5764,10 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
             BlendCollectTexImageInventory(rootG, rootG, inventory);
         }
         conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat, conv_data, inventory));
-        if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityAttribute) {
+        if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityDefault ||
+                flat.hasVolumeDensityLinked || flat.hasVolumeDensityAttribute || flat.hasVolumeAnisotropy ||
+                flat.hasVolumeAbsorptionColor || flat.hasVolumeEmissionColor ||
+                flat.hasVolumeEmissionStrength) {
             if (conv_data.materialHasPrincipledVolume.size() < conv_data.materials_raw.size()) {
                 conv_data.materialHasPrincipledVolume.resize(conv_data.materials_raw.size(), 0);
             }
@@ -5692,12 +5782,34 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
             if (flat.hasVolumeDensity) {
                 vj << ",\"density\":" << flat.volumeDensity;
             }
+            if (flat.hasVolumeDensityLinked) {
+                vj << ",\"densityLinked\":true";
+            }
+            if (flat.hasVolumeDensityDefault) {
+                vj << ",\"densityDefault\":" << flat.volumeDensityDefault;
+            }
             if (flat.hasVolumeColor) {
                 vj << ",\"color\":[" << flat.volumeColor[0] << ',' << flat.volumeColor[1] << ','
                    << flat.volumeColor[2] << ',' << flat.volumeColor[3] << ']';
             }
             if (flat.hasVolumeDensityAttribute) {
                 vj << ",\"densityAttribute\":\"" << BlendJsonEscape(flat.volumeDensityAttribute) << '"';
+            }
+            if (flat.hasVolumeAnisotropy) {
+                vj << ",\"anisotropy\":" << flat.volumeAnisotropy;
+            }
+            if (flat.hasVolumeAbsorptionColor) {
+                vj << ",\"absorptionColor\":[" << flat.volumeAbsorptionColor[0] << ','
+                   << flat.volumeAbsorptionColor[1] << ',' << flat.volumeAbsorptionColor[2] << ','
+                   << flat.volumeAbsorptionColor[3] << ']';
+            }
+            if (flat.hasVolumeEmissionStrength) {
+                vj << ",\"emissionStrength\":" << flat.volumeEmissionStrength;
+            }
+            if (flat.hasVolumeEmissionColor) {
+                vj << ",\"emissionColor\":[" << flat.volumeEmissionColor[0] << ','
+                   << flat.volumeEmissionColor[1] << ',' << flat.volumeEmissionColor[2] << ','
+                   << flat.volumeEmissionColor[3] << ']';
             }
             vj << '}';
             conv_data.volumeJsonEntries.push_back(vj.str());
