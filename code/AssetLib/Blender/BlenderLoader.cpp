@@ -2980,8 +2980,17 @@ aiCamera *BlenderImporter::ConvertCamera(const Scene & /*in*/, const Object *obj
     out->mPosition = aiVector3D(0.f, 0.f, 0.f);
     out->mUp = aiVector3D(0.f, 1.f, 0.f);
     out->mLookAt = aiVector3D(0.f, 0.f, -1.f);
+    // Presence: only emit FOV/aspect/ortho from DNA fields that resolved (no invent).
     if (cam->sensor_x && cam->lens) {
         out->mHorizontalFOV = 2.f * std::atan2(cam->sensor_x, 2.f * cam->lens);
+    }
+    if (cam->sensor_x > 0.f && cam->sensor_y > 0.f) {
+        out->mAspect = cam->sensor_x / cam->sensor_y;
+    }
+    if (cam->type == Camera::Type_ORTHO && cam->ortho_scale > 0.f) {
+        // Blender ortho_scale is full fit size; aiCamera wants half horizontal width.
+        out->mOrthographicWidth = cam->ortho_scale * 0.5f;
+        out->mHorizontalFOV = 0.f;
     }
     out->mClipPlaneNear = cam->clipsta;
     out->mClipPlaneFar = cam->clipend;

@@ -1191,6 +1191,8 @@ void Structure ::Convert<Camera>(
     dest.flag = static_cast<Assimp::Blender::Camera::Type>(temp);
     ReadField<ErrorPolicy_Warn>(dest.lens, "lens", db);
     ReadField<ErrorPolicy_Warn>(dest.sensor_x, "sensor_x", db);
+    ReadField<ErrorPolicy_Warn>(dest.sensor_y, "sensor_y", db);
+    ReadField<ErrorPolicy_Warn>(dest.ortho_scale, "ortho_scale", db);
     ReadField<ErrorPolicy_Igno>(dest.clipsta, "clipsta", db);
     ReadField<ErrorPolicy_Igno>(dest.clipend, "clipend", db);
 
