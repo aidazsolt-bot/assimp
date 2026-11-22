@@ -110,6 +110,24 @@ template <> void Structure :: Convert<FluidModifierData> (
     ) const
 ;
 
+template <> void Structure :: Convert<OceanModifierData> (
+    OceanModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<DynamicPaintModifierData> (
+    DynamicPaintModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<SolidifyModifierData> (
+    SolidifyModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<SoftBody> (
     SoftBody& dest,
     const FileDatabase& db

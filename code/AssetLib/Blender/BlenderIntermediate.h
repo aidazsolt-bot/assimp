@@ -202,6 +202,23 @@ namespace Blender {
         std::vector<PhysicsInvNode> physicsParticleNodes;
         std::vector<PhysicsInvNode> physicsJointNodes;
         std::vector<PhysicsInvNode> physicsBlastNodes;
+        std::vector<PhysicsInvNode> physicsOceanNodes;
+        std::vector<PhysicsInvNode> physicsDynamicPaintNodes;
+        std::vector<PhysicsInvNode> physicsSolidifyNodes;
+        /** Modifier-prop / pointer anim channels for aiAnimationSidecar (C5). */
+        struct AnimPointerChannel {
+            std::string actionName;
+            std::string nodeName;
+            std::string rnaPath;
+            int arrayIndex{ 0 };
+            std::vector<float> times;
+            std::vector<float> values;
+        };
+        std::vector<AnimPointerChannel> animPointerChannels;
+        /** Scene volumes[] entries (Principled Volume bind). */
+        std::vector<std::string> volumeJsonEntries;
+        /** Material indices with resolved Principled Volume (parallel to materials_raw). */
+        std::vector<char> materialHasPrincipledVolume;
         std::ostringstream khrShapes;
         std::ostringstream khrMaterials;
         bool khrShapeFirst{ true };

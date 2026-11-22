@@ -449,6 +449,16 @@ struct bNodeSocketValueRGBA final : ElemBase {
     float value[4];
 };
 
+struct bNodeSocketValueString final : ElemBase {
+    int subtype;
+    char value[1024];
+
+    bNodeSocketValueString() :
+            subtype(0) {
+        value[0] = '\0';
+    }
+};
+
 /** Subset of DNA NodeShaderUVMap (bNode.storage for ShaderNodeUVMap). */
 struct NodeShaderUVMap final : ElemBase {
     char uv_map[64];
@@ -801,6 +811,45 @@ struct FluidModifierData final : SharedModifierData {
 
     FluidModifierData() :
             time(0.f), type(0) {}
+};
+
+/** Subset of DNA OceanModifierData - Water Caustics / ocean waves. */
+struct OceanModifierData final : SharedModifierData {
+    int resolution WARN;
+    int spatial_size WARN;
+    float depth WARN;
+    float wave_scale WARN;
+    float time WARN;
+    float chop_amount WARN;
+    float wind_velocity WARN;
+    char cachepath[1024] WARN;
+    char cached WARN;
+
+    OceanModifierData() :
+            resolution(7), spatial_size(50), depth(200.f), wave_scale(1.f), time(1.f),
+            chop_amount(1.f), wind_velocity(30.f), cached(0) {
+        cachepath[0] = '\0';
+    }
+};
+
+/** Subset of DNA DynamicPaintModifierData. */
+struct DynamicPaintModifierData final : SharedModifierData {
+    enum Type {
+        Type_Canvas = (1 << 0),
+        Type_Brush = (1 << 1)
+    };
+    int type WARN; // canvas / brush UI
+
+    DynamicPaintModifierData() :
+            type(Type_Canvas) {}
+};
+
+/** Subset of DNA SolidifyModifierData - thickness for Host volumeThickness. */
+struct SolidifyModifierData final : SharedModifierData {
+    float offset WARN; // thickness (DNA name "offset")
+
+    SolidifyModifierData() :
+            offset(0.01f) {}
 };
 
 /** Subset of DNA SoftBody (Object.soft). */
