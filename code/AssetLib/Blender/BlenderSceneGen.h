@@ -462,6 +462,24 @@ template <> void Structure :: Convert<BezTriple> (
     ) const
 ;
 
+template <> void Structure :: Convert<DriverTarget> (
+    DriverTarget& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<DriverVar> (
+    DriverVar& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ChannelDriver> (
+    ChannelDriver& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<FCurve> (
     FCurve& dest,
     const FileDatabase& db
