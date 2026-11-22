@@ -289,6 +289,9 @@ namespace Blender {
         std::vector<KhrJointPending> khrJoints;
 
         std::vector<std::string> skippedCategories;
+
+        /** Compact BLEND_scene.worldEnv JSON object (Presence - omit when empty). */
+        std::string worldEnvJson;
     };
 #if defined(_MSC_VER) && _MSC_VER < 1900
 #   pragma warning(default:4351)

@@ -187,6 +187,8 @@ struct Collection final : ElemBase {
 // -------------------------------------------------------------------------------
 struct World final : ElemBase {
     ID id FAIL;
+    /** Cycles/EEVEE world shader tree (Environment Texture -> Background -> World Output). */
+    std::shared_ptr<struct bNodeTree> nodetree;
 };
 
 // -------------------------------------------------------------------------------
@@ -1089,6 +1091,8 @@ struct ParticleSettings final : ElemBase {
     std::shared_ptr<Collection> dup_group WARN;
     ListBase dupliweights WARN; // ParticleDupliWeight
     std::shared_ptr<Object> dup_ob WARN;
+    /** Particle texture slots (Fur density maps, etc.) - same MAX_MTEX=18 as Material. */
+    std::shared_ptr<MTex> mtex[18];
 
     enum DrawAs {
         Draw_None = 0,
