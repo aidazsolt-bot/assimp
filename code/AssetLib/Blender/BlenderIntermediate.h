@@ -219,6 +219,45 @@ namespace Blender {
             std::vector<float> values;
         };
         std::vector<AnimPointerChannel> animPointerChannels;
+        /** DNA Drivers (AnimData.drivers / ChannelDriver) for Animation sidecar. */
+        struct DriverTargetEmit {
+            std::string idCode;
+            std::string idName;
+            std::string rnaPath;
+            std::string bone;
+            short transChan{ 0 };
+            short flag{ 0 };
+            short options{ 0 };
+            int idtype{ 0 };
+            int contextProperty{ 0 };
+            float fallbackValue{ 0.f };
+            bool hasFallback{ false };
+            bool hasOptions{ false };
+            bool hasContextProperty{ false };
+            bool hasRotationMode{ false };
+            char rotationMode{ 0 };
+        };
+        struct DriverVarEmit {
+            std::string name;
+            short type{ 0 };
+            short flag{ 0 };
+            std::vector<DriverTargetEmit> targets;
+        };
+        struct DriverChannelEmit {
+            std::string ownerName;
+            std::string ownerIdCode; // "OB" when from Object.adt
+            std::string rnaPath;
+            int arrayIndex{ 0 };
+            int type{ 0 };
+            int flag{ 0 };
+            float influence{ 0.f };
+            bool hasInfluence{ false };
+            std::string expression;
+            std::vector<DriverVarEmit> variables;
+            std::vector<float> keyTimes; // optional generator FCurve keys
+            std::vector<float> keyValues;
+        };
+        std::vector<DriverChannelEmit> driverChannels;
         /** Scene volumes[] entries (Principled Volume bind). */
         std::vector<std::string> volumeJsonEntries;
         /** C13 PointInstancer pending (particle collection/object instances). */

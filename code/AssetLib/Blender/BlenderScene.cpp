@@ -134,15 +134,122 @@ void Structure ::Convert<BezTriple>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<DriverTarget>(
+        DriverTarget &dest,
+        const FileDatabase &db) const {
+    // *id is polymorphic (Object/Material/...); read leading DNA ID only.
+    dest.id_name.clear();
+    dest.id_code.clear();
+    try {
+        const Field &f = (*this)["*id"];
+        if (f.flags & FieldFlag_Pointer) {
+            const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+            db.reader->IncPtr(f.offset);
+            Pointer ptrval;
+            Convert(ptrval, db);
+            db.reader->SetCurrentPos(old);
+            if (ptrval.val) {
+                const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+                const Structure *idStruc = db.dna.Get("ID");
+                if (block && idStruc) {
+                    const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                    db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                    ID tmp;
+                    idStruc->Convert(tmp, db);
+                    db.reader->SetCurrentPos(pold);
+                    if (tmp.name[0] != '\0') {
+                        dest.id_code.assign(tmp.name, tmp.name + 2);
+                        if (tmp.name[2] != '\0') {
+                            dest.id_name.assign(tmp.name + 2);
+                        }
+                    }
+                }
+            }
+        }
+    } catch (const Error &) {
+        dest.id_name.clear();
+        dest.id_code.clear();
+    }
+
+    dest.rna_path.clear();
+    try {
+        const Field &f = (*this)["*rna_path"];
+        const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+        db.reader->IncPtr(f.offset);
+        Pointer ptrval;
+        Convert(ptrval, db);
+        db.reader->SetCurrentPos(old);
+        if (ptrval.val) {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            if (block) {
+                const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                for (;;) {
+                    const char c = static_cast<char>(db.reader->GetI1());
+                    if (c == '\0') {
+                        break;
+                    }
+                    dest.rna_path.push_back(c);
+                    if (dest.rna_path.size() > 512) {
+                        break;
+                    }
+                }
+                db.reader->SetCurrentPos(pold);
+            }
+        }
+    } catch (const Error &) {
+        dest.rna_path.clear();
+    }
+
+    ReadFieldArray<ErrorPolicy_Igno>(dest.pchan_name, "pchan_name", db);
+    ReadField<ErrorPolicy_Igno>(dest.transChan, "transChan", db);
+    ReadField<ErrorPolicy_Igno>(dest.rotation_mode, "rotation_mode", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.options, "options", db);
+    ReadField<ErrorPolicy_Igno>(dest.idtype, "idtype", db);
+    ReadField<ErrorPolicy_Igno>(dest.context_property, "context_property", db);
+    ReadField<ErrorPolicy_Igno>(dest.fallback_value, "fallback_value", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<DriverVar>(
+        DriverVar &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.targets, "targets", db);
+    ReadField<ErrorPolicy_Igno>(dest.num_targets, "num_targets", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<ChannelDriver>(
+        ChannelDriver &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.variables, "variables", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.expression, "expression", db);
+    ReadField<ErrorPolicy_Igno>(dest.influence, "influence", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<FCurve>(
         FCurve &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.driver, "*driver", db);
     ReadField<ErrorPolicy_Igno>(dest.totvert, "totvert", db);
     ReadField<ErrorPolicy_Igno>(dest.array_index, "array_index", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.bezt, "*bezt", db);
 
-    // char *rna_path -> C string in a DATA block
     dest.rna_path.clear();
     try {
         const Field &f = (*this)["*rna_path"];
@@ -217,6 +324,7 @@ void Structure ::Convert<AnimData>(
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Igno>(dest.action, "*action", db);
     ReadField<ErrorPolicy_Igno>(dest.nla_tracks, "nla_tracks", db);
+    ReadField<ErrorPolicy_Igno>(dest.drivers, "drivers", db);
     db.reader->IncPtr(size);
 }
 
@@ -1717,6 +1825,9 @@ void DNA::RegisterConverters() {
 
     converters["Object"] = DNA::FactoryPair(&Structure::Allocate<Object>, &Structure::Convert<Object>);
     converters["BezTriple"] = DNA::FactoryPair(&Structure::Allocate<BezTriple>, &Structure::Convert<BezTriple>);
+    converters["DriverTarget"] = DNA::FactoryPair(&Structure::Allocate<DriverTarget>, &Structure::Convert<DriverTarget>);
+    converters["DriverVar"] = DNA::FactoryPair(&Structure::Allocate<DriverVar>, &Structure::Convert<DriverVar>);
+    converters["ChannelDriver"] = DNA::FactoryPair(&Structure::Allocate<ChannelDriver>, &Structure::Convert<ChannelDriver>);
     converters["FCurve"] = DNA::FactoryPair(&Structure::Allocate<FCurve>, &Structure::Convert<FCurve>);
     converters["bAction"] = DNA::FactoryPair(&Structure::Allocate<bAction>, &Structure::Convert<bAction>);
     converters["NlaStrip"] = DNA::FactoryPair(&Structure::Allocate<NlaStrip>, &Structure::Convert<NlaStrip>);

@@ -1599,9 +1599,70 @@ struct BezTriple final : ElemBase {
     }
 };
 
+/** DNA DriverTarget - one input for a DriverVar. */
+struct DriverTarget final : ElemBase {
+    // *id is polymorphic (Object/Bone ID/...); name+code resolved at Convert.
+    std::string id_name;
+    std::string id_code; // first 2 chars of ID.name ("OB", "MA", ...)
+    std::string rna_path;
+    char pchan_name[64];
+    short transChan;
+    short flag;
+    short options;
+    int idtype;
+    int context_property;
+    float fallback_value;
+    char rotation_mode;
+
+    DriverTarget() :
+            transChan(0),
+            flag(0),
+            options(0),
+            idtype(0),
+            context_property(0),
+            fallback_value(0.f),
+            rotation_mode(0) {
+        memset(pchan_name, 0, sizeof pchan_name);
+    }
+};
+
+/** DNA DriverVar - named variable with up to 8 targets. */
+struct DriverVar final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    char name[64];
+    DriverTarget targets[8];
+    short num_targets;
+    short type;
+    short flag;
+
+    DriverVar() :
+            num_targets(0),
+            type(0),
+            flag(0) {
+        memset(name, 0, sizeof name);
+    }
+};
+
+/** DNA ChannelDriver - expression / aggregate over DriverVars. */
+struct ChannelDriver final : ElemBase {
+    ListBase variables; // DriverVar
+    char expression[256];
+    float influence;
+    int type;
+    int flag;
+
+    ChannelDriver() :
+            influence(0.f),
+            type(0),
+            flag(0) {
+        memset(expression, 0, sizeof expression);
+    }
+};
+
 /** DNA FCurve - one animated RNA path component. */
 struct FCurve final : ElemBase {
     std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<ChannelDriver> driver WARN; // only for AnimData.drivers
     int totvert;
     int array_index;
     std::string rna_path; // from char *rna_path
@@ -1647,6 +1708,7 @@ struct NlaTrack final : ElemBase {
 struct AnimData final : ElemBase {
     std::shared_ptr<bAction> action;
     ListBase nla_tracks;
+    ListBase drivers; // FCurve list with ChannelDriver (separate from Action)
 };
 
 } // namespace Assimp::Blender

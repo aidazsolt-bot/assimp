@@ -284,6 +284,67 @@ World Output with a resolved Image, Assimp embeds it as `aiTexture` and emits
 Presence: omit `worldEnv` entirely if no Image (solid Background is not a skymap).
 BI procedural `TEX_ENVMAP` without Image stays in `skipped[]` (unchanged).
 
+### BLEND Drivers (`BLEND_drivers`, C5)
+
+Blender Drivers live on `AnimData.drivers` (FCurve list) with `FCurve.driver` ->
+`ChannelDriver` (`expression`, `type`, `variables` / `DriverVar` / `DriverTarget`).
+They are **not** Action/NLA FCurves. Assimp reads the DNA and emits Presence-only
+JSON on a dedicated `aiAnimation` named `BLEND_drivers` (`mNumChannels == 0`) +
+`aiAnimationSidecar`:
+
+```json
+"BLEND_drivers": {
+  "owners": [
+    {
+      "idCode": "OB",
+      "idName": "caruncle",
+      "drivers": [
+        {
+          "rnaPath": "modifiers[\"Mesh Cache\"].eval_frame",
+          "arrayIndex": 0,
+          "type": 1,
+          "typeName": "PYTHON",
+          "flag": 25,
+          "expression": "var+4",
+          "variables": [
+            {
+              "name": "var",
+              "type": 0,
+              "typeName": "SINGLE_PROP",
+              "targets": [
+                {
+                  "idCode": "OB",
+                  "idName": "shading mask ctrl",
+                  "idtype": 16975,
+                  "rnaPath": "[\"cacheFrame\"]",
+                  "transformChannel": 0,
+                  "transformChannelName": "LOC_X"
+                }
+              ]
+            }
+          ],
+          "keyInputBuffer": "drv0_times",
+          "keyOutputBuffer": "drv0_values"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `owners[].idCode` / `idName` | Driven ID (`OB` + Object name from `Object.adt`) |
+| `rnaPath` / `arrayIndex` | Driven RNA path on that ID (FCurve) |
+| `type` / `typeName` | DNA `eDriver_Types` (+ label when known) |
+| `expression` | ChannelDriver expression when non-empty |
+| `variables[]` | DriverVar name/type + `targets[]` (id, rnaPath, bone, transformChannel, ...) |
+| `keyInputBuffer` / `keyOutputBuffer` | Optional generator FCurve keys (BezTriple) as float buffers |
+
+Presence: omit empty expression / unresolved id / zero `num_targets` slots.
+Assimp does **not** evaluate Python/expressions - Host samples deps + runs the
+driver. Model-independent: any Object with `adt->drivers` contributes.
+
 ### BLEND C7 Sidecar-Graph + Host-Shader (no Assimp bake)
 
 Policy: Assimp emits the authored Cycles/EEVEE graph for Host Looks to implement;

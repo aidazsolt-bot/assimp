@@ -641,6 +641,179 @@ const Assimp::Blender::FCurve *BlendCastFCurve(const Assimp::Blender::ElemBase *
     return static_cast<const FCurve *>(e);
 }
 
+const Assimp::Blender::DriverVar *BlendCastDriverVar(const Assimp::Blender::ElemBase *e) {
+    using namespace Assimp::Blender;
+    if (e == nullptr) {
+        return nullptr;
+    }
+    if (e->dna_type != nullptr && std::strcmp(e->dna_type, "DriverVar") != 0) {
+        return nullptr;
+    }
+    return static_cast<const DriverVar *>(e);
+}
+
+/** Map DNA eDriver_Types -> stable name (label only; always also emit numeric type). */
+const char *BlendDriverTypeName(int type) {
+    switch (type) {
+    case 0:
+        return "AVERAGE";
+    case 1:
+        return "PYTHON";
+    case 2:
+        return "SUM";
+    case 3:
+        return "MIN";
+    case 4:
+        return "MAX";
+    default:
+        return nullptr;
+    }
+}
+
+/** Map DNA eDriverVar_Types. */
+const char *BlendDriverVarTypeName(short type) {
+    switch (type) {
+    case 0:
+        return "SINGLE_PROP";
+    case 1:
+        return "ROT_DIFF";
+    case 2:
+        return "LOC_DIFF";
+    case 3:
+        return "TRANSFORM_CHAN";
+    case 4:
+        return "CONTEXT_PROP";
+    default:
+        return nullptr;
+    }
+}
+
+/** Map DNA eDriverTarget_TransformChannels. */
+const char *BlendDriverTransChanName(short ch) {
+    switch (ch) {
+    case 0:
+        return "LOC_X";
+    case 1:
+        return "LOC_Y";
+    case 2:
+        return "LOC_Z";
+    case 3:
+        return "ROT_X";
+    case 4:
+        return "ROT_Y";
+    case 5:
+        return "ROT_Z";
+    case 6:
+        return "SCALE_X";
+    case 7:
+        return "SCALE_Y";
+    case 8:
+        return "SCALE_Z";
+    case 9:
+        return "SCALE_AVG";
+    case 10:
+        return "ROT_W";
+    default:
+        return nullptr;
+    }
+}
+
+void BlendCollectObjectDrivers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    if (obj == nullptr || !obj->adt) {
+        return;
+    }
+    const char *objName = (obj->id.name[0] != '\0') ? (obj->id.name + 2) : "";
+    for (std::shared_ptr<ElemBase> cur = obj->adt->drivers.first; cur;) {
+        const FCurve *fc = BlendCastFCurve(cur.get());
+        if (fc == nullptr) {
+            break;
+        }
+        cur = fc->next;
+        if (!fc->driver) {
+            continue;
+        }
+        const ChannelDriver &drv = *fc->driver;
+        ConversionData::DriverChannelEmit ch;
+        ch.ownerName = objName ? objName : "";
+        ch.ownerIdCode = "OB";
+        ch.rnaPath = fc->rna_path;
+        ch.arrayIndex = fc->array_index;
+        ch.type = drv.type;
+        ch.flag = drv.flag;
+        // influence defaults to 0 in DNA zero-init; Blender treats unset as 1.0 at runtime,
+        // but we only emit when the field is non-zero (Presence - no invent of 1.0).
+        if (drv.influence != 0.f) {
+            ch.influence = drv.influence;
+            ch.hasInfluence = true;
+        }
+        if (drv.expression[0] != '\0') {
+            ch.expression.assign(drv.expression);
+        }
+        for (std::shared_ptr<ElemBase> vcur = drv.variables.first; vcur;) {
+            const DriverVar *dv = BlendCastDriverVar(vcur.get());
+            if (dv == nullptr) {
+                break;
+            }
+            vcur = dv->next;
+            ConversionData::DriverVarEmit ve;
+            if (dv->name[0] != '\0') {
+                ve.name.assign(dv->name);
+            }
+            ve.type = dv->type;
+            ve.flag = dv->flag;
+            const int nTargets = (dv->num_targets > 0) ?
+                                         std::min(static_cast<int>(dv->num_targets), 8) :
+                                         0;
+            for (int ti = 0; ti < nTargets; ++ti) {
+                const DriverTarget &dt = dv->targets[ti];
+                ConversionData::DriverTargetEmit te;
+                te.idCode = dt.id_code;
+                te.idName = dt.id_name;
+                te.rnaPath = dt.rna_path;
+                if (dt.pchan_name[0] != '\0') {
+                    te.bone.assign(dt.pchan_name);
+                }
+                te.transChan = dt.transChan;
+                te.flag = dt.flag;
+                te.idtype = dt.idtype;
+                if (dt.options != 0) {
+                    te.options = dt.options;
+                    te.hasOptions = true;
+                }
+                if (dt.context_property != 0) {
+                    te.contextProperty = dt.context_property;
+                    te.hasContextProperty = true;
+                }
+                // DTAR_OPTION_USE_FALLBACK = 1 << 0
+                if ((dt.options & 1) != 0) {
+                    te.fallbackValue = dt.fallback_value;
+                    te.hasFallback = true;
+                }
+                if (dt.rotation_mode != 0) {
+                    te.rotationMode = dt.rotation_mode;
+                    te.hasRotationMode = true;
+                }
+                ve.targets.push_back(std::move(te));
+            }
+            ch.variables.push_back(std::move(ve));
+        }
+        if (!fc->bezt.empty()) {
+            ch.keyTimes.reserve(fc->bezt.size());
+            ch.keyValues.reserve(fc->bezt.size());
+            for (const BezTriple &bz : fc->bezt) {
+                ch.keyTimes.push_back(bz.vec[1][0]);
+                ch.keyValues.push_back(bz.vec[1][1]);
+            }
+        }
+        // Emit only when there is resolvable driver payload (expression and/or vars and/or keys).
+        if (ch.expression.empty() && ch.variables.empty() && ch.keyTimes.empty()) {
+            continue;
+        }
+        conv.driverChannels.push_back(std::move(ch));
+    }
+}
+
 /** Build aiNodeAnim TRS from Action FCurves (location / rotation_euler), Assimp-usual like MD5 camera. */
 aiNodeAnim *BlendBuildCameraNodeAnim(const Assimp::Blender::Object &obj, const Assimp::Blender::bAction &act) {
     using namespace Assimp::Blender;
@@ -3586,6 +3759,8 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             tcur = track->next;
         }
     }
+    // C5 Drivers: AnimData.drivers -> ConversionData.driverChannels (Animation sidecar).
+    BlendCollectObjectDrivers(obj, conv);
 }
 } // namespace
 
@@ -4132,7 +4307,7 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     conv.skippedCategories.push_back("BLEND_shader_network_full_nodegraph");
     // C5: only blanket-skip Action/NLA when nothing was collected into anim sidecar
     // and no typed aiAnimation exists for those channels.
-    if (conv.animPointerChannels.empty() && out->mNumAnimations == 0) {
+    if (conv.animPointerChannels.empty() && conv.driverChannels.empty() && out->mNumAnimations == 0) {
         // Still avoid silent drop: specific skip only when we truly have no Action DNA walk result.
         // Water Caustics has PlaneAction -> channels; this branch then does not fire.
         conv.skippedCategories.push_back("BLEND_action_nla_animation_sidecar");
@@ -4263,7 +4438,18 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         AttachPhysicsSidecar(out, psc);
     }
 
-    // C5 Animation sidecar for modifier/pointer FCurves (PlaneAction Ocean wave_scale).
+    // C5 Animation sidecar: modifier/pointer FCurves + DNA Drivers (ChannelDriver).
+    auto fillFloatBuf = [](aiSidecarBuffer &buf, const std::string &name, const std::vector<float> &data) {
+        buf.mName.Set(name);
+        buf.mNumElements = static_cast<unsigned>(data.size());
+        buf.mNumComponents = 1;
+        buf.mComponentType = static_cast<unsigned>(aiSidecarComponentType_Float);
+        buf.mByteLength = data.size() * sizeof(float);
+        buf.mData = new uint8_t[buf.mByteLength];
+        if (!data.empty()) {
+            std::memcpy(buf.mData, data.data(), buf.mByteLength);
+        }
+    };
     if (!conv.animPointerChannels.empty()) {
         std::map<std::string, std::vector<size_t>> byAction;
         for (size_t ci = 0; ci < conv.animPointerChannels.size(); ++ci) {
@@ -4314,19 +4500,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                 const unsigned biVals = biTimes + 1u;
                 const std::string tName = "ch" + std::to_string(i) + "_times";
                 const std::string vName = "ch" + std::to_string(i) + "_values";
-                auto fillBuf = [](aiSidecarBuffer &buf, const std::string &name, const std::vector<float> &data) {
-                    buf.mName.Set(name);
-                    buf.mNumElements = static_cast<unsigned>(data.size());
-                    buf.mNumComponents = 1;
-                    buf.mComponentType = static_cast<unsigned>(aiSidecarComponentType_Float);
-                    buf.mByteLength = data.size() * sizeof(float);
-                    buf.mData = new uint8_t[buf.mByteLength];
-                    if (!data.empty()) {
-                        std::memcpy(buf.mData, data.data(), buf.mByteLength);
-                    }
-                };
-                fillBuf(asc->mBuffers[biTimes], tName, ch.times);
-                fillBuf(asc->mBuffers[biVals], vName, ch.values);
+                fillFloatBuf(asc->mBuffers[biTimes], tName, ch.times);
+                fillFloatBuf(asc->mBuffers[biVals], vName, ch.values);
                 if (i) {
                     ajson << ',';
                 }
@@ -4344,6 +4519,176 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
             AttachAnimationSidecar(out, aidx, asc);
             ++aidx;
         }
+    }
+    if (!conv.driverChannels.empty()) {
+        // Group by owner Object name (Presence).
+        std::map<std::string, std::vector<size_t>> byOwner;
+        for (size_t ci = 0; ci < conv.driverChannels.size(); ++ci) {
+            const std::string &on = conv.driverChannels[ci].ownerName;
+            byOwner[on.empty() ? std::string("_") : on].push_back(ci);
+        }
+        const unsigned baseAnim = out->mNumAnimations;
+        aiAnimation **newAnims = new aiAnimation *[baseAnim + 1u];
+        for (unsigned i = 0; i < baseAnim; ++i) {
+            newAnims[i] = out->mAnimations[i];
+        }
+        if (out->mAnimations) {
+            delete[] out->mAnimations;
+        }
+        out->mAnimations = newAnims;
+        out->mNumAnimations = baseAnim + 1u;
+        aiAnimation *anim = new aiAnimation();
+        anim->mName.Set("BLEND_drivers");
+        anim->mTicksPerSecond = fps > 0.f ? fps : 24.0;
+        anim->mNumChannels = 0;
+        anim->mChannels = nullptr;
+        anim->mDuration = 0.0;
+        out->mAnimations[baseAnim] = anim;
+
+        // Optional key buffers for driver generator FCurves.
+        size_t nKeyPairs = 0;
+        for (const auto &ch : conv.driverChannels) {
+            if (!ch.keyTimes.empty()) {
+                ++nKeyPairs;
+            }
+        }
+        auto *asc = new aiAnimationSidecar();
+        asc->mNumBuffers = static_cast<unsigned>(nKeyPairs * 2u);
+        asc->mBuffers = (asc->mNumBuffers > 0) ? new aiSidecarBuffer[asc->mNumBuffers] : nullptr;
+        std::ostringstream ajson;
+        ajson.setf(std::ios::fixed);
+        ajson.precision(9);
+        ajson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},"
+              << "\"BLEND_drivers\":{\"owners\":[";
+        bool ownerFirst = true;
+        unsigned bufIdx = 0;
+        size_t keyPairIdx = 0;
+        for (const auto &kv : byOwner) {
+            if (!ownerFirst) {
+                ajson << ',';
+            }
+            ownerFirst = false;
+            const auto &chs = kv.second;
+            const auto &first = conv.driverChannels[chs[0]];
+            ajson << "{\"idCode\":\"" << BlendJsonEscape(first.ownerIdCode)
+                  << "\",\"idName\":\"" << BlendJsonEscape(first.ownerName) << "\",\"drivers\":[";
+            for (size_t i = 0; i < chs.size(); ++i) {
+                const auto &ch = conv.driverChannels[chs[i]];
+                if (i) {
+                    ajson << ',';
+                }
+                ajson << '{';
+                if (!ch.rnaPath.empty()) {
+                    ajson << "\"rnaPath\":\"" << BlendJsonEscape(ch.rnaPath) << "\",";
+                }
+                ajson << "\"arrayIndex\":" << ch.arrayIndex << ",\"type\":" << ch.type;
+                if (const char *tn = BlendDriverTypeName(ch.type)) {
+                    ajson << ",\"typeName\":\"" << tn << '"';
+                }
+                ajson << ",\"flag\":" << ch.flag;
+                if (ch.hasInfluence) {
+                    ajson << ",\"influence\":" << ch.influence;
+                }
+                if (!ch.expression.empty()) {
+                    ajson << ",\"expression\":\"" << BlendJsonEscape(ch.expression) << '"';
+                }
+                if (!ch.variables.empty()) {
+                    ajson << ",\"variables\":[";
+                    for (size_t vi = 0; vi < ch.variables.size(); ++vi) {
+                        const auto &ve = ch.variables[vi];
+                        if (vi) {
+                            ajson << ',';
+                        }
+                        ajson << '{';
+                        if (!ve.name.empty()) {
+                            ajson << "\"name\":\"" << BlendJsonEscape(ve.name) << "\",";
+                        }
+                        ajson << "\"type\":" << ve.type;
+                        if (const char *vn = BlendDriverVarTypeName(ve.type)) {
+                            ajson << ",\"typeName\":\"" << vn << '"';
+                        }
+                        if (ve.flag != 0) {
+                            ajson << ",\"flag\":" << ve.flag;
+                        }
+                        if (!ve.targets.empty()) {
+                            ajson << ",\"targets\":[";
+                            for (size_t ti = 0; ti < ve.targets.size(); ++ti) {
+                                const auto &te = ve.targets[ti];
+                                if (ti) {
+                                    ajson << ',';
+                                }
+                                ajson << '{';
+                                bool tfirst = true;
+                                auto tsep = [&]() {
+                                    if (!tfirst) {
+                                        ajson << ',';
+                                    }
+                                    tfirst = false;
+                                };
+                                if (!te.idCode.empty()) {
+                                    tsep();
+                                    ajson << "\"idCode\":\"" << BlendJsonEscape(te.idCode) << '"';
+                                }
+                                if (!te.idName.empty()) {
+                                    tsep();
+                                    ajson << "\"idName\":\"" << BlendJsonEscape(te.idName) << '"';
+                                }
+                                if (te.idtype != 0) {
+                                    tsep();
+                                    ajson << "\"idtype\":" << te.idtype;
+                                }
+                                if (!te.rnaPath.empty()) {
+                                    tsep();
+                                    ajson << "\"rnaPath\":\"" << BlendJsonEscape(te.rnaPath) << '"';
+                                }
+                                if (!te.bone.empty()) {
+                                    tsep();
+                                    ajson << "\"bone\":\"" << BlendJsonEscape(te.bone) << '"';
+                                }
+                                tsep();
+                                ajson << "\"transformChannel\":" << te.transChan;
+                                if (const char *cn = BlendDriverTransChanName(te.transChan)) {
+                                    ajson << ",\"transformChannelName\":\"" << cn << '"';
+                                }
+                                if (te.flag != 0) {
+                                    ajson << ",\"flag\":" << te.flag;
+                                }
+                                if (te.hasOptions) {
+                                    ajson << ",\"options\":" << te.options;
+                                }
+                                if (te.hasFallback) {
+                                    ajson << ",\"fallbackValue\":" << te.fallbackValue;
+                                }
+                                if (te.hasContextProperty) {
+                                    ajson << ",\"contextProperty\":" << te.contextProperty;
+                                }
+                                if (te.hasRotationMode) {
+                                    ajson << ",\"rotationMode\":" << static_cast<int>(te.rotationMode);
+                                }
+                                ajson << '}';
+                            }
+                            ajson << ']';
+                        }
+                        ajson << '}';
+                    }
+                    ajson << ']';
+                }
+                if (!ch.keyTimes.empty()) {
+                    const std::string tName = "drv" + std::to_string(keyPairIdx) + "_times";
+                    const std::string vName = "drv" + std::to_string(keyPairIdx) + "_values";
+                    fillFloatBuf(asc->mBuffers[bufIdx], tName, ch.keyTimes);
+                    fillFloatBuf(asc->mBuffers[bufIdx + 1u], vName, ch.keyValues);
+                    bufIdx += 2u;
+                    ++keyPairIdx;
+                    ajson << ",\"keyInputBuffer\":\"" << tName << "\",\"keyOutputBuffer\":\"" << vName << '"';
+                }
+                ajson << '}';
+            }
+            ajson << "]}";
+        }
+        ajson << "]}}";
+        asc->mExtensionsJson = BlendDupJson(ajson.str(), asc->mExtensionsJsonLength);
+        AttachAnimationSidecar(out, baseAnim, asc);
     }
 
     std::ostringstream json;
