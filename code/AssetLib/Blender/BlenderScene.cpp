@@ -1122,6 +1122,29 @@ void Structure ::Convert<NodeShaderUVMap>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<NodeTexNoise>(
+        NodeTexNoise &dest,
+        const FileDatabase &db) const {
+    // DNA: NodeTexBase base; int dimensions; uint8_t type; uint8_t normalize; ...
+    // Read by field name (Presence) - subset struct, IncPtr uses DNA size.
+    ReadField<ErrorPolicy_Igno>(dest.dimensions, "dimensions", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.normalize, "normalize", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<NodeTexMusgrave>(
+        NodeTexMusgrave &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.musgrave_type, "musgrave_type", db);
+    ReadField<ErrorPolicy_Igno>(dest.dimensions, "dimensions", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<bNodeSocket>(
         bNodeSocket &dest,
         const FileDatabase &db) const {
@@ -1229,11 +1252,21 @@ void Structure ::Convert<bNode>(
         const bool isColorRampNode =
                 (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeValToRGB") == 0) ||
                 dest.type == 104; // SH_NODE_VALTORGB
+        // Blender 5: Musgrave is ShaderNodeTexNoise (NodeTexNoise.type == SHD_NOISE_*).
+        // Legacy: ShaderNodeTexMusgrave + NodeTexMusgrave.musgrave_type (same enum ints).
+        const bool isTexNoiseNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeTexNoise") == 0);
+        const bool isTexMusgraveNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeTexMusgrave") == 0);
         const char *forceStorageType = nullptr;
         if (isUvMapNode) {
             forceStorageType = "NodeShaderUVMap";
         } else if (isColorRampNode) {
             forceStorageType = "ColorBand";
+        } else if (isTexNoiseNode) {
+            forceStorageType = "NodeTexNoise";
+        } else if (isTexMusgraveNode) {
+            forceStorageType = "NodeTexMusgrave";
         }
         if (ptrval.val && forceStorageType != nullptr) {
             const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
@@ -1881,6 +1914,8 @@ void DNA::RegisterConverters() {
     converters["bNodeSocketValueRGBA"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueRGBA>, &Structure::Convert<bNodeSocketValueRGBA>);
     converters["bNodeSocketValueString"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueString>, &Structure::Convert<bNodeSocketValueString>);
     converters["NodeShaderUVMap"] = DNA::FactoryPair(&Structure::Allocate<NodeShaderUVMap>, &Structure::Convert<NodeShaderUVMap>);
+    converters["NodeTexNoise"] = DNA::FactoryPair(&Structure::Allocate<NodeTexNoise>, &Structure::Convert<NodeTexNoise>);
+    converters["NodeTexMusgrave"] = DNA::FactoryPair(&Structure::Allocate<NodeTexMusgrave>, &Structure::Convert<NodeTexMusgrave>);
     converters["CBData"] = DNA::FactoryPair(&Structure::Allocate<CBData>, &Structure::Convert<CBData>);
     converters["ColorBand"] = DNA::FactoryPair(&Structure::Allocate<ColorBand>, &Structure::Convert<ColorBand>);
     converters["bNodeSocket"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocket>, &Structure::Convert<bNodeSocket>);

@@ -470,6 +470,31 @@ struct NodeShaderUVMap final : ElemBase {
     }
 };
 
+/**
+ * DNA NodeTexNoise (bNode.storage for ShaderNodeTexNoise).
+ * `type` is SHD_NOISE_MULTIFRACTAL..HETERO_TERRAIN (same ints as SHD_MUSGRAVE_*).
+ */
+struct NodeTexNoise final : ElemBase {
+    int dimensions;
+    char type; // DNA uint8 SHD_NOISE_* / SHD_MUSGRAVE_*
+    char normalize;
+
+    NodeTexNoise() :
+            dimensions(0),
+            type(0),
+            normalize(0) {}
+};
+
+/** DNA NodeTexMusgrave (legacy ShaderNodeTexMusgrave storage). */
+struct NodeTexMusgrave final : ElemBase {
+    int musgrave_type;
+    int dimensions;
+
+    NodeTexMusgrave() :
+            musgrave_type(0),
+            dimensions(0) {}
+};
+
 /** Subset of DNA ColorBand / CBData (ShaderNodeValToRGB storage). */
 struct CBData final : ElemBase {
     float r, g, b, a, pos;
