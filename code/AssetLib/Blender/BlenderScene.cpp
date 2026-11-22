@@ -965,6 +965,34 @@ void Structure ::Convert<bNodeSocketValueString>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<CBData>(
+        CBData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.r, "r", db);
+    ReadField<ErrorPolicy_Igno>(dest.g, "g", db);
+    ReadField<ErrorPolicy_Igno>(dest.b, "b", db);
+    ReadField<ErrorPolicy_Igno>(dest.a, "a", db);
+    ReadField<ErrorPolicy_Igno>(dest.pos, "pos", db);
+    ReadField<ErrorPolicy_Igno>(dest.cur, "cur", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<ColorBand>(
+        ColorBand &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.tot, "tot", db);
+    ReadField<ErrorPolicy_Igno>(dest.cur, "cur", db);
+    ReadField<ErrorPolicy_Igno>(dest.ipotype, "ipotype", db);
+    ReadField<ErrorPolicy_Igno>(dest.ipotype_hue, "ipotype_hue", db);
+    ReadField<ErrorPolicy_Igno>(dest.color_mode, "color_mode", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.data, "data", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<NodeShaderUVMap>(
         NodeShaderUVMap &dest,
         const FileDatabase &db) const {
@@ -1078,9 +1106,18 @@ void Structure ::Convert<bNode>(
         const bool isUvMapNode =
                 (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeUVMap") == 0) ||
                 dest.type == 311; // SH_NODE_UVMAP
-        if (ptrval.val && isUvMapNode) {
+        const bool isColorRampNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeValToRGB") == 0) ||
+                dest.type == 104; // SH_NODE_VALTORGB
+        const char *forceStorageType = nullptr;
+        if (isUvMapNode) {
+            forceStorageType = "NodeShaderUVMap";
+        } else if (isColorRampNode) {
+            forceStorageType = "ColorBand";
+        }
+        if (ptrval.val && forceStorageType != nullptr) {
             const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
-            const Structure *sVal = db.dna.Get("NodeShaderUVMap");
+            const Structure *sVal = db.dna.Get(forceStorageType);
             if (block != nullptr && sVal != nullptr) {
                 DNA::FactoryPair builders = db.dna.GetBlobToStructureConverter(*sVal, db);
                 if (builders.first && builders.second) {
@@ -1721,6 +1758,8 @@ void DNA::RegisterConverters() {
     converters["bNodeSocketValueRGBA"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueRGBA>, &Structure::Convert<bNodeSocketValueRGBA>);
     converters["bNodeSocketValueString"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueString>, &Structure::Convert<bNodeSocketValueString>);
     converters["NodeShaderUVMap"] = DNA::FactoryPair(&Structure::Allocate<NodeShaderUVMap>, &Structure::Convert<NodeShaderUVMap>);
+    converters["CBData"] = DNA::FactoryPair(&Structure::Allocate<CBData>, &Structure::Convert<CBData>);
+    converters["ColorBand"] = DNA::FactoryPair(&Structure::Allocate<ColorBand>, &Structure::Convert<ColorBand>);
     converters["bNodeSocket"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocket>, &Structure::Convert<bNodeSocket>);
     converters["bNode"] = DNA::FactoryPair(&Structure::Allocate<bNode>, &Structure::Convert<bNode>);
     converters["bNodeLink"] = DNA::FactoryPair(&Structure::Allocate<bNodeLink>, &Structure::Convert<bNodeLink>);

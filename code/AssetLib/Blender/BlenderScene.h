@@ -470,6 +470,27 @@ struct NodeShaderUVMap final : ElemBase {
     }
 };
 
+/** Subset of DNA ColorBand / CBData (ShaderNodeValToRGB storage). */
+struct CBData final : ElemBase {
+    float r, g, b, a, pos;
+    int cur;
+
+    CBData() :
+            r(0), g(0), b(0), a(0), pos(0), cur(0) {}
+};
+
+struct ColorBand final : ElemBase {
+    short tot;
+    short cur;
+    char ipotype;
+    char ipotype_hue;
+    char color_mode;
+    CBData data[32];
+
+    ColorBand() :
+            tot(0), cur(0), ipotype(0), ipotype_hue(0), color_mode(0) {}
+};
+
 /** Subset of DNA bNodeSocket. */
 struct bNodeSocket final : ElemBase {
     std::shared_ptr<ElemBase> next WARN;

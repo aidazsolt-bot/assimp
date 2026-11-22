@@ -258,14 +258,22 @@ World Output with a resolved Image, Assimp embeds it as `aiTexture` and emits
 Presence: omit `worldEnv` entirely if no Image (solid Background is not a skymap).
 BI procedural `TEX_ENVMAP` without Image stays in `skipped[]` (unchanged).
 
-### BLEND C7 Phase 1 (Add Shader + network dump)
+### BLEND C7 Sidecar-Graph + Host-Shader (no Assimp bake)
+
+Policy: Assimp emits the authored Cycles/EEVEE graph for Host Looks to implement;
+Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
 
 - `BLEND_shader.addShader:true` when Material Output peels `ShaderNodeAddShader`.
-- Emission sibling under Add: merge `emissionStrength` / Image emission maps when
-  resolved; procedural Emission Color (Brick/ColorRamp) is omitted (no invent).
-- `BLEND_shader_network`: compact node idname/name + `procedural` tags
-  (`TexBrick`, `ColorRamp`); scene `skipped[]` may list
-  `BLEND_shader_procedural_TexBrick` / `ColorRamp`. Full Brick/Ramp eval = later.
+- Emission sibling under Add: merge `emissionStrength` when resolved; procedural
+  Emission Color stays in the network (no invent flat Ke).
+- `BLEND_shader_network` (`eval:"host"`, `assimpEval:false`):
+  - nodes: idname/name, `procedural`/`kind`, **unlinked input defaults**
+    (`value` / `rgba`), **ColorBand** stops for `ShaderNodeValToRGB`
+  - links: from/to node + sockets
+  - `hostProcedural`: `TexBrick` / `ColorRamp` when present
+- Host Look may generate diffuse/emissive maps from that bag (Cityscapes facade /
+  window lights). **Look-specific Bake/render** in the renderer remains an
+  optional alternate path (not Assimp Authoring-Bake).
 
 ## USD scene timing / units (C0 / S0)
 
