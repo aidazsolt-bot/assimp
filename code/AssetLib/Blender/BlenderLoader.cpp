@@ -3974,21 +3974,23 @@ void BlendSizeToMat3(float m[3][3], const float size[3]) {
 }
 
 void BlendQuatToMat3(float m[3][3], const float q[4]) {
-    // Blender quat = (w, x, y, z)
+    // Blender quat = (w, x, y, z). Write Blender column-major (m[col][row]) so
+    // BlendCopyMat4ToAi's transpose yields Assimp row-major R (P1b: no Rx sign flip).
     const float w = q[0], x = q[1], y = q[2], z = q[3];
     const float n = std::sqrt(w * w + x * x + y * y + z * z);
     const float s = (n > 1e-20f) ? (2.f / (n * n)) : 0.f;
     const float xx = x * x * s, yy = y * y * s, zz = z * z * s;
     const float xy = x * y * s, xz = x * z * s, yz = y * z * s;
     const float wx = w * x * s, wy = w * y * s, wz = w * z * s;
+    // Math R[row][col] then store as m[col][row].
     m[0][0] = 1.f - (yy + zz);
-    m[0][1] = xy - wz;
-    m[0][2] = xz + wy;
-    m[1][0] = xy + wz;
+    m[1][0] = xy - wz;
+    m[2][0] = xz + wy;
+    m[0][1] = xy + wz;
     m[1][1] = 1.f - (xx + zz);
-    m[1][2] = yz - wx;
-    m[2][0] = xz - wy;
-    m[2][1] = yz + wx;
+    m[2][1] = yz - wx;
+    m[0][2] = xz - wy;
+    m[1][2] = yz + wx;
     m[2][2] = 1.f - (xx + yy);
 }
 
@@ -4001,19 +4003,21 @@ void BlendAxisAngleToMat3(float m[3][3], const float axis[3], float angle) {
         az /= len;
     }
     const float c = std::cos(angle), s = std::sin(angle), t = 1.f - c;
+    // Math R then store Blender column-major m[col][row].
     m[0][0] = t * ax * ax + c;
-    m[0][1] = t * ax * ay - s * az;
-    m[0][2] = t * ax * az + s * ay;
-    m[1][0] = t * ax * ay + s * az;
+    m[1][0] = t * ax * ay - s * az;
+    m[2][0] = t * ax * az + s * ay;
+    m[0][1] = t * ax * ay + s * az;
     m[1][1] = t * ay * ay + c;
-    m[1][2] = t * ay * az - s * ax;
-    m[2][0] = t * ax * az - s * ay;
-    m[2][1] = t * ay * az + s * ax;
+    m[2][1] = t * ay * az - s * ax;
+    m[0][2] = t * ax * az - s * ay;
+    m[1][2] = t * ay * az + s * ax;
     m[2][2] = t * az * az + c;
 }
 
 void BlendEulXYZToMat3(float m[3][3], const float eul[3]) {
     // XYZ intrinsic (Blender ROT_MODE_XYZ / default EUL). Other eul orders approximated as XYZ.
+    // Matrices in Blender column-major (m[col][row]) for BlendMulM3 / BlendCopyMat4ToAi.
     float Rx[3][3], Ry[3][3], Rz[3][3], t[3][3];
     const float cx = std::cos(eul[0]), sx = std::sin(eul[0]);
     const float cy = std::cos(eul[1]), sy = std::sin(eul[1]);
@@ -4021,19 +4025,19 @@ void BlendEulXYZToMat3(float m[3][3], const float eul[3]) {
     BlendZeroM3(Rx);
     Rx[0][0] = 1.f;
     Rx[1][1] = cx;
-    Rx[1][2] = -sx;
-    Rx[2][1] = sx;
+    Rx[2][1] = -sx;
+    Rx[1][2] = sx;
     Rx[2][2] = cx;
     BlendZeroM3(Ry);
     Ry[0][0] = cy;
-    Ry[0][2] = sy;
+    Ry[2][0] = sy;
     Ry[1][1] = 1.f;
-    Ry[2][0] = -sy;
+    Ry[0][2] = -sy;
     Ry[2][2] = cy;
     BlendZeroM3(Rz);
     Rz[0][0] = cz;
-    Rz[0][1] = -sz;
-    Rz[1][0] = sz;
+    Rz[1][0] = -sz;
+    Rz[0][1] = sz;
     Rz[1][1] = cz;
     Rz[2][2] = 1.f;
     BlendMulM3(t, Ry, Rx);
