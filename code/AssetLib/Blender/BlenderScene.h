@@ -991,7 +991,13 @@ struct RigidBodyCon final : ElemBase {
         Flag_UseLimitAngY = 1 << 9,
         Flag_UseLimitAngZ = 1 << 10,
         Flag_UseMotorLin = 1 << 14,
-        Flag_UseMotorAng = 1 << 15
+        Flag_UseMotorAng = 1 << 15,
+        Flag_UseSpringX = 1 << 11,
+        Flag_UseSpringY = 1 << 12,
+        Flag_UseSpringZ = 1 << 13,
+        Flag_UseSpringAngX = 1 << 16,
+        Flag_UseSpringAngY = 1 << 17,
+        Flag_UseSpringAngZ = 1 << 18
     };
 
     Object *ob1 WARN;
@@ -1011,6 +1017,18 @@ struct RigidBodyCon final : ElemBase {
     float limit_ang_y_upper WARN;
     float limit_ang_z_lower WARN;
     float limit_ang_z_upper WARN;
+    float spring_stiffness_x WARN;
+    float spring_stiffness_y WARN;
+    float spring_stiffness_z WARN;
+    float spring_stiffness_ang_x WARN;
+    float spring_stiffness_ang_y WARN;
+    float spring_stiffness_ang_z WARN;
+    float spring_damping_x WARN;
+    float spring_damping_y WARN;
+    float spring_damping_z WARN;
+    float spring_damping_ang_x WARN;
+    float spring_damping_ang_y WARN;
+    float spring_damping_ang_z WARN;
     float motor_lin_target_velocity WARN;
     float motor_ang_target_velocity WARN;
     float motor_lin_max_impulse WARN;
@@ -1024,6 +1042,10 @@ struct RigidBodyCon final : ElemBase {
             limit_ang_x_lower(0.f), limit_ang_x_upper(0.f),
             limit_ang_y_lower(0.f), limit_ang_y_upper(0.f),
             limit_ang_z_lower(0.f), limit_ang_z_upper(0.f),
+            spring_stiffness_x(0.f), spring_stiffness_y(0.f), spring_stiffness_z(0.f),
+            spring_stiffness_ang_x(0.f), spring_stiffness_ang_y(0.f), spring_stiffness_ang_z(0.f),
+            spring_damping_x(0.f), spring_damping_y(0.f), spring_damping_z(0.f),
+            spring_damping_ang_x(0.f), spring_damping_ang_y(0.f), spring_damping_ang_z(0.f),
             motor_lin_target_velocity(0.f), motor_ang_target_velocity(0.f),
             motor_lin_max_impulse(1.f), motor_ang_max_impulse(1.f) {}
 };

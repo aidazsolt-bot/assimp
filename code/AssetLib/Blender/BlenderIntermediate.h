@@ -264,6 +264,11 @@ namespace Blender {
             int shapeIdx{ -1 };
             int matIdx{ -1 };
             int colGroups{ 0 };
+            /** Scene mesh index for mesh/convex/trimesh colliders (-1 = implicit shape). */
+            int meshIdx{ -1 };
+            bool convexHull{ false };
+            /** RBO_FLAG_DISABLED -> KHR trigger volume (not a simulated body). */
+            bool isTrigger{ false };
         };
         std::vector<KhrBodyPending> khrBodies;
 
@@ -281,6 +286,10 @@ namespace Blender {
             float limit_ang_x_lower{ 0.f }, limit_ang_x_upper{ 0.f };
             float limit_ang_y_lower{ 0.f }, limit_ang_y_upper{ 0.f };
             float limit_ang_z_lower{ 0.f }, limit_ang_z_upper{ 0.f };
+            float spring_stiffness_x{ 0.f }, spring_stiffness_y{ 0.f }, spring_stiffness_z{ 0.f };
+            float spring_stiffness_ang_x{ 0.f }, spring_stiffness_ang_y{ 0.f }, spring_stiffness_ang_z{ 0.f };
+            float spring_damping_x{ 0.f }, spring_damping_y{ 0.f }, spring_damping_z{ 0.f };
+            float spring_damping_ang_x{ 0.f }, spring_damping_ang_y{ 0.f }, spring_damping_ang_z{ 0.f };
             float motor_lin_target_velocity{ 0.f };
             float motor_ang_target_velocity{ 0.f };
             float motor_lin_max_impulse{ 0.f };

@@ -506,6 +506,18 @@ void Structure ::Convert<RigidBodyCon>(
     ReadField<ErrorPolicy_Igno>(dest.limit_ang_y_upper, "limit_ang_y_upper", db);
     ReadField<ErrorPolicy_Igno>(dest.limit_ang_z_lower, "limit_ang_z_lower", db);
     ReadField<ErrorPolicy_Igno>(dest.limit_ang_z_upper, "limit_ang_z_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_x, "spring_stiffness_x", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_y, "spring_stiffness_y", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_z, "spring_stiffness_z", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_ang_x, "spring_stiffness_ang_x", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_ang_y, "spring_stiffness_ang_y", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_ang_z, "spring_stiffness_ang_z", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_x, "spring_damping_x", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_y, "spring_damping_y", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_z, "spring_damping_z", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_ang_x, "spring_damping_ang_x", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_ang_y, "spring_damping_ang_y", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_ang_z, "spring_damping_ang_z", db);
     ReadField<ErrorPolicy_Igno>(dest.motor_lin_target_velocity, "motor_lin_target_velocity", db);
     ReadField<ErrorPolicy_Igno>(dest.motor_ang_target_velocity, "motor_ang_target_velocity", db);
     ReadField<ErrorPolicy_Igno>(dest.motor_lin_max_impulse, "motor_lin_max_impulse", db);
