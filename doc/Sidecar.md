@@ -282,6 +282,8 @@ Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTE
 | S7 | `SceneSidecarJson` + Physics bag | `volumes[]`; `pointInstancers[]` stub (`count`+`bag`) — **BLEND C13 detail** in Physics `BLEND_point_instancers.nodes[]` (collection bind, prototypes, totpart/seed; `arraysResolved` + positions/orients/scales/protoIndices only when DNA `ParticleSystem.particles` present). SceneSidecarJson is `aiString`-capped (`AI_MAXLEN`) |
 | S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
 
+**BLEND Host read (2026-11-22):** Scene-Cam = `BLEND_scene.camera`/`cameraIndex` + `cameras[].sceneCamera` (not an `aiCamera` field); if missing → app settings active cam. C13 = `BLEND_point_instancers` (`totpart` from `ParticleSettings.totpart`; TRS only if `arraysResolved`); Highrise-style objects stay typed nodes outside the particle collection. Full Host guide: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md` (rev 22k).
+
 Host-probe hardening (2026-11-19):
 
 - **UsdGeomGprim tessellation:** `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` -> `aiMesh` when TinyUSDZ leaves them as Xform-only (`USDGprimMesh`).
