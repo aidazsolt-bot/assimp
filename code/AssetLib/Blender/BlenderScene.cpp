@@ -940,8 +940,50 @@ void Structure ::Convert<bNode>(
     }
     ReadField<ErrorPolicy_Igno>(dest.custom1, "custom1", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.id, "*id", db);
-    // DNA *storage: runtime type from DATA block (e.g. NodeShaderUVMap).
-    ReadFieldPtr<ErrorPolicy_Igno>(dest.storage, "*storage", db);
+    // DNA *storage is void*. DATA blocks often have SDNAnr 0 ("Link"), so typed
+    // ResolvePointer fails - same as bNodeSocket.default_value. For UV Map nodes,
+    // force-decode as NodeShaderUVMap so uv_map names reach AI_MATKEY_UVWSRC.
+    dest.storage.reset();
+    {
+        Pointer ptrval;
+        ptrval.val = 0;
+        const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+        try {
+            const Field &f = (*this)["*storage"];
+            db.reader->IncPtr(f.offset);
+            Convert(ptrval, db);
+        } catch (const Error &) {
+            ptrval.val = 0;
+        }
+        db.reader->SetCurrentPos(old);
+
+        const bool isUvMapNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeUVMap") == 0) ||
+                dest.type == 311; // SH_NODE_UVMAP
+        if (ptrval.val && isUvMapNode) {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            const Structure *sVal = db.dna.Get("NodeShaderUVMap");
+            if (block != nullptr && sVal != nullptr) {
+                DNA::FactoryPair builders = db.dna.GetBlobToStructureConverter(*sVal, db);
+                if (builders.first && builders.second) {
+                    const uint64_t cache_owner = (block->id == "DATA") ? block->owner_id.val : 0;
+                    db.cache(dest.storage).get(*sVal, dest.storage, ptrval, cache_owner);
+                    if (!dest.storage) {
+                        const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                        db.reader->SetCurrentPos(
+                                block->start + static_cast<size_t>((ptrval.val - block->address.val)));
+                        dest.storage = ((*sVal).*builders.first)();
+                        db.cache(dest.storage).set(*sVal, dest.storage, ptrval, cache_owner);
+                        ((*sVal).*builders.second)(dest.storage, db);
+                        dest.storage->dna_type = sVal->name.c_str();
+                        db.reader->SetCurrentPos(pold);
+                    }
+                }
+            }
+        } else if (ptrval.val) {
+            ReadFieldPtr<ErrorPolicy_Igno>(dest.storage, "*storage", db);
+        }
+    }
     db.reader->IncPtr(size);
 }
 
