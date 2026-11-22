@@ -158,6 +158,24 @@ template <> void Structure :: Convert<ClothModifierData> (
     ) const
 ;
 
+template <> void Structure :: Convert<ParticleKey> (
+    ParticleKey& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ParticleData> (
+    ParticleData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ParticleDupliWeight> (
+    ParticleDupliWeight& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<ParticleSettings> (
     ParticleSettings& dest,
     const FileDatabase& db

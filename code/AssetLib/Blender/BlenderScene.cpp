@@ -541,17 +541,78 @@ void Structure ::Convert<ClothModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure ::Convert<ParticleKey>(
+        ParticleKey &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.co, "co", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.vel, "vel", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.rot, "rot", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.ave, "ave", db);
+    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<ParticleData>(
+        ParticleData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.state, "state", db);
+    ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<ParticleDupliWeight>(
+        ParticleDupliWeight &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    {
+        std::shared_ptr<Object> ob;
+        ReadFieldPtr<ErrorPolicy_Igno>(ob, "*ob", db);
+        dest.ob = ob.get();
+    }
+    ReadField<ErrorPolicy_Igno>(dest.count, "count", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.index, "index", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure ::Convert<ParticleSettings>(
         ParticleSettings &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
     ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.from, "from", db);
+    ReadField<ErrorPolicy_Igno>(dest.distr, "distr", db);
+    ReadField<ErrorPolicy_Igno>(dest.ren_as, "ren_as", db);
     ReadField<ErrorPolicy_Igno>(dest.totpart, "totpart", db);
     ReadField<ErrorPolicy_Igno>(dest.mass, "mass", db);
     ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
+    ReadField<ErrorPolicy_Igno>(dest.randsize, "randsize", db);
     ReadField<ErrorPolicy_Igno>(dest.lifetime, "lifetime", db);
     ReadField<ErrorPolicy_Igno>(dest.sta, "sta", db);
     ReadField<ErrorPolicy_Igno>(dest.end, "end", db);
+    ReadField<ErrorPolicy_Igno>(dest.jitfac, "jitfac", db);
+    if (Get("*instance_collection") != nullptr) {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*instance_collection", db);
+    } else {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*dup_group", db);
+    }
+    if (Get("instance_weights") != nullptr) {
+        ReadField<ErrorPolicy_Igno>(dest.dupliweights, "instance_weights", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.dupliweights, "dupliweights", db);
+    }
+    if (Get("*instance_object") != nullptr) {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_ob, "*instance_object", db);
+    } else {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_ob, "*dup_ob", db);
+    }
     db.reader->IncPtr(size);
 }
 
@@ -562,7 +623,10 @@ void Structure ::Convert<ParticleSystem>(
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.part, "*part", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.particles, "*particles", db);
     ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadField<ErrorPolicy_Igno>(dest.seed, "seed", db);
+    ReadField<ErrorPolicy_Igno>(dest.totpart, "totpart", db);
     db.reader->IncPtr(size);
 }
 
@@ -1635,8 +1699,12 @@ void DNA::RegisterConverters() {
     converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
     converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
     converters["RigidBodyCon"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyCon>, &Structure::Convert<RigidBodyCon>);
+    converters["ParticleKey"] = DNA::FactoryPair(&Structure::Allocate<ParticleKey>, &Structure::Convert<ParticleKey>);
+    converters["ParticleData"] = DNA::FactoryPair(&Structure::Allocate<ParticleData>, &Structure::Convert<ParticleData>);
+    converters["ParticleDupliWeight"] = DNA::FactoryPair(&Structure::Allocate<ParticleDupliWeight>, &Structure::Convert<ParticleDupliWeight>);
     converters["ParticleSettings"] = DNA::FactoryPair(&Structure::Allocate<ParticleSettings>, &Structure::Convert<ParticleSettings>);
-    converters["ParticleSystem"] = DNA::FactoryPair(&Structure::Allocate<ParticleSystem>, &Structure::Convert<ParticleSystem>);    converters["MFace"] = DNA::FactoryPair(&Structure::Allocate<MFace>, &Structure::Convert<MFace>);
+    converters["ParticleSystem"] = DNA::FactoryPair(&Structure::Allocate<ParticleSystem>, &Structure::Convert<ParticleSystem>);
+    converters["MFace"] = DNA::FactoryPair(&Structure::Allocate<MFace>, &Structure::Convert<MFace>);
     converters["Lamp"] = DNA::FactoryPair(&Structure::Allocate<Lamp>, &Structure::Convert<Lamp>);
     converters["MDeformWeight"] = DNA::FactoryPair(&Structure::Allocate<MDeformWeight>, &Structure::Convert<MDeformWeight>);
     converters["PackedFile"] = DNA::FactoryPair(&Structure::Allocate<PackedFile>, &Structure::Convert<PackedFile>);
