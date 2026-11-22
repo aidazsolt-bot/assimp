@@ -706,12 +706,17 @@ void BlendPushCameraActionAnim(std::vector<aiAnimation *> &anims, const Assimp::
 
 void BlendConvertCameraAnimations(aiScene *out, Assimp::Blender::ConversionData &conv_data) {
     using namespace Assimp::Blender;
-    if (out == nullptr || conv_data.camera_objects.empty()) {
+    if (out == nullptr) {
         return;
     }
     std::vector<aiAnimation *> anims;
     std::set<std::pair<const Object *, const bAction *>> seen;
-    for (const Object *obj : conv_data.camera_objects) {
+    std::vector<const Object *> objs = conv_data.camera_objects;
+    objs.insert(objs.end(), conv_data.camera_focus_objects.begin(), conv_data.camera_focus_objects.end());
+    if (objs.empty()) {
+        return;
+    }
+    for (const Object *obj : objs) {
         if (obj == nullptr || !obj->adt) {
             continue;
         }
@@ -3392,7 +3397,13 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         if (ci) {
             json << ',';
         }
-        json << "{\"index\":" << ci << ",\"name\":\"" << BlendJsonEscape(out->mCameras[ci]->mName.C_Str()) << "\"}";
+        const char *cname = out->mCameras[ci]->mName.C_Str();
+        json << "{\"index\":" << ci << ",\"name\":\"" << BlendJsonEscape(cname) << '"';
+        const auto itEx = conv.cameraSidecarExtras.find(cname);
+        if (itEx != conv.cameraSidecarExtras.end() && !itEx->second.empty()) {
+            json << ',' << itEx->second;
+        }
+        json << '}';
     }
     json << "],\"lights\":[";
     for (unsigned int li = 0; li < out->mNumLights; ++li) {
@@ -4272,7 +4283,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
 }
 
 // ------------------------------------------------------------------------------------------------
-aiCamera *BlenderImporter::ConvertCamera(const Scene & /*in*/, const Object *obj, const Camera *cam, ConversionData & /*conv_data*/) {
+aiCamera *BlenderImporter::ConvertCamera(const Scene & /*in*/, const Object *obj, const Camera *cam, ConversionData &conv_data) {
     std::unique_ptr<aiCamera> out(new aiCamera());
     out->mName = obj->id.name + 2;
     out->mPosition = aiVector3D(0.f, 0.f, 0.f);
@@ -4292,6 +4303,150 @@ aiCamera *BlenderImporter::ConvertCamera(const Scene & /*in*/, const Object *obj
     }
     out->mClipPlaneNear = cam->clipsta;
     out->mClipPlaneFar = cam->clipend;
+
+    // C8 sidecar: DOF / focus-object bind (not an aiCamera field) — Presence only.
+    const Object *focusObj = nullptr;
+    bool dofEnabled = false;
+    float focusDistance = 0.f;
+    bool hasFocusDistance = false;
+    float apertureFstop = 0.f;
+    bool hasFstop = false;
+    int apertureBlades = 0;
+    bool hasBlades = false;
+    const char *dofSource = nullptr;
+
+    if (cam->dof.focus_object || (cam->dof.flag & CameraDOFSettings::Flag_Enabled) ||
+            cam->dof.focus_distance > 0.f || cam->dof.aperture_fstop > 0.f) {
+        dofSource = "Camera.dof";
+        if (cam->dof.flag & CameraDOFSettings::Flag_Enabled) {
+            dofEnabled = true;
+        }
+        if (cam->dof.focus_object) {
+            focusObj = cam->dof.focus_object.get();
+            dofEnabled = true;
+        }
+        if (cam->dof.focus_distance > 0.f) {
+            focusDistance = cam->dof.focus_distance;
+            hasFocusDistance = true;
+        }
+        if (cam->dof.aperture_fstop > 0.f) {
+            apertureFstop = cam->dof.aperture_fstop;
+            hasFstop = true;
+        }
+        if (cam->dof.aperture_blades > 0) {
+            apertureBlades = cam->dof.aperture_blades;
+            hasBlades = true;
+        }
+    }
+    if (focusObj == nullptr && cam->dof_ob) {
+        // Legacy *dof_ob (tiger.blend / pre-2.8).
+        dofSource = "Camera.dof_ob";
+        focusObj = cam->dof_ob.get();
+        dofEnabled = true;
+    }
+    // gpu_dof only supplements when DOF is actually active (dof_ob / dof.flag / focus_object).
+    // Do not emit from unused gpu_dof defaults alone (e.g. fstop=128 on non-DOF cams).
+    if (dofEnabled || focusObj != nullptr) {
+        if (cam->gpu_dof.focus_distance > 0.f || cam->gpu_dof.fstop > 0.f || cam->gpu_dof.num_blades > 0) {
+            if (dofSource == nullptr) {
+                dofSource = "Camera.gpu_dof";
+            } else if (std::strcmp(dofSource, "Camera.dof_ob") == 0) {
+                // keep dof_ob as primary source; gpu_dof supplies numeric params
+            }
+            if (!hasFocusDistance && cam->gpu_dof.focus_distance > 0.f) {
+                focusDistance = cam->gpu_dof.focus_distance;
+                hasFocusDistance = true;
+            }
+            if (!hasFstop && cam->gpu_dof.fstop > 0.f) {
+                apertureFstop = cam->gpu_dof.fstop;
+                hasFstop = true;
+            }
+            if (!hasBlades && cam->gpu_dof.num_blades > 0) {
+                apertureBlades = cam->gpu_dof.num_blades;
+                hasBlades = true;
+            }
+        }
+    }
+
+    if (dofEnabled || focusObj != nullptr) {
+        std::ostringstream dj;
+        dj << "\"BLEND_camera_dof\":{";
+        bool first = true;
+        auto sep = [&]() {
+            if (!first) {
+                dj << ',';
+            }
+            first = false;
+        };
+        if (dofSource != nullptr) {
+            sep();
+            dj << "\"source\":\"" << dofSource << '"';
+        }
+        sep();
+        dj << "\"enabled\":" << (dofEnabled ? "true" : "false");
+        if (focusObj != nullptr && focusObj->id.name[0] != '\0') {
+            const char *fname = focusObj->id.name + 2;
+            sep();
+            dj << "\"focusObject\":\"" << BlendJsonEscape(fname) << '"';
+            sep();
+            dj << "\"focusObjectType\":";
+            if (focusObj->type == Object::Type_CAMERA) {
+                dj << "\"CAMERA\"";
+            } else if (focusObj->type == Object::Type_EMPTY) {
+                dj << "\"EMPTY\"";
+            } else {
+                dj << "\"OTHER\"";
+            }
+            // Empty display (how Host knows focus is a DOF target empty, not a cam).
+            if (focusObj->type == Object::Type_EMPTY) {
+                const char *disp = nullptr;
+                switch (static_cast<unsigned char>(focusObj->empty_drawtype)) {
+                case 1: disp = "ARROWS"; break;
+                case 2: disp = "PLAIN_AXES"; break;
+                case 3: disp = "CIRCLE"; break;
+                case 4: disp = "SINGLE_ARROW"; break;
+                case 5: disp = "CUBE"; break;
+                case 6: disp = "SPHERE"; break;
+                case 7: disp = "CONE"; break;
+                case 8: disp = "IMAGE"; break;
+                default: break;
+                }
+                if (disp != nullptr) {
+                    sep();
+                    dj << "\"emptyDisplayType\":\"" << disp << '"';
+                }
+                if (focusObj->empty_drawsize > 0.f) {
+                    sep();
+                    dj << "\"emptyDisplaySize\":" << focusObj->empty_drawsize;
+                }
+            }
+            // Collect focus object for TRS Action -> aiNodeAnim (e.g. focusAction).
+            bool seen = false;
+            for (const Object *fo : conv_data.camera_focus_objects) {
+                if (fo == focusObj) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                conv_data.camera_focus_objects.push_back(focusObj);
+            }
+        }
+        if (hasFocusDistance) {
+            sep();
+            dj << "\"focusDistance\":" << focusDistance;
+        }
+        if (hasFstop) {
+            sep();
+            dj << "\"apertureFstop\":" << apertureFstop;
+        }
+        if (hasBlades) {
+            sep();
+            dj << "\"apertureBlades\":" << apertureBlades;
+        }
+        dj << '}';
+        conv_data.cameraSidecarExtras[out->mName.C_Str()] = dj.str();
+    }
 
     return out.release();
 }

@@ -116,6 +116,8 @@ void Structure ::Convert<Object>(
     ReadFieldPtr<ErrorPolicy_Igno>(dest.soft, "*soft", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_object, "*rigidbody_object", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_constraint, "*rigidbody_constraint", db);
+    ReadField<ErrorPolicy_Igno>(dest.empty_drawtype, "empty_drawtype", db);
+    ReadField<ErrorPolicy_Igno>(dest.empty_drawsize, "empty_drawsize", db);
 
     db.reader->IncPtr(size);
 }
@@ -1453,7 +1455,45 @@ void Structure ::Convert<Camera>(
     ReadField<ErrorPolicy_Warn>(dest.ortho_scale, "ortho_scale", db);
     ReadField<ErrorPolicy_Igno>(dest.clipsta, "clipsta", db);
     ReadField<ErrorPolicy_Igno>(dest.clipend, "clipend", db);
+    // Legacy tiger-era DOF: *dof_ob + gpu_dof. Modern: embedded dof (CameraDOFSettings).
+    if ((*this).Get("*dof_ob") != nullptr) {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dof_ob, "*dof_ob", db);
+    }
+    if ((*this).Get("gpu_dof") != nullptr) {
+        ReadField<ErrorPolicy_Igno>(dest.gpu_dof, "gpu_dof", db);
+    }
+    if ((*this).Get("dof") != nullptr) {
+        ReadField<ErrorPolicy_Igno>(dest.dof, "dof", db);
+    }
 
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<GPUDOFSettings>(
+        GPUDOFSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.focus_distance, "focus_distance", db);
+    ReadField<ErrorPolicy_Igno>(dest.fstop, "fstop", db);
+    ReadField<ErrorPolicy_Igno>(dest.focal_length, "focal_length", db);
+    ReadField<ErrorPolicy_Igno>(dest.sensor, "sensor", db);
+    ReadField<ErrorPolicy_Igno>(dest.rotation, "rotation", db);
+    ReadField<ErrorPolicy_Igno>(dest.ratio, "ratio", db);
+    ReadField<ErrorPolicy_Igno>(dest.num_blades, "num_blades", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure ::Convert<CameraDOFSettings>(
+        CameraDOFSettings &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.focus_object, "*focus_object", db);
+    ReadField<ErrorPolicy_Igno>(dest.focus_distance, "focus_distance", db);
+    ReadField<ErrorPolicy_Igno>(dest.aperture_fstop, "aperture_fstop", db);
+    ReadField<ErrorPolicy_Igno>(dest.aperture_blades, "aperture_blades", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
     db.reader->IncPtr(size);
 }
 
@@ -1636,6 +1676,8 @@ void DNA::RegisterConverters() {
     converters["Library"] = DNA::FactoryPair(&Structure::Allocate<Library>, &Structure::Convert<Library>);
     converters["Tex"] = DNA::FactoryPair(&Structure::Allocate<Tex>, &Structure::Convert<Tex>);
     converters["Camera"] = DNA::FactoryPair(&Structure::Allocate<Camera>, &Structure::Convert<Camera>);
+    converters["GPUDOFSettings"] = DNA::FactoryPair(&Structure::Allocate<GPUDOFSettings>, &Structure::Convert<GPUDOFSettings>);
+    converters["CameraDOFSettings"] = DNA::FactoryPair(&Structure::Allocate<CameraDOFSettings>, &Structure::Convert<CameraDOFSettings>);
     converters["MirrorModifierData"] = DNA::FactoryPair(&Structure::Allocate<MirrorModifierData>, &Structure::Convert<MirrorModifierData>);
     converters["Image"] = DNA::FactoryPair(&Structure::Allocate<Image>, &Structure::Convert<Image>);
     converters["CustomData"] = DNA::FactoryPair(&Structure::Allocate<CustomData>, &Structure::Convert<CustomData>);
