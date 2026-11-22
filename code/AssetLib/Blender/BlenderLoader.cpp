@@ -362,6 +362,32 @@ bool BlendNodeIsTexBrick(const Assimp::Blender::bNode &n) {
     return n.type == kSH_NODE_TEX_BRICK;
 }
 
+bool BlendNodeIsTexNoise(const Assimp::Blender::bNode &n) {
+    return n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexNoise") == 0;
+}
+
+bool BlendNodeIsTexMusgrave(const Assimp::Blender::bNode &n) {
+    return n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexMusgrave") == 0;
+}
+
+/** SHD_MUSGRAVE_* / SHD_NOISE_* alias; nullptr if unknown (do not invent). */
+const char *BlendMusgraveTypeAlias(int type) {
+    switch (type) {
+    case 0:
+        return "MULTIFRACTAL";
+    case 1:
+        return "FBM";
+    case 2:
+        return "HYBRID_MULTIFRACTAL";
+    case 3:
+        return "RIDGED_MULTIFRACTAL";
+    case 4:
+        return "HETERO_TERRAIN";
+    default:
+        return nullptr;
+    }
+}
+
 bool BlendNodeIsColorRamp(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0' &&
             (std::strcmp(n.idname, "ShaderNodeValToRGB") == 0 ||
@@ -2971,6 +2997,10 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         } else if (BlendNodeIsColorRamp(*n)) {
             nj << ",\"procedural\":\"ColorRamp\"";
             sawRamp = true;
+        } else if (BlendNodeIsTexNoise(*n)) {
+            nj << ",\"procedural\":\"TexNoise\"";
+        } else if (BlendNodeIsTexMusgrave(*n)) {
+            nj << ",\"procedural\":\"TexMusgrave\"";
         } else if (BlendNodeIsAddShader(*n)) {
             nj << ",\"kind\":\"AddShader\"";
         } else if (BlendNodeIsEmission(*n)) {
@@ -3027,6 +3057,23 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
                 nj << "{\"pos\":" << e.pos << ",\"rgba\":[" << e.r << ',' << e.g << ',' << e.b << ',' << e.a << "]}";
             }
             nj << "]}";
+        }
+        // Musgrave / Noise type Presence (SHD_MUSGRAVE_* == SHD_NOISE_*; omit if unread).
+        if (n->storage && n->storage->dna_type != nullptr) {
+            int musgraveType = -1;
+            if (std::strcmp(n->storage->dna_type, "NodeTexNoise") == 0) {
+                const auto *noise = static_cast<const NodeTexNoise *>(n->storage.get());
+                musgraveType = static_cast<int>(noise->type);
+            } else if (std::strcmp(n->storage->dna_type, "NodeTexMusgrave") == 0) {
+                const auto *mus = static_cast<const NodeTexMusgrave *>(n->storage.get());
+                musgraveType = mus->musgrave_type;
+            }
+            if (musgraveType >= 0) {
+                nj << ",\"musgraveType\":" << musgraveType;
+                if (const char *alias = BlendMusgraveTypeAlias(musgraveType)) {
+                    nj << ",\"musgraveTypeName\":\"" << alias << '"';
+                }
+            }
         }
         nj << '}';
     }

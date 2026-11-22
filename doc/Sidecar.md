@@ -356,6 +356,8 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
 - `BLEND_shader_network` (`eval:"host"`, `assimpEval:false`):
   - nodes: idname/name, `procedural`/`kind`, **unlinked input defaults**
     (`value` / `rgba`), **ColorBand** stops for `ShaderNodeValToRGB`
+  - Musgrave/Noise Presence: `musgraveType` (DNA `SHD_MUSGRAVE_*` /
+    `NodeTexNoise.type`) + optional `musgraveTypeName` when known; omit if unread
   - links: from/to node + sockets
   - `hostProcedural`: `TexBrick` / `ColorRamp` when present
 - Host Look may generate diffuse/emissive maps from that bag (Cityscapes facade /
