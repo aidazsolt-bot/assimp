@@ -4,6 +4,7 @@ Open Asset Import Library (assimp)
 
 Copyright (c) 2006-2026, assimp team
 
+
 All rights reserved.
 
 Redistribution and use of this software in source and binary forms,
@@ -58,6 +59,7 @@ namespace Assimp {
 class Importer;
 
 struct ScenePrivateData {
+    //  The struct constructor.
     ScenePrivateData() AI_NO_EXCEPT;
 
     ~ScenePrivateData();

@@ -68,6 +68,9 @@ void FlagSidecarMeta(aiScene *scene) {
     if (aiSceneHasPhysicsSidecar(scene)) {
         scene->mMetaData->Add(AI_METADATA_PHYSICS_SIDECAR, t);
     }
+    if (aiSceneHasSceneSidecar(scene)) {
+        scene->mMetaData->Add(AI_METADATA_SCENE_SIDECAR, t);
+    }
 }
 
 struct StageWalkAccum {
@@ -723,8 +726,12 @@ void EmitUsdCategorySidecars(
 
     EnsureMeta(pScene);
     const std::string sceneJson = BuildSceneCategoryJson(formatTok, sceneMeta, stage, acc, render_scene);
-    // Replace S0 timing-only bag with full S0-S8 scene category JSON.
-    pScene->mMetaData->Set(AI_METADATA_SCENE_SIDECAR_JSON, aiString(sceneJson));
+    // Full S0-S8 scene JSON on heap (not aiString / AI_MAXLEN).
+    {
+        auto *ssc = new aiSceneSidecar();
+        ssc->mExtensionsJson = DupJson(sceneJson, ssc->mExtensionsJsonLength);
+        AttachSceneSidecar(pScene, ssc);
+    }
     pScene->mMetaData->Set(AI_METADATA_SOURCE_FORMAT, aiString(formatTok));
     FlagSidecarMeta(pScene);
 }
