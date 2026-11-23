@@ -21,11 +21,10 @@ namespace {
 
 constexpr short kFromFace = 1;
 constexpr int kFlagTrand = 1 << 7;
-constexpr int kFlagEdistr = 1 << 8;
 
 struct Tri {
-    float v0[3], v1[3], v2[3];
-    float area;
+    float v0[3], v1[3], v2[3]; // mesh-local (emit positions)
+    float areaObj; // object-space area for weighting
 };
 
 uint32_t HashU32(uint32_t x) {
@@ -68,7 +67,6 @@ void FaceNormal(const float a[3], const float b[3], const float c[3], float n[3]
     }
 }
 
-/** Quaternion rotating +Z onto normal (xyzw as w,x,y,z). */
 void QuatAlignZToNormal(const float n[3], float q[4]) {
     const float z[3] = { 0.f, 0.f, 1.f };
     const float dot = z[0] * n[0] + z[1] * n[1] + z[2] * n[2];
@@ -101,20 +99,31 @@ void QuatAlignZToNormal(const float n[3], float q[4]) {
     q[3] = az * s;
 }
 
-void PushTri(std::vector<Tri> &tris, const float *a, const float *b, const float *c) {
+void ScaleVec(const float in[3], const float scl[3], float out[3]) {
+    out[0] = in[0] * scl[0];
+    out[1] = in[1] * scl[1];
+    out[2] = in[2] * scl[2];
+}
+
+void PushTri(std::vector<Tri> &tris, const float *a, const float *b, const float *c,
+        const float objectScale[3]) {
     Tri t;
     for (int k = 0; k < 3; ++k) {
         t.v0[k] = a[k];
         t.v1[k] = b[k];
         t.v2[k] = c[k];
     }
-    t.area = TriArea(t.v0, t.v1, t.v2);
-    if (t.area > 1e-12f) {
+    float aO[3], bO[3], cO[3];
+    ScaleVec(a, objectScale, aO);
+    ScaleVec(b, objectScale, bO);
+    ScaleVec(c, objectScale, cO);
+    t.areaObj = TriArea(aO, bO, cO);
+    if (t.areaObj > 1e-12f) {
         tris.push_back(t);
     }
 }
 
-void CollectTris(const Mesh &mesh, std::vector<Tri> &tris) {
+void CollectTris(const Mesh &mesh, const float objectScale[3], std::vector<Tri> &tris) {
     tris.clear();
     if (!mesh.mpoly.empty() && !mesh.mloop.empty() && !mesh.mvert.empty()) {
         for (const MPoly &poly : mesh.mpoly) {
@@ -138,7 +147,7 @@ void CollectTris(const Mesh &mesh, std::vector<Tri> &tris) {
                 }
                 PushTri(tris, mesh.mvert[static_cast<size_t>(i0)].co,
                         mesh.mvert[static_cast<size_t>(i1)].co,
-                        mesh.mvert[static_cast<size_t>(i2)].co);
+                        mesh.mvert[static_cast<size_t>(i2)].co, objectScale);
             }
         }
         return;
@@ -153,11 +162,11 @@ void CollectTris(const Mesh &mesh, std::vector<Tri> &tris) {
             }
             PushTri(tris, mesh.mvert[static_cast<size_t>(f.v1)].co,
                     mesh.mvert[static_cast<size_t>(f.v2)].co,
-                    mesh.mvert[static_cast<size_t>(f.v3)].co);
+                    mesh.mvert[static_cast<size_t>(f.v3)].co, objectScale);
             if (f.v4 > 0 && f.v4 < static_cast<int>(mesh.mvert.size())) {
                 PushTri(tris, mesh.mvert[static_cast<size_t>(f.v1)].co,
                         mesh.mvert[static_cast<size_t>(f.v3)].co,
-                        mesh.mvert[static_cast<size_t>(f.v4)].co);
+                        mesh.mvert[static_cast<size_t>(f.v4)].co, objectScale);
             }
         }
     }
@@ -204,47 +213,54 @@ int PickProto(const std::vector<int> &counts, int particleIndex, uint32_t seed) 
 bool BlendDistributeParticlesOnMeshFaces(
         const Mesh &mesh,
         const ParticleFaceDistributeParams &params,
-        std::vector<float> &positions,
-        std::vector<float> &orients,
-        std::vector<float> &scales,
-        std::vector<int> &protoIndices) {
-    positions.clear();
-    orients.clear();
-    scales.clear();
-    protoIndices.clear();
+        ParticleFaceDistributeResult &out) {
+    out.positions.clear();
+    out.orients.clear();
+    out.scales.clear();
+    out.protoIndices.clear();
+    out.faceArea.clear();
+    out.emitWeight.clear();
 
     if (params.totpart <= 0 || params.from != kFromFace) {
         return false;
     }
 
+    float scl[3] = { params.objectScale[0], params.objectScale[1], params.objectScale[2] };
+    for (int i = 0; i < 3; ++i) {
+        if (!(scl[i] > 1e-12f) && !(scl[i] < -1e-12f)) {
+            scl[i] = 1.f;
+        }
+    }
+
     std::vector<Tri> tris;
-    CollectTris(mesh, tris);
+    CollectTris(mesh, scl, tris);
     if (tris.empty()) {
         return false;
     }
 
-    const bool useArea = (params.flag & kFlagEdistr) != 0;
+    // FACE mesh_face_eval: always area-weight in object space (Host 0ad / Blender PART_EDISTR).
     const bool useTrand = (params.flag & kFlagTrand) != 0;
     std::vector<float> cum(tris.size());
-    float tot = 0.f;
+    float totArea = 0.f;
     for (size_t i = 0; i < tris.size(); ++i) {
-        const float w = useArea ? tris[i].area : 1.f;
-        tot += w;
-        cum[i] = tot;
+        totArea += tris[i].areaObj;
+        cum[i] = totArea;
     }
-    if (tot <= 0.f) {
+    if (totArea <= 0.f) {
         return false;
     }
     for (float &c : cum) {
-        c /= tot;
+        c /= totArea;
     }
 
     const uint32_t seed = static_cast<uint32_t>(params.seed);
     const int N = params.totpart;
-    positions.reserve(static_cast<size_t>(N) * 3u);
-    orients.reserve(static_cast<size_t>(N) * 4u);
-    scales.reserve(static_cast<size_t>(N));
-    protoIndices.reserve(static_cast<size_t>(N));
+    out.positions.reserve(static_cast<size_t>(N) * 3u);
+    out.orients.reserve(static_cast<size_t>(N) * 4u);
+    out.scales.reserve(static_cast<size_t>(N));
+    out.protoIndices.reserve(static_cast<size_t>(N));
+    out.faceArea.reserve(static_cast<size_t>(N));
+    out.emitWeight.reserve(static_cast<size_t>(N));
 
     const float hairMul = (params.hairLength > 0.f) ? params.hairLength : 1.f;
     const float step = (N < 2) ? 0.5f : (1.f / float(N));
@@ -264,7 +280,6 @@ bool BlendDistributeParticlesOnMeshFaces(
 
         float u = HashFloat(seed, static_cast<uint32_t>(p) + 101u);
         float v = HashFloat(seed, static_cast<uint32_t>(p) + 202u);
-        // JIT: pull toward face center by jitfac (0 = center, 1 = full random).
         const float jf = std::max(0.f, std::min(1.f, params.jitfac));
         u = 0.33333334f + (u - 0.33333334f) * jf;
         v = 0.33333334f + (v - 0.33333334f) * jf;
@@ -273,30 +288,29 @@ bool BlendDistributeParticlesOnMeshFaces(
             v = 1.f - v;
         }
         const float w = 1.f - u - v;
-        const float x = w * t.v0[0] + u * t.v1[0] + v * t.v2[0];
-        const float y = w * t.v0[1] + u * t.v1[1] + v * t.v2[1];
-        const float z = w * t.v0[2] + u * t.v1[2] + v * t.v2[2];
-        positions.push_back(x);
-        positions.push_back(y);
-        positions.push_back(z);
+        out.positions.push_back(w * t.v0[0] + u * t.v1[0] + v * t.v2[0]);
+        out.positions.push_back(w * t.v0[1] + u * t.v1[1] + v * t.v2[1]);
+        out.positions.push_back(w * t.v0[2] + u * t.v1[2] + v * t.v2[2]);
 
         float nrm[3];
         FaceNormal(t.v0, t.v1, t.v2, nrm);
         float q[4];
         QuatAlignZToNormal(nrm, q);
-        orients.push_back(q[0]);
-        orients.push_back(q[1]);
-        orients.push_back(q[2]);
-        orients.push_back(q[3]);
+        out.orients.push_back(q[0]);
+        out.orients.push_back(q[1]);
+        out.orients.push_back(q[2]);
+        out.orients.push_back(q[3]);
 
         const float r = HashFloat(seed, static_cast<uint32_t>(p) + 303u);
         const float psz = params.size * (1.f - params.randsize * r);
-        scales.push_back(psz * hairMul);
+        out.scales.push_back(psz * hairMul);
+        out.protoIndices.push_back(PickProto(params.prototypeCounts, p, seed));
 
-        protoIndices.push_back(PickProto(params.prototypeCounts, p, seed));
+        out.faceArea.push_back(t.areaObj);
+        out.emitWeight.push_back(t.areaObj / totArea);
     }
 
-    return static_cast<int>(scales.size()) == N;
+    return static_cast<int>(out.scales.size()) == N;
 }
 
 } // namespace Blender

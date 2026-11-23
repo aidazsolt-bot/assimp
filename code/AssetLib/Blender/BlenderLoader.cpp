@@ -4252,9 +4252,18 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                     if (p.hasNormfac) {
                         dp.hairLength = p.normfac * 4.f;
                     }
+                    dp.objectScale[0] = obj->scale[0];
+                    dp.objectScale[1] = obj->scale[1];
+                    dp.objectScale[2] = obj->scale[2];
                     dp.prototypeCounts = pi.prototypeCounts;
-                    if (BlendDistributeParticlesOnMeshFaces(*emesh, dp, pi.positions, pi.orients,
-                                pi.scales, pi.protoIndices)) {
+                    ParticleFaceDistributeResult dist;
+                    if (BlendDistributeParticlesOnMeshFaces(*emesh, dp, dist)) {
+                        pi.positions = std::move(dist.positions);
+                        pi.orients = std::move(dist.orients);
+                        pi.scales = std::move(dist.scales);
+                        pi.protoIndices = std::move(dist.protoIndices);
+                        pi.faceArea = std::move(dist.faceArea);
+                        pi.emitWeight = std::move(dist.emitWeight);
                         pi.arraysResolved = true;
                         pi.arraysSource = "mesh_face_eval";
                         pi.totpart = static_cast<int>(pi.scales.size());
@@ -5273,6 +5282,13 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                     BlendEmitFloatArray(pjson, "scales", inst.scales);
                     if (!inst.protoIndices.empty()) {
                         BlendEmitIntArray(pjson, "protoIndices", inst.protoIndices);
+                    }
+                    // Presence: only when mesh-face eval produced real per-instance weights.
+                    if (!inst.faceArea.empty()) {
+                        BlendEmitFloatArray(pjson, "faceArea", inst.faceArea);
+                    }
+                    if (!inst.emitWeight.empty()) {
+                        BlendEmitFloatArray(pjson, "emitWeight", inst.emitWeight);
                     }
                 } else {
                     pjson << ",\"arraysResolved\":false";
@@ -7068,64 +7084,8 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
     modifier_cache->ApplyModifiers(*node, conv_data, in, *obj);
     CollectBlendPhysicsModifiers(obj, conv_data, node.get());
 
-    // Hierarchy Presence: authored ModifierData + ParticleSystem as empty child nodes
-    // under the emitter (not expanded instance meshes).
-    {
-        std::vector<aiNode *> markerNodes;
-        for (const SharedModifierData *cur =
-                        static_cast<const SharedModifierData *>(obj->modifiers.first.get());
-                cur;
-                cur = static_cast<const SharedModifierData *>(cur->modifier.next.get())) {
-            const ModifierData &dat = cur->modifier;
-            if (dat.name[0] == '\0') {
-                continue;
-            }
-            std::string nm = std::string("Modifier:") + dat.name;
-            auto *mn = new aiNode(nm);
-            mn->mParent = node.get();
-            if (!mn->mMetaData) {
-                mn->mMetaData = new aiMetadata();
-            }
-            mn->mMetaData->Add("BLEND_modifier_type", static_cast<int32_t>(dat.type));
-            mn->mMetaData->Add("BLEND_modifier_name", aiString(dat.name));
-            markerNodes.push_back(mn);
-        }
-        for (const ParticleSystem *ps =
-                        static_cast<const ParticleSystem *>(obj->particlesystem.first.get());
-                ps;
-                ps = static_cast<const ParticleSystem *>(ps->next.get())) {
-            const char *psName = (ps->name[0] != '\0') ? ps->name : "ParticleSystem";
-            std::string nm = std::string("ParticleSystem:") + psName;
-            auto *mn = new aiNode(nm);
-            mn->mParent = node.get();
-            if (!mn->mMetaData) {
-                mn->mMetaData = new aiMetadata();
-            }
-            mn->mMetaData->Add("BLEND_particle_system", aiString(psName));
-            if (ps->part && ps->part->id.name[0] != '\0') {
-                mn->mMetaData->Add("BLEND_particle_settings", aiString(ps->part->id.name + 2));
-            }
-            if (ps->part) {
-                mn->mMetaData->Add("BLEND_particle_totpart", static_cast<int32_t>(ps->part->totpart));
-                mn->mMetaData->Add("BLEND_particle_ren_as", static_cast<int32_t>(ps->part->ren_as));
-            }
-            markerNodes.push_back(mn);
-        }
-        if (!markerNodes.empty()) {
-            const unsigned oldN = node->mNumChildren;
-            const unsigned addN = static_cast<unsigned>(markerNodes.size());
-            aiNode **merged = new aiNode *[oldN + addN]();
-            for (unsigned i = 0; i < oldN; ++i) {
-                merged[i] = node->mChildren[i];
-            }
-            for (unsigned i = 0; i < addN; ++i) {
-                merged[oldN + i] = markerNodes[i];
-            }
-            delete[] node->mChildren;
-            node->mChildren = merged;
-            node->mNumChildren = oldN + addN;
-        }
-    }
+    // No Modifier:*/ParticleSystem:* marker children in typed hierarchy (Host 0af):
+    // bind stays in Physics sidecar emitter/emitterIndex/system only.
 
     // Asset Browser fields on Object ID (Presence).
     BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);

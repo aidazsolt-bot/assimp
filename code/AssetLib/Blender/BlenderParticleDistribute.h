@@ -32,17 +32,28 @@ struct ParticleFaceDistributeParams {
     float randsize{ 0.f };
     /** RNA hair_length (= DNA normfac*4). 0 => scale uses size only. */
     float hairLength{ 0.f };
+    /** Object DNA scale[3] for area weights in object space (Blender PART_EDISTR). */
+    float objectScale[3]{ 1.f, 1.f, 1.f };
     std::vector<int> prototypeCounts;
 };
 
-/** Returns true and fills arrays when Mesh has faces and totpart > 0 and from==FACE. */
+struct ParticleFaceDistributeResult {
+    std::vector<float> positions; // xyz * N (mesh/object-local)
+    std::vector<float> orients; // wxyz * N
+    std::vector<float> scales; // uniform * N
+    std::vector<int> protoIndices;
+    /** Object-space triangle area of the face that received each particle (Presence). */
+    std::vector<float> faceArea;
+    /** Normalized emit weight faceArea/sumAreas for that face (Presence). */
+    std::vector<float> emitWeight;
+};
+
+/** Returns true and fills result when Mesh has faces and totpart > 0 and from==FACE.
+ *  FACE eval always area-weights in object space (objectScale * mesh verts). */
 bool BlendDistributeParticlesOnMeshFaces(
         const Mesh &mesh,
         const ParticleFaceDistributeParams &params,
-        std::vector<float> &positions,
-        std::vector<float> &orients,
-        std::vector<float> &scales,
-        std::vector<int> &protoIndices);
+        ParticleFaceDistributeResult &out);
 
 } // namespace Blender
 } // namespace Assimp

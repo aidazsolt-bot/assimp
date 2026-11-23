@@ -311,6 +311,9 @@ namespace Blender {
             std::vector<float> orients; // wxyz * N
             std::vector<float> scales; // uniform * N
             std::vector<int> protoIndices; // per-instance prototype slot
+            /** mesh_face_eval Presence: object-space face area / normalized emit weight per instance. */
+            std::vector<float> faceArea;
+            std::vector<float> emitWeight;
             bool arraysResolved{ false };
             /** "dna_particles" | "mesh_face_eval" when arraysResolved. */
             std::string arraysSource;
