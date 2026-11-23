@@ -106,11 +106,13 @@ TEST(utBlenderImporter, importBlenderFormatV1Header) {
     EXPECT_EQ(std::string::npos, std::string(importer.GetErrorString()).find("invalid size of file block"));
     EXPECT_GE(scene->mNumMeshes, 1u);
     ASSERT_NE(nullptr, scene->mMetaData);
-    aiString json;
-    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, json));
-    EXPECT_NE(nullptr, std::strstr(json.C_Str(), "\"formatVersion\":1"));
-    EXPECT_NE(nullptr, std::strstr(json.C_Str(), "\"blenderFileVersion\":500"));
-    EXPECT_NE(nullptr, std::strstr(json.C_Str(), "BLEND_file"));
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(ssc->mExtensionsJson, "\"formatVersion\":1"));
+    EXPECT_NE(nullptr, std::strstr(ssc->mExtensionsJson, "\"blenderFileVersion\":500"));
+    EXPECT_NE(nullptr, std::strstr(ssc->mExtensionsJson, "BLEND_file"));
 }
 
 TEST(utBlenderImporter, importBlenderDefault250Compressed) {
@@ -283,9 +285,11 @@ TEST(utBlenderImporter, sceneTimingSidecarS0Test) {
     ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SOURCE_FORMAT, format));
     EXPECT_STREQ("blend", format.C_Str());
 
-    aiString json;
-    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, json));
-    const char *j = json.C_Str();
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *j = ssc->mExtensionsJson;
     EXPECT_NE(nullptr, std::strstr(j, "\"schemaVersion\":1"));
     EXPECT_NE(nullptr, std::strstr(j, "\"format\":\"blend\""));
     EXPECT_NE(nullptr, std::strstr(j, "\"metersPerUnit\":"));
@@ -318,10 +322,12 @@ TEST(utBlenderImporter, categorySidecarsS1toS8Test) {
     ASSERT_NE(nullptr, matSc->mExtensionsJson);
     EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "BLEND_shader"));
 
-    // S4 cameras/lights + S8 skipped in scene JSON
-    aiString sceneJson;
-    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
-    const char *sj = sceneJson.C_Str();
+    // S4 cameras/lights + S8 skipped in heap scene JSON
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *sj = ssc->mExtensionsJson;
     EXPECT_NE(nullptr, std::strstr(sj, "\"cameras\""));
     EXPECT_NE(nullptr, std::strstr(sj, "\"lights\""));
     EXPECT_NE(nullptr, std::strstr(sj, "\"skipped\""));
