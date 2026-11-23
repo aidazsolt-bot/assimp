@@ -1155,6 +1155,14 @@ struct ParticleSettings final : ElemBase {
     float sta WARN;
     float end WARN;
     float jitfac WARN;
+    /**
+     * DNA ParticleSettings.normfac. Blender RNA `hair_length` = normfac * 4
+     * (rna_PartSetting_hairlength_get). Collection-instance scale uses
+     * particle_size * hair_length.
+     */
+    float normfac WARN;
+    /** True when DNA field `normfac` was present in the file SDNA. */
+    bool hasNormfac WARN;
     /** Blender 2.8 DNA name; newer files may use instance_collection. */
     std::shared_ptr<Collection> dup_group WARN;
     ListBase dupliweights WARN; // ParticleDupliWeight
@@ -1184,7 +1192,9 @@ struct ParticleSettings final : ElemBase {
             lifetime(50.f),
             sta(1.f),
             end(200.f),
-            jitfac(1.f) {}
+            jitfac(1.f),
+            normfac(1.f),
+            hasNormfac(false) {}
 };
 
 /** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */

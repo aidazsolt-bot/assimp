@@ -4056,6 +4056,11 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                      << ",\"frame_start\":" << p.sta
                      << ",\"frame_end\":" << p.end
                      << ",\"seed\":" << ps->seed;
+            // Presence: RNA hair_length = DNA normfac * 4 (rna_PartSetting_hairlength_get).
+            if (p.hasNormfac) {
+                partJson << ",\"normfac\":" << p.normfac
+                         << ",\"hair_length\":" << (p.normfac * 4.f);
+            }
             if (p.id.name[0] != '\0') {
                 partJson << ",\"settings_name\":\"" << BlendJsonEscape(p.id.name + 2) << '"';
             }
@@ -4114,6 +4119,10 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 pi.size = p.size;
                 pi.randsize = p.randsize;
                 pi.jitfac = p.jitfac;
+                if (p.hasNormfac) {
+                    pi.normfac = p.normfac;
+                    pi.hasHairLength = true;
+                }
                 if (p.dup_group && p.dup_group->id.name[0] != '\0') {
                     pi.collectionName = p.dup_group->id.name + 2;
                 }
@@ -5078,6 +5087,11 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                       << ",\"size\":" << inst.size
                       << ",\"randsize\":" << inst.randsize
                       << ",\"jitfac\":" << inst.jitfac;
+                // Presence: hair_length only when DNA normfac was in the file SDNA.
+                if (inst.hasHairLength) {
+                    pjson << ",\"normfac\":" << inst.normfac
+                          << ",\"hair_length\":" << (inst.normfac * 4.f);
+                }
                 pjson << ",\"prototypes\":[";
                 for (size_t pr = 0; pr < inst.prototypeNames.size(); ++pr) {
                     if (pr) {

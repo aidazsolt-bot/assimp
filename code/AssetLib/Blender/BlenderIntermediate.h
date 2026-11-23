@@ -283,6 +283,9 @@ namespace Blender {
             float size{ 0.f };
             float randsize{ 0.f };
             float jitfac{ 0.f };
+            /** DNA normfac; emit hair_length = normfac*4 when hasHairLength. */
+            float normfac{ 1.f };
+            bool hasHairLength{ false };
             std::vector<std::string> prototypeNames;
             std::vector<int> prototypeCounts;
             std::vector<int> prototypeIndices;
