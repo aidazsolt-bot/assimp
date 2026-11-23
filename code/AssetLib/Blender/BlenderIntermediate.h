@@ -310,6 +310,22 @@ namespace Blender {
             bool arraysResolved{ false };
             /** "dna_particles" | "mesh_face_eval" when arraysResolved. */
             std::string arraysSource;
+            /**
+             * Host 0ai contract (Presence when arraysResolved):
+             * positionsSpace / scalesSpace = "emitterLocal".
+             * positions[] = emitter mesh-local (Host: parent under emitter node for T).
+             * scales[] = isotropic instance scale in the same emitter-local frame as
+             * Blender size*path_len before pamat*obmat - NOT world, NOT Host skinScale.
+             * mesh_face_eval: scales[i] = size*(1-randsize*r)*hair_length (path_len proxy).
+             * dna_particles: scales[i] = ParticleData.size (or settings size).
+             * size / hair_length / normfac stay separate Presence keys.
+             * Host must not apply emitter Object.scale a second time onto scales[] when
+             * parenting (Blender already folds Object.scale into pamat*obmat / eval path).
+             */
+            std::string positionsSpace;
+            std::string scalesSpace;
+            /** Optional Presence: how scales[] were formed (mesh_face_eval only). */
+            std::string scalesMeaning;
         };
         std::vector<PointInstancerPending> pointInstancers;
         /** Material indices with resolved Principled Volume (parallel to materials_raw). */
