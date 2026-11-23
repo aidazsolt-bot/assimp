@@ -710,7 +710,27 @@ void Structure ::Convert<ParticleSettings>(
     ReadField<ErrorPolicy_Igno>(dest.from, "from", db);
     ReadField<ErrorPolicy_Igno>(dest.distr, "distr", db);
     ReadField<ErrorPolicy_Igno>(dest.ren_as, "ren_as", db);
+    dest.hasPhystype = (Get("phystype") != nullptr);
+    if (dest.hasPhystype) {
+        ReadField<ErrorPolicy_Igno>(dest.phystype, "phystype", db);
+    }
+    dest.hasDrawAs = (Get("draw_as") != nullptr);
+    if (dest.hasDrawAs) {
+        ReadField<ErrorPolicy_Igno>(dest.draw_as, "draw_as", db);
+    }
+    dest.hasDraw = (Get("draw") != nullptr);
+    if (dest.hasDraw) {
+        ReadField<ErrorPolicy_Igno>(dest.draw, "draw", db);
+    }
     ReadField<ErrorPolicy_Igno>(dest.totpart, "totpart", db);
+    dest.hasUserjit = (Get("userjit") != nullptr);
+    if (dest.hasUserjit) {
+        ReadField<ErrorPolicy_Igno>(dest.userjit, "userjit", db);
+    }
+    dest.hasGridRes = (Get("grid_res") != nullptr);
+    if (dest.hasGridRes) {
+        ReadField<ErrorPolicy_Igno>(dest.grid_res, "grid_res", db);
+    }
     ReadField<ErrorPolicy_Igno>(dest.mass, "mass", db);
     ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
     ReadField<ErrorPolicy_Igno>(dest.randsize, "randsize", db);
@@ -718,6 +738,22 @@ void Structure ::Convert<ParticleSettings>(
     ReadField<ErrorPolicy_Igno>(dest.sta, "sta", db);
     ReadField<ErrorPolicy_Igno>(dest.end, "end", db);
     ReadField<ErrorPolicy_Igno>(dest.jitfac, "jitfac", db);
+    dest.hasGridRand = (Get("grid_rand") != nullptr);
+    if (dest.hasGridRand) {
+        ReadField<ErrorPolicy_Igno>(dest.grid_rand, "grid_rand", db);
+    }
+    dest.hasRandlife = (Get("randlife") != nullptr);
+    if (dest.hasRandlife) {
+        ReadField<ErrorPolicy_Igno>(dest.randlife, "randlife", db);
+    }
+    dest.hasRandlength = (Get("randlength") != nullptr);
+    if (dest.hasRandlength) {
+        ReadField<ErrorPolicy_Igno>(dest.randlength, "randlength", db);
+    }
+    dest.hasHairStep = (Get("hair_step") != nullptr);
+    if (dest.hasHairStep) {
+        ReadField<ErrorPolicy_Igno>(dest.hair_step, "hair_step", db);
+    }
     // Presence: only mark hair_length emit when SDNA has normfac (RNA hair_length = *4).
     dest.hasNormfac = (Get("normfac") != nullptr);
     if (dest.hasNormfac) {

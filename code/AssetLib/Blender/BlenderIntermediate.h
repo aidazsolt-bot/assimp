@@ -276,9 +276,27 @@ namespace Blender {
             float size{ 0.f };
             float randsize{ 0.f };
             float jitfac{ 0.f };
+            short phystype{ 0 };
+            short draw_as{ 0 };
+            int draw{ 0 };
+            int userjit{ 0 };
+            int grid_res{ 10 };
+            float grid_rand{ 0.f };
+            float randlife{ 0.f };
+            float randlength{ 0.f };
+            short hair_step{ 5 };
             /** DNA normfac; emit hair_length = normfac*4 when hasHairLength. */
             float normfac{ 1.f };
             bool hasHairLength{ false };
+            bool hasPhystype{ false };
+            bool hasDrawAs{ false };
+            bool hasDraw{ false };
+            bool hasUserjit{ false };
+            bool hasGridRes{ false };
+            bool hasGridRand{ false };
+            bool hasRandlife{ false };
+            bool hasRandlength{ false };
+            bool hasHairStep{ false };
             std::vector<std::string> prototypeNames;
             std::vector<int> prototypeCounts;
             std::vector<int> prototypeIndices;

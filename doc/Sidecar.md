@@ -471,3 +471,7 @@ store geometry in `AttributeStorage` (see blender.git
 `poly_offset_indices`). Assimp hydrates those into the classic arrays in
 `BlenderMeshAttributes.cpp` before `ConvertMesh` (shared generated block
 addresses are disambiguated by size and locality).
+
+## BLEND typed vs sidecar map
+
+See `doc/BLEND_DNA_EMIT_MAP.md` for DNA field ownership (typed `ai*` / node metadata vs sidecar bags) and ParticleSettings key table.

@@ -3552,7 +3552,36 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                      << ",\"lifetime\":" << p.lifetime
                      << ",\"frame_start\":" << p.sta
                      << ",\"frame_end\":" << p.end
-                     << ",\"seed\":" << ps->seed;
+                     << ",\"seed\":" << ps->seed
+                     << ",\"jitfac\":" << p.jitfac
+                     << ",\"flag\":" << p.flag;
+            if (p.hasPhystype) {
+                partJson << ",\"phystype\":" << p.phystype;
+            }
+            if (p.hasDrawAs) {
+                partJson << ",\"draw_as\":" << p.draw_as;
+            }
+            if (p.hasDraw) {
+                partJson << ",\"draw\":" << p.draw;
+            }
+            if (p.hasUserjit) {
+                partJson << ",\"userjit\":" << p.userjit;
+            }
+            if (p.hasGridRes) {
+                partJson << ",\"grid_res\":" << p.grid_res;
+            }
+            if (p.hasGridRand) {
+                partJson << ",\"grid_rand\":" << p.grid_rand;
+            }
+            if (p.hasRandlife) {
+                partJson << ",\"randlife\":" << p.randlife;
+            }
+            if (p.hasRandlength) {
+                partJson << ",\"randlength\":" << p.randlength;
+            }
+            if (p.hasHairStep) {
+                partJson << ",\"hair_step\":" << p.hair_step;
+            }
             // Presence: RNA hair_length = DNA normfac * 4 (rna_PartSetting_hairlength_get).
             if (p.hasNormfac) {
                 partJson << ",\"normfac\":" << p.normfac
@@ -3616,6 +3645,42 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 pi.size = p.size;
                 pi.randsize = p.randsize;
                 pi.jitfac = p.jitfac;
+                if (p.hasPhystype) {
+                    pi.phystype = p.phystype;
+                    pi.hasPhystype = true;
+                }
+                if (p.hasDrawAs) {
+                    pi.draw_as = p.draw_as;
+                    pi.hasDrawAs = true;
+                }
+                if (p.hasDraw) {
+                    pi.draw = p.draw;
+                    pi.hasDraw = true;
+                }
+                if (p.hasUserjit) {
+                    pi.userjit = p.userjit;
+                    pi.hasUserjit = true;
+                }
+                if (p.hasGridRes) {
+                    pi.grid_res = p.grid_res;
+                    pi.hasGridRes = true;
+                }
+                if (p.hasGridRand) {
+                    pi.grid_rand = p.grid_rand;
+                    pi.hasGridRand = true;
+                }
+                if (p.hasRandlife) {
+                    pi.randlife = p.randlife;
+                    pi.hasRandlife = true;
+                }
+                if (p.hasRandlength) {
+                    pi.randlength = p.randlength;
+                    pi.hasRandlength = true;
+                }
+                if (p.hasHairStep) {
+                    pi.hair_step = p.hair_step;
+                    pi.hasHairStep = true;
+                }
                 if (p.hasNormfac) {
                     pi.normfac = p.normfac;
                     pi.hasHairLength = true;
@@ -4571,6 +4636,33 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                       << ",\"size\":" << inst.size
                       << ",\"randsize\":" << inst.randsize
                       << ",\"jitfac\":" << inst.jitfac;
+                if (inst.hasPhystype) {
+                    pjson << ",\"phystype\":" << inst.phystype;
+                }
+                if (inst.hasDrawAs) {
+                    pjson << ",\"draw_as\":" << inst.draw_as;
+                }
+                if (inst.hasDraw) {
+                    pjson << ",\"draw\":" << inst.draw;
+                }
+                if (inst.hasUserjit) {
+                    pjson << ",\"userjit\":" << inst.userjit;
+                }
+                if (inst.hasGridRes) {
+                    pjson << ",\"grid_res\":" << inst.grid_res;
+                }
+                if (inst.hasGridRand) {
+                    pjson << ",\"grid_rand\":" << inst.grid_rand;
+                }
+                if (inst.hasRandlife) {
+                    pjson << ",\"randlife\":" << inst.randlife;
+                }
+                if (inst.hasRandlength) {
+                    pjson << ",\"randlength\":" << inst.randlength;
+                }
+                if (inst.hasHairStep) {
+                    pjson << ",\"hair_step\":" << inst.hair_step;
+                }
                 // Presence: hair_length only when DNA normfac was in the file SDNA.
                 if (inst.hasHairLength) {
                     pjson << ",\"normfac\":" << inst.normfac
