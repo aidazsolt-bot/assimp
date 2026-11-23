@@ -1139,7 +1139,11 @@ struct ParticleDupliWeight final : ElemBase {
             ob(nullptr), count(0), flag(0), index(0) {}
 };
 
-/** Subset of DNA ParticleSettings. */
+/** Subset of DNA ParticleSettings - emission / instance / hair scale fields.
+ *  Branch policy: DNA read lives on both improve+feature; typed aiNode metadata
+ *  emit = (improve)-blender-2x-5x; JSON bags = feature/blend-sidecar.
+ *  See doc/BLEND_DNA_EMIT_MAP.md.
+ */
 struct ParticleSettings final : ElemBase {
     ID id WARN;
     int flag WARN;
@@ -1147,7 +1151,12 @@ struct ParticleSettings final : ElemBase {
     short from WARN;
     short distr WARN;
     short ren_as WARN;
+    short phystype WARN;
+    short draw_as WARN;
+    int draw WARN;
     int totpart WARN;
+    int userjit WARN;
+    int grid_res WARN;
     float mass WARN;
     float size WARN;
     float randsize WARN;
@@ -1155,14 +1164,26 @@ struct ParticleSettings final : ElemBase {
     float sta WARN;
     float end WARN;
     float jitfac WARN;
+    float grid_rand WARN;
+    float randlife WARN;
+    float randlength WARN;
+    short hair_step WARN;
     /**
      * DNA ParticleSettings.normfac. Blender RNA `hair_length` = normfac * 4
      * (rna_PartSetting_hairlength_get). Collection-instance scale uses
      * particle_size * hair_length.
      */
     float normfac WARN;
-    /** True when DNA field `normfac` was present in the file SDNA. */
     bool hasNormfac WARN;
+    bool hasUserjit WARN;
+    bool hasGridRes WARN;
+    bool hasGridRand WARN;
+    bool hasRandlife WARN;
+    bool hasRandlength WARN;
+    bool hasHairStep WARN;
+    bool hasPhystype WARN;
+    bool hasDrawAs WARN;
+    bool hasDraw WARN;
     /** Blender 2.8 DNA name; newer files may use instance_collection. */
     std::shared_ptr<Collection> dup_group WARN;
     ListBase dupliweights WARN; // ParticleDupliWeight
@@ -1185,7 +1206,12 @@ struct ParticleSettings final : ElemBase {
             from(0),
             distr(0),
             ren_as(0),
+            phystype(0),
+            draw_as(0),
+            draw(0),
             totpart(0),
+            userjit(0),
+            grid_res(10),
             mass(1.f),
             size(0.05f),
             randsize(0.f),
@@ -1193,9 +1219,23 @@ struct ParticleSettings final : ElemBase {
             sta(1.f),
             end(200.f),
             jitfac(1.f),
+            grid_rand(0.f),
+            randlife(0.f),
+            randlength(0.f),
+            hair_step(5),
             normfac(1.f),
-            hasNormfac(false) {}
+            hasNormfac(false),
+            hasUserjit(false),
+            hasGridRes(false),
+            hasGridRand(false),
+            hasRandlife(false),
+            hasRandlength(false),
+            hasHairStep(false),
+            hasPhystype(false),
+            hasDrawAs(false),
+            hasDraw(false) {}
 };
+
 
 /** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
 struct ParticleSystem final : ElemBase {
