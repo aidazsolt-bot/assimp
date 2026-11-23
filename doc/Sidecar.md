@@ -354,8 +354,11 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
 - Emission sibling under Add: merge `emissionStrength` when resolved; procedural
   Emission Color stays in the network (no invent flat Ke).
 - `BLEND_shader_network` (`eval:"host"`, `assimpEval:false`):
-  - nodes: idname/name, `procedural`/`kind`, **unlinked input defaults**
-    (`value` / `rgba`), **ColorBand** stops for `ShaderNodeValToRGB`
+  - nodes: idname/name, `procedural`/`kind` (incl. `Mapping`), **unlinked input defaults**
+    (`value` / `rgba` / `vector`), **ColorBand** stops for `ShaderNodeValToRGB`
+  - **ShaderNodeMapping** Location/Rotation/Scale: Presence `vector` from SOCK_VECTOR
+    socket defaults when unlinked; pre-2.81 files from DNA `TexMapping` storage
+    (`source:"TexMapping"`) — Image and procedural paths
   - Musgrave/Noise Presence: `musgraveType` (DNA `SHD_MUSGRAVE_*` /
     `NodeTexNoise.type`) + optional `musgraveTypeName` when known; omit if unread
   - links: from/to node + sockets

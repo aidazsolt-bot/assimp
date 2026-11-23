@@ -43,8 +43,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *  @brief Implementation of the Blender3D importer class.
  */
 
-//#define ASSIMP_BUILD_NO_COMPRESSED_BLEND
-// Uncomment this to disable support for (gzip/zstd)compressed .BLEND files
+// #define ASSIMP_BUILD_NO_COMPRESSED_BLEND
+//  Uncomment this to disable support for (gzip/zstd)compressed .BLEND files
 
 #ifndef ASSIMP_BUILD_NO_BLEND_IMPORTER
 
@@ -248,6 +248,30 @@ bool BlendReadSocketColor(const Assimp::Blender::bNodeSocket &sock, float out[4]
         return true;
     }
     return false;
+}
+
+/** Presence: Vector socket default_value (SOCK_VECTOR / bNodeSocketValueVector). */
+bool BlendReadSocketVector(const Assimp::Blender::bNodeSocket &sock, float out[3]) {
+    using namespace Assimp::Blender;
+    if (!sock.default_value || sock.default_value->dna_type == nullptr) {
+        return false;
+    }
+    if (std::strcmp(sock.default_value->dna_type, "bNodeSocketValueVector") == 0) {
+        const auto *vec = static_cast<const bNodeSocketValueVector *>(sock.default_value.get());
+        out[0] = vec->value[0];
+        out[1] = vec->value[1];
+        out[2] = vec->value[2];
+        return true;
+    }
+    return false;
+}
+
+bool BlendNodeIsMapping(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeMapping") == 0) {
+        return true;
+    }
+    // SH_NODE_MAPPING legacy type id (BKE_node_legacy_types.hh).
+    return n.type == 109;
 }
 
 const Assimp::Blender::bNode *BlendCastNode(const Assimp::Blender::ElemBase *e) {
@@ -517,9 +541,9 @@ bool BlendNodeIsTexWalkBarrier(const Assimp::Blender::bNode &n) {
 /** Higher = try first when several inputs are linked (Fac/Scale last). */
 int BlendSockTexWalkPriority(const Assimp::Blender::bNodeSocket &sock) {
     if (BlendSockNameIsAny(sock, { "Fac", "Factor", "Scale", "Strength", "Distance",
-                "Epsilon", "Weight", "Roughness", "Detail", "Dimension", "Lacunarity",
-                "Offset", "Gain", "Gamma", "From Max", "From Min", "To Max", "To Min",
-                "Steps", "Interpolation Type" })) {
+                                         "Epsilon", "Weight", "Roughness", "Detail", "Dimension", "Lacunarity",
+                                         "Offset", "Gain", "Gamma", "From Max", "From Min", "To Max", "To Min",
+                                         "Steps", "Interpolation Type" })) {
         return 0;
     }
     if (BlendSockNameIsAny(sock, { "Color", "Image", "Height", "Normal" })) {
@@ -2293,7 +2317,7 @@ bool BlendEnsureEmbeddedImage(const Assimp::Blender::Image *img, Assimp::Blender
         }
         outName.data[0] = '*';
         outName.length = 1 + Assimp::ASSIMP_itoa10(outName.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1),
-                static_cast<int32_t>(texIndex));
+                                     static_cast<int32_t>(texIndex));
         if (outEmbedIndex != nullptr) {
             *outEmbedIndex = static_cast<int>(texIndex);
         }
@@ -2544,6 +2568,9 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             nj << ",\"procedural\":\"TexNoise\"";
         } else if (BlendNodeIsTexMusgrave(*n)) {
             nj << ",\"procedural\":\"TexMusgrave\"";
+        } else if (BlendNodeIsMapping(*n)) {
+            // Host 0aj: Mapping Location/Rotation/Scale defaults for Image + procedural paths.
+            nj << ",\"kind\":\"Mapping\"";
         } else if (BlendNodeIsAddShader(*n)) {
             nj << ",\"kind\":\"AddShader\"";
         } else if (BlendNodeIsEmission(*n)) {
@@ -2553,8 +2580,10 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         }
 
         // Unlinked input socket defaults (Presence - omit linked / unread).
+        // Vector (SOCK_VECTOR): Mapping Location/Rotation/Scale and Tex Image Vector, etc.
         nj << ",\"inputs\":[";
         bool ifirst = true;
+        bool haveLoc = false, haveRot = false, haveScl = false;
         for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
             const bNodeSocket *sock = BlendCastSocket(cur.get());
             if (sock == nullptr) {
@@ -2563,9 +2592,11 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             const bool linked = g.FindLinkToSocket(*sock) != nullptr;
             float f = 0.f;
             float rgba[4] = { 0, 0, 0, 0 };
+            float vec[3] = { 0, 0, 0 };
             const bool gotF = !linked && BlendReadSocketFloat(*sock, f);
             const bool gotC = !linked && BlendReadSocketColor(*sock, rgba);
-            if (gotF || gotC || linked) {
+            const bool gotV = !linked && BlendReadSocketVector(*sock, vec);
+            if (gotF || gotC || gotV || linked) {
                 if (!ifirst) {
                     nj << ',';
                 }
@@ -2576,12 +2607,41 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
                     nj << ",\"linked\":true";
                 } else if (gotC) {
                     nj << ",\"rgba\":[" << rgba[0] << ',' << rgba[1] << ',' << rgba[2] << ',' << rgba[3] << ']';
+                } else if (gotV) {
+                    nj << ",\"vector\":[" << vec[0] << ',' << vec[1] << ',' << vec[2] << ']';
+                    if (BlendSockNameIsAny(*sock, { "Location" })) {
+                        haveLoc = true;
+                    } else if (BlendSockNameIsAny(*sock, { "Rotation" })) {
+                        haveRot = true;
+                    } else if (BlendSockNameIsAny(*sock, { "Scale" })) {
+                        haveScl = true;
+                    }
                 } else if (gotF) {
                     nj << ",\"value\":" << f;
                 }
                 nj << '}';
             }
             cur = sock->next;
+        }
+        // Pre-2.81 Mapping: Location/Rotation/Scale lived in TexMapping storage, not sockets.
+        if (BlendNodeIsMapping(*n) && n->storage && n->storage->dna_type &&
+                std::strcmp(n->storage->dna_type, "TexMapping") == 0) {
+            const auto *tm = static_cast<const TexMapping *>(n->storage.get());
+            auto emitVec = [&](const char *name, const float v[3], bool &have) {
+                if (have) {
+                    return;
+                }
+                if (!ifirst) {
+                    nj << ',';
+                }
+                ifirst = false;
+                nj << "{\"name\":\"" << name << "\",\"vector\":[" << v[0] << ',' << v[1] << ',' << v[2]
+                   << "],\"source\":\"TexMapping\"}";
+                have = true;
+            };
+            emitVec("Location", tm->loc, haveLoc);
+            emitVec("Rotation", tm->rot, haveRot);
+            emitVec("Scale", tm->size, haveScl);
         }
         nj << ']';
 
@@ -4165,7 +4225,7 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
         blenderVersionStr[3] = hdr[4];
         blenderVersionStr[4] = '\0';
     } else if (std::isdigit(static_cast<unsigned char>(hdr[0])) &&
-            std::isdigit(static_cast<unsigned char>(hdr[1]))) {
+               std::isdigit(static_cast<unsigned char>(hdr[1]))) {
         // Format v1: ASCII header size ("17"), then 5 more bytes already partially read...
         // Bytes read so far after magic: [0]=size tens, [1]=size ones, need rest of 17-byte header.
         const int header_size = (hdr[0] - '0') * 10 + (hdr[1] - '0');
@@ -4297,7 +4357,7 @@ void BlenderImporter::ExtractScene(Scene &out, const FileDatabase &file) {
     for (const FileBlockHead &bl : file.entries) {
 
         // Fix: using the DNA index is more reliable to locate scenes
-        //if (bl.id == "SC") {
+        // if (bl.id == "SC") {
 
         if (bl.dna_index == (*it).second) {
             block = &bl;
@@ -5275,20 +5335,20 @@ void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const M
         texture_type = aiTextureType_SPECULAR;
     else if (map_type & MTex::MapType_COLMIR)
         texture_type = aiTextureType_REFLECTION;
-    //else if (map_type & MTex::MapType_REF)
+    // else if (map_type & MTex::MapType_REF)
     else if (map_type & MTex::MapType_SPEC)
         texture_type = aiTextureType_SHININESS;
     else if (map_type & MTex::MapType_EMIT)
         texture_type = aiTextureType_EMISSIVE;
-    //else if (map_type & MTex::MapType_ALPHA)
-    //else if (map_type & MTex::MapType_HAR)
-    //else if (map_type & MTex::MapType_RAYMIRR)
-    //else if (map_type & MTex::MapType_TRANSLU)
+    // else if (map_type & MTex::MapType_ALPHA)
+    // else if (map_type & MTex::MapType_HAR)
+    // else if (map_type & MTex::MapType_RAYMIRR)
+    // else if (map_type & MTex::MapType_TRANSLU)
     else if (map_type & MTex::MapType_AMB)
         texture_type = aiTextureType_AMBIENT;
     else if (map_type & MTex::MapType_DISPLACE)
         texture_type = aiTextureType_DISPLACEMENT;
-    //else if (map_type & MTex::MapType_WARP)
+    // else if (map_type & MTex::MapType_WARP)
 
     const unsigned matIndex = BlendMaterialRawIndex(conv_data, mat);
     const int uvIndex = BlendFindUvIndex(conv_data, matIndex, tex->uvname);
@@ -5696,7 +5756,8 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         if (!HydrateMeshGeometry(*mutableMesh, conv_data.db)) {
             LogWarn("mesh '", mesh->id.name + 2,
                     "' has no classic arrays and geometry hydrate failed "
-                    "(file_version=", conv_data.db.blender_file_version,
+                    "(file_version=",
+                    conv_data.db.blender_file_version,
                     " totvert=", mesh->totvert, " mvert=", mesh->mvert.size(),
                     " totloop=", mesh->totloop, " mloop=", mesh->mloop.size(), ")");
             return;
@@ -5741,8 +5802,8 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         out->mVertices = new aiVector3D[per_mat_verts[it.first]];
         out->mNormals = new aiVector3D[per_mat_verts[it.first]];
 
-        //out->mNumFaces = 0
-        //out->mNumVertices = 0
+        // out->mNumFaces = 0
+        // out->mNumVertices = 0
         out->mFaces = new aiFace[it.second]();
 
         // all sub-meshes created from this mesh are named equally. this allows
@@ -6440,9 +6501,9 @@ void BlendEulXYZToMat3(float m[3][3], const float eul[3]) {
 void BlendObjectToMat4(const Object &ob, float r_mat[4][4]) {
     float smat[3][3], rmat[3][3], dmat[3][3], tmat[3][3];
     float size[3] = {
-            ob.scale[0] * ob.dscale[0],
-            ob.scale[1] * ob.dscale[1],
-            ob.scale[2] * ob.dscale[2]
+        ob.scale[0] * ob.dscale[0],
+        ob.scale[1] * ob.dscale[1],
+        ob.scale[2] * ob.dscale[2]
     };
     BlendSizeToMat3(smat, size);
 
@@ -6501,11 +6562,11 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
     std::unique_ptr<aiNode> node(new aiNode(obj->id.name + 2)); // skip over the name prefix 'OB'
     if (obj->data) {
         switch (obj->type) {
-        case Object ::Type_EMPTY:
+        case Object::Type_EMPTY:
             break; // do nothing
 
             // supported object types
-        case Object ::Type_MESH: {
+        case Object::Type_MESH: {
             const size_t old = conv_data.meshes->size();
 
             CheckActualType(obj->data.get(), "Mesh");
@@ -6518,7 +6579,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
                 }
             }
         } break;
-        case Object ::Type_LAMP: {
+        case Object::Type_LAMP: {
             CheckActualType(obj->data.get(), "Lamp");
             aiLight *mesh = ConvertLight(in, obj, static_cast<const Lamp *>(obj->data.get()), conv_data);
 
@@ -6526,7 +6587,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
                 conv_data.lights->push_back(mesh);
             }
         } break;
-        case Object ::Type_CAMERA: {
+        case Object::Type_CAMERA: {
             CheckActualType(obj->data.get(), "Camera");
             aiCamera *mesh = ConvertCamera(in, obj, static_cast<const Camera *>(obj->data.get()), conv_data);
 
@@ -6538,7 +6599,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 
             // Grease Pencil 3 (bpy 'GREASEPENCIL' / OB_GREASE_PENCIL): no stroke mesh yet,
             // but register DNA materials so packed fill/stroke / node images embed+assign.
-        case Object ::Type_GREASE_PENCIL: {
+        case Object::Type_GREASE_PENCIL: {
             CheckActualType(obj->data.get(), "GreasePencil");
             const GreasePencil *gp = static_cast<const GreasePencil *>(obj->data.get());
             for (const std::shared_ptr<Material> &mat : gp->material_array) {
@@ -6553,27 +6614,27 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
         } break;
 
             // Legacy GP (bpy 'GPENCIL' / OB_GPENCIL_LEGACY): data is bGPdata (unsupported).
-        case Object ::Type_GPENCIL_LEGACY:
+        case Object::Type_GPENCIL_LEGACY:
             NotSupportedObjectType(obj, "GPencil");
             break;
 
             // unsupported object types / log, but do not break
-        case Object ::Type_CURVE:
+        case Object::Type_CURVE:
             NotSupportedObjectType(obj, "Curve");
             break;
-        case Object ::Type_SURF:
+        case Object::Type_SURF:
             NotSupportedObjectType(obj, "Surface");
             break;
-        case Object ::Type_FONT:
+        case Object::Type_FONT:
             NotSupportedObjectType(obj, "Font");
             break;
-        case Object ::Type_MBALL:
+        case Object::Type_MBALL:
             NotSupportedObjectType(obj, "MetaBall");
             break;
-        case Object ::Type_WAVE:
+        case Object::Type_WAVE:
             NotSupportedObjectType(obj, "Wave");
             break;
-        case Object ::Type_LATTICE:
+        case Object::Type_LATTICE:
             NotSupportedObjectType(obj, "Lattice");
             break;
 
@@ -6629,28 +6690,28 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::string &pFile, IOSystem *pIOHandler) const {
     std::shared_ptr<IOStream> stream(pIOHandler->Open(pFile, "rb"));
     if (stream == nullptr) {
-        return {{}, {}, "Could not open file for reading"};
+        return { {}, {}, "Could not open file for reading" };
     }
 
     char magic[8] = { 0 };
     stream->Read(magic, 7, 1);
     if (strcmp(magic, Token) == 0) {
-        return {stream, {}, {}};
+        return { stream, {}, {} };
     }
 
     // Check for gzip (legacy) or zstd (Blender 3+ default) compressed blend files.
 #ifdef ASSIMP_BUILD_NO_COMPRESSED_BLEND
-    return {{}, {}, "BLENDER magic bytes are missing, is this file compressed (Assimp was built without decompression support)?"};
+    return { {}, {}, "BLENDER magic bytes are missing, is this file compressed (Assimp was built without decompression support)?" };
 #else
     const bool isGzip = (magic[0] == 0x1f && static_cast<uint8_t>(magic[1]) == 0x8b);
     // Zstandard magic: 0x28 0xB5 0x2F 0xFD (little-endian frame header)
     const bool isZstd = (static_cast<uint8_t>(magic[0]) == 0x28 &&
-            static_cast<uint8_t>(magic[1]) == 0xb5 &&
-            static_cast<uint8_t>(magic[2]) == 0x2f &&
-            static_cast<uint8_t>(magic[3]) == 0xfd);
+                         static_cast<uint8_t>(magic[1]) == 0xb5 &&
+                         static_cast<uint8_t>(magic[2]) == 0x2f &&
+                         static_cast<uint8_t>(magic[3]) == 0xfd);
 
     if (!isGzip && !isZstd) {
-        return {{}, {}, "BLENDER magic bytes are missing, couldn't find GZIP or Zstandard header either"};
+        return { {}, {}, "BLENDER magic bytes are missing, couldn't find GZIP or Zstandard header either" };
     }
 
     stream->Seek(0L, aiOrigin_SET);
@@ -6660,7 +6721,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
     if (isGzip) {
         LogDebug("Found no BLENDER magic word but a GZIP header, might be a compressed file");
         if (magic[2] != 8) {
-            return {{}, {}, "Unsupported GZIP compression method"};
+            return { {}, {}, "Unsupported GZIP compression method" };
         }
 
         // http://www.gzip.org/zlib/rfc-gzip.html#header-trailer
@@ -6680,7 +6741,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
         const size_t srcSize = reader->GetRemainingSize();
         ZSTD_DCtx *dctx = ZSTD_createDCtx();
         if (dctx == nullptr) {
-            return {{}, {}, "Failed to allocate Zstandard decompression context"};
+            return { {}, {}, "Failed to allocate Zstandard decompression context" };
         }
         uncompressed->resize(srcSize * 8 + 256 * 1024);
         ZSTD_inBuffer input{ src, srcSize, 0 };
@@ -6690,7 +6751,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
                 const size_t newSize = uncompressed->size() * 2;
                 if (newSize > (1ull << 31)) {
                     ZSTD_freeDCtx(dctx);
-                    return {{}, {}, "Zstandard BLEND payload is unreasonably large"};
+                    return { {}, {}, "Zstandard BLEND payload is unreasonably large" };
                 }
                 uncompressed->resize(newSize);
                 output.dst = uncompressed->data();
@@ -6699,7 +6760,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
             const size_t ret = ZSTD_decompressStream(dctx, &output, &input);
             if (ZSTD_isError(ret)) {
                 ZSTD_freeDCtx(dctx);
-                return {{}, {}, std::string("Zstandard decompress failed: ") + ZSTD_getErrorName(ret)};
+                return { {}, {}, std::string("Zstandard decompress failed: ") + ZSTD_getErrorName(ret) };
             }
             // ret==0 means a frame finished; continue for further frames / skippable frames.
         }
@@ -6707,7 +6768,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
         total = output.pos;
         uncompressed->resize(total);
 #else
-        return {{}, {}, "BLENDER file appears Zstandard-compressed, but Assimp was built without ZSTD support"};
+        return { {}, {}, "BLENDER file appears Zstandard-compressed, but Assimp was built without ZSTD support" };
 #endif
     }
 
@@ -6717,9 +6778,9 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
     // .. and retry
     stream->Read(magic, 7, 1);
     if (strcmp(magic, Token) == 0) {
-        return {stream, uncompressed, {}};
+        return { stream, uncompressed, {} };
     }
-    return {{}, {}, isGzip ? "Found no BLENDER magic word in decompressed GZIP file" : "Found no BLENDER magic word in decompressed Zstandard file"};
+    return { {}, {}, isGzip ? "Found no BLENDER magic word in decompressed GZIP file" : "Found no BLENDER magic word in decompressed Zstandard file" };
 #endif
 }
 

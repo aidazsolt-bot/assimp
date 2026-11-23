@@ -50,491 +50,420 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace Assimp {
 namespace Blender {
 
-template <> void Structure :: Convert<Object> (
-    Object& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Group> (
-    Group& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure::Convert<Collection>(
-    Collection& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MTex> (
-    MTex& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<TFace> (
-    TFace& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<SubsurfModifierData> (
-    SubsurfModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<GenericModifierData> (
-    GenericModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<FluidDomainSettings> (
-    FluidDomainSettings& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<FluidFlowSettings> (
-    FluidFlowSettings& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<FluidModifierData> (
-    FluidModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<OceanModifierData> (
-    OceanModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<DynamicPaintModifierData> (
-    DynamicPaintModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<SolidifyModifierData> (
-    SolidifyModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<SoftBody> (
-    SoftBody& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<RigidBodyOb> (
-    RigidBodyOb& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<RigidBodyCon> (
-    RigidBodyCon& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ClothSimSettings> (
-    ClothSimSettings& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ClothModifierData> (
-    ClothModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ParticleKey> (
-    ParticleKey& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ParticleData> (
-    ParticleData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ParticleDupliWeight> (
-    ParticleDupliWeight& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ParticleSettings> (
-    ParticleSettings& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ParticleSystem> (
-    ParticleSystem& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MFace> (
-    MFace& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Lamp> (
-    Lamp& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MDeformWeight> (
-    MDeformWeight& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<PackedFile> (
-    PackedFile& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ImagePackedFile> (
-    ImagePackedFile& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Base> (
-    Base& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MTFace> (
-    MTFace& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Material> (
-    Material& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MaterialGPencilStyle> (
-    MaterialGPencilStyle& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<GreasePencil> (
-    GreasePencil& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<bNodeStack> (
-    bNodeStack& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<bNodeSocketValueFloat> (
-    bNodeSocketValueFloat& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<bNodeSocketValueRGBA> (
-    bNodeSocketValueRGBA& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<CBData> (
-    CBData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ColorBand> (
-    ColorBand& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<NodeShaderUVMap> (
-    NodeShaderUVMap& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<bNodeSocket> (
-    bNodeSocket& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<bNode> (
-    bNode& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<bNodeLink> (
-    bNodeLink& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<bNodeTree> (
-    bNodeTree& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MTexPoly> (
-    MTexPoly& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Mesh> (
-    Mesh& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MDeformVert> (
-    MDeformVert& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<World> (
-    World& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<RenderData> (
-    RenderData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<UnitSettings> (
-    UnitSettings& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MLoopCol> (
-    MLoopCol& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MVert> (
-    MVert& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MEdge> (
-    MEdge& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MLoopUV> (
-    MLoopUV& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<GroupObject> (
-    GroupObject& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ListBase> (
-    ListBase& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MLoop> (
-    MLoop& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ModifierData> (
-    ModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<AssetMetaData> (
-    AssetMetaData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ID> (
-    ID& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MCol> (
-    MCol& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MPoly> (
-    MPoly& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Scene> (
-    Scene& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Library> (
-    Library& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Tex> (
-    Tex& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<GPUDOFSettings> (
-    GPUDOFSettings& dest,
-    const FileDatabase& db
-    ) const
-;
-template <> void Structure :: Convert<CameraDOFSettings> (
-    CameraDOFSettings& dest,
-    const FileDatabase& db
-    ) const
-;
-template <> void Structure :: Convert<Camera> (
-    Camera& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<MirrorModifierData> (
-    MirrorModifierData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<Image> (
-    Image& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<BezTriple> (
-    BezTriple& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<DriverTarget> (
-    DriverTarget& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<DriverVar> (
-    DriverVar& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<ChannelDriver> (
-    ChannelDriver& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<FCurve> (
-    FCurve& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<bAction> (
-    bAction& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<NlaStrip> (
-    NlaStrip& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<NlaTrack> (
-    NlaTrack& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure :: Convert<AnimData> (
-    AnimData& dest,
-    const FileDatabase& db
-    ) const
-;
-
-template <> void Structure::Convert<CustomData>(
-    CustomData& dest,
-    const FileDatabase& db
-    ) const
-    ;
-
-template <> void Structure::Convert<CustomDataLayer>(
-    CustomDataLayer& dest,
-    const FileDatabase& db
-    ) const
-    ;
-
-template <> void Structure::Convert<AttributeStorageDna>(
-    AttributeStorageDna& dest,
-    const FileDatabase& db
-    ) const
-    ;
-
-    }
-}
+template <>
+void Structure::Convert<Object>(
+        Object &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Group>(
+        Group &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Collection>(
+        Collection &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MTex>(
+        MTex &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<TFace>(
+        TFace &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<SubsurfModifierData>(
+        SubsurfModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<GenericModifierData>(
+        GenericModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<FluidDomainSettings>(
+        FluidDomainSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<FluidFlowSettings>(
+        FluidFlowSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<FluidModifierData>(
+        FluidModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<OceanModifierData>(
+        OceanModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<DynamicPaintModifierData>(
+        DynamicPaintModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<SolidifyModifierData>(
+        SolidifyModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<SoftBody>(
+        SoftBody &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<RigidBodyOb>(
+        RigidBodyOb &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<RigidBodyCon>(
+        RigidBodyCon &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ClothSimSettings>(
+        ClothSimSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ClothModifierData>(
+        ClothModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ParticleKey>(
+        ParticleKey &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ParticleData>(
+        ParticleData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ParticleDupliWeight>(
+        ParticleDupliWeight &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ParticleSettings>(
+        ParticleSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ParticleSystem>(
+        ParticleSystem &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MFace>(
+        MFace &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Lamp>(
+        Lamp &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MDeformWeight>(
+        MDeformWeight &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<PackedFile>(
+        PackedFile &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ImagePackedFile>(
+        ImagePackedFile &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Base>(
+        Base &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MTFace>(
+        MTFace &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Material>(
+        Material &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MaterialGPencilStyle>(
+        MaterialGPencilStyle &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<GreasePencil>(
+        GreasePencil &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bNodeStack>(
+        bNodeStack &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bNodeSocketValueFloat>(
+        bNodeSocketValueFloat &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bNodeSocketValueRGBA>(
+        bNodeSocketValueRGBA &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bNodeSocketValueVector>(
+        bNodeSocketValueVector &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<CBData>(
+        CBData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ColorBand>(
+        ColorBand &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<NodeShaderUVMap>(
+        NodeShaderUVMap &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<TexMapping>(
+        TexMapping &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bNodeSocket>(
+        bNodeSocket &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bNode>(
+        bNode &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bNodeLink>(
+        bNodeLink &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bNodeTree>(
+        bNodeTree &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MTexPoly>(
+        MTexPoly &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Mesh>(
+        Mesh &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MDeformVert>(
+        MDeformVert &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<World>(
+        World &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<RenderData>(
+        RenderData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<UnitSettings>(
+        UnitSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MLoopCol>(
+        MLoopCol &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MVert>(
+        MVert &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MEdge>(
+        MEdge &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MLoopUV>(
+        MLoopUV &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<GroupObject>(
+        GroupObject &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ListBase>(
+        ListBase &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MLoop>(
+        MLoop &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ModifierData>(
+        ModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<AssetMetaData>(
+        AssetMetaData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ID>(
+        ID &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MCol>(
+        MCol &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MPoly>(
+        MPoly &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Scene>(
+        Scene &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Library>(
+        Library &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Tex>(
+        Tex &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<GPUDOFSettings>(
+        GPUDOFSettings &dest,
+        const FileDatabase &db) const;
+template <>
+void Structure::Convert<CameraDOFSettings>(
+        CameraDOFSettings &dest,
+        const FileDatabase &db) const;
+template <>
+void Structure::Convert<Camera>(
+        Camera &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MirrorModifierData>(
+        MirrorModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Image>(
+        Image &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<BezTriple>(
+        BezTriple &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<DriverTarget>(
+        DriverTarget &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<DriverVar>(
+        DriverVar &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ChannelDriver>(
+        ChannelDriver &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<FCurve>(
+        FCurve &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<bAction>(
+        bAction &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<NlaStrip>(
+        NlaStrip &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<NlaTrack>(
+        NlaTrack &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<AnimData>(
+        AnimData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<CustomData>(
+        CustomData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<CustomDataLayer>(
+        CustomDataLayer &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<AttributeStorageDna>(
+        AttributeStorageDna &dest,
+        const FileDatabase &db) const;
+
+} // namespace Blender
+} // namespace Assimp
 
 #endif
