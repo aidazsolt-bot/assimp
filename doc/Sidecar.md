@@ -358,7 +358,11 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
     (`value` / `rgba` / `vector`), **ColorBand** stops for `ShaderNodeValToRGB`
   - **ShaderNodeMapping** Location/Rotation/Scale: Presence `vector` from SOCK_VECTOR
     socket defaults when unlinked; pre-2.81 files from DNA `TexMapping` storage
-    (`source:"TexMapping"`) — Image and procedural paths
+    (`source:"TexMapping"`) — Image and procedural paths.
+    **Policy:** BLEND does **not** flatten Mapping into typed `$tex.uvtrafo`
+    (`aiUVTransform`). DNA is 3D Loc/Rot/Scale + `vector_type` (Point/Texture/…);
+    that is not a clean 2D UV trafo per map slot. Keep Mapping in this network bag;
+    Host applies for Image and procedural (Brick, etc.).
   - Musgrave/Noise Presence: `musgraveType` (DNA `SHD_MUSGRAVE_*` /
     `NodeTexNoise.type`) + optional `musgraveTypeName` when known; omit if unread
   - links: from/to node + sockets
