@@ -196,17 +196,185 @@ Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_
 - Collider `geometry.mesh` stays in the JSON bag only. Do **not** promote those
   meshes onto `aiNode::mMeshes` (proxies are often intentionally mesh-less).
 
+### SC4 orphan collider soups (`KHR_physics_collider_meshes`)
+
+Meshes referenced only via `collider.geometry.mesh` (not on any draw node) are
+Force-Retrieved into `aiScene::mMeshes` **without** attaching them to
+`aiNode::mMeshes`, and their triangle soups are also embedded in the physics
+JSON bag:
+
+```json
+"KHR_physics_collider_meshes": {
+  "meshes": [
+    { "index": 37, "name": "proxy-spiral", "positions": [x,y,z,...], "indices": [i0,i1,i2,...] }
+  ]
+}
+```
+
+- `index` = authored glTF mesh index (or BLEND `aiScene::mMeshes` index).
+- `positions` = tightly packed float xyz; `indices` = uint triangle list.
+- Host should prefer this bag for orphan soups (Presence); may also resolve by
+  mesh name from `mMeshes` when Force-Retrieve included them.
+
 Fixture: `test/models/glTF2/SidecarPhysicsRigidBodies/` (generic `BodyDynamic0` /
 `BodyKinematic0` names only for local geometry; tests walk JSON structure).
 
-## USD scene timing / units (C0 / S0)
+### BLEND `BLEND_physics_*` inventory (Arris)
 
-No new C API. Stage metas are emitted on `aiScene::mMetaData`:
+Soft/cloth/fluid/smoke/particles/rigidbody nodes share:
 
-| Key | Type | Meaning |
+| Field | Meaning |
+|---|---|
+| `index` | Pre-order DFS under Assimp `<BlenderRoot>` (same order as Host `skinNodes`) |
+| `name` | Blender Object name (`aiNode::mName`) |
+| `modifier` / `type` / `settings` | Presence + DNA settings when available |
+
+Fluid / smoke nodes additionally bind the visual mesh:
+
+| Field | Meaning |
+|---|---|
+| `meshes` | `aiScene::mMeshes` indices on that node |
+| `materialIndex` / `materialName` | Primary (`meshes[0]`) material |
+| `materials[]` | Unique `{index,name}` for all meshes on the node |
+| `settings.fluid_role` | `domain` \| `flow` \| `inflow` \| `outflow` \| `obstacle` |
+| `settings.domain_type` | authored string `gas` \| `liquid` (omit if unread) |
+| `settings.cache` | directory + frame range when Domain DNA present |
+| `settings.flow` | fuel/temperature/density/behavior when Flow DNA present |
+
+`BLEND_physics_blast`: ExplodeModifier inventory (`index`/`settings`); Geometry Nodes fracture is listed under scene `skipped[]` (unevaluated - no invent chunks).
+
+KHR rigid (same bag):
+
+- `collisionFilters` from `RigidBodyOb.col_groups` (`System_N` bits)
+- `physicsJoints` + node `joint` from `RigidBodyCon` (limits/motors/springs when flagged)
+- Passive children under a parent emit collider-only (Host compounds)
+- `Shape_Trimesh` / `Shape_ConvexH` -> `collider.geometry.mesh` + soup in `KHR_physics_collider_meshes` (not empty implicit hull)
+- `RBO_FLAG_DISABLED` -> node `trigger` (volume), not a simulated motion body
+
+Domain meshes stay on `aiNode::mMeshes`; Host may hide opaque domains via sidecar.
+
+### BLEND C6 packed Images (Arris)
+
+Blender 2.77+ / 4.x store embeds in `Image.packedfiles` (`ImagePackedFile`), not only
+deprecated `Image.packedfile`. Assimp reads both and emits `aiTexture` (`*N`) +
+`aiTextureType_BASE_COLOR` / `DIFFUSE` when C6 finds Image Texture links (incl.
+`ShaderNodeMix` chains) or falls back to packed paint maps (`layer_*_base.png`)
+matched by material name (e.g. splash House of Chores). Grease Pencil strokes are
+out of scope.
+
+**Map inventory (2026-11-22):** `aiMaterialSidecar` may include `maps.inventory[]`
+(`image` / `node` / `linked` / `embed`) for every `ShaderNodeTexImage` in the
+material nodetree (incl. nested groups) - unlinked Previz nodes are inventory-only
+(no typed BASE invent). Particle Fur slots: Physics `BLEND_physics_particles`
+`settings.textures[]` from `ParticleSettings.mtex[]` when Image resolves.
+
+### BLEND World Env / Skymap (Arris)
+
+When `World.nodetree` has Environment Texture (or Image Tex) -> Background ->
+World Output with a resolved Image, Assimp embeds it as `aiTexture` and emits
+`SceneSidecarJson.BLEND_scene.worldEnv`:
+
+| Key | Meaning |
+|-----|---------|
+| `image` / `path` | Image datablock name / filepath when present |
+| `embed` | `*N` scene texture index when packed |
+| `projection` | `equirectangular` (authored Env Texture) |
+| `strength` | Background Strength only when socket resolved |
+
+Presence: omit `worldEnv` entirely if no Image (solid Background is not a skymap).
+BI procedural `TEX_ENVMAP` without Image stays in `skipped[]` (unchanged).
+
+### BLEND Drivers (`BLEND_drivers`, C5)
+
+Blender Drivers live on `AnimData.drivers` (FCurve list) with `FCurve.driver` ->
+`ChannelDriver` (`expression`, `type`, `variables` / `DriverVar` / `DriverTarget`).
+They are **not** Action/NLA FCurves. Assimp reads the DNA and emits Presence-only
+JSON on a dedicated `aiAnimation` named `BLEND_drivers` (`mNumChannels == 0`) +
+`aiAnimationSidecar`:
+
+```json
+"BLEND_drivers": {
+  "owners": [
+    {
+      "idCode": "OB",
+      "idName": "caruncle",
+      "drivers": [
+        {
+          "rnaPath": "modifiers[\"Mesh Cache\"].eval_frame",
+          "arrayIndex": 0,
+          "type": 1,
+          "typeName": "PYTHON",
+          "flag": 25,
+          "expression": "var+4",
+          "variables": [
+            {
+              "name": "var",
+              "type": 0,
+              "typeName": "SINGLE_PROP",
+              "targets": [
+                {
+                  "idCode": "OB",
+                  "idName": "shading mask ctrl",
+                  "idtype": 16975,
+                  "rnaPath": "[\"cacheFrame\"]",
+                  "transformChannel": 0,
+                  "transformChannelName": "LOC_X"
+                }
+              ]
+            }
+          ],
+          "keyInputBuffer": "drv0_times",
+          "keyOutputBuffer": "drv0_values"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `owners[].idCode` / `idName` | Driven ID (`OB` + Object name from `Object.adt`) |
+| `rnaPath` / `arrayIndex` | Driven RNA path on that ID (FCurve) |
+| `type` / `typeName` | DNA `eDriver_Types` (+ label when known) |
+| `expression` | ChannelDriver expression when non-empty |
+| `variables[]` | DriverVar name/type + `targets[]` (id, rnaPath, bone, transformChannel, ...) |
+| `keyInputBuffer` / `keyOutputBuffer` | Optional generator FCurve keys (BezTriple) as float buffers |
+
+Presence: omit empty expression / unresolved id / zero `num_targets` slots.
+Assimp does **not** evaluate Python/expressions - Host samples deps + runs the
+driver. Model-independent: any Object with `adt->drivers` contributes.
+
+### BLEND C7 Sidecar-Graph + Host-Shader (no Assimp bake)
+
+Policy: Assimp emits the authored Cycles/EEVEE graph for Host Looks to implement;
+Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
+
+- `BLEND_shader.addShader:true` when Material Output peels `ShaderNodeAddShader`.
+- Emission sibling under Add: merge `emissionStrength` when resolved; procedural
+  Emission Color stays in the network (no invent flat Ke).
+- `BLEND_shader_network` (`eval:"host"`, `assimpEval:false`):
+  - nodes: idname/name, `procedural`/`kind`, **unlinked input defaults**
+    (`value` / `rgba`), **ColorBand** stops for `ShaderNodeValToRGB`
+  - Musgrave/Noise Presence: `musgraveType` (DNA `SHD_MUSGRAVE_*` /
+    `NodeTexNoise.type`) + optional `musgraveTypeName` when known; omit if unread
+  - links: from/to node + sockets
+  - `hostProcedural`: `TexBrick` / `ColorRamp` when present
+- Host Look may generate diffuse/emissive maps from that bag (Cityscapes facade /
+  window lights). **Look-specific Bake/render** in the renderer remains an
+  optional alternate path (not Assimp Authoring-Bake).
+
+## USD / BLEND scene bag (C0 / S0-S8)
+
+Scene timing/units/cameras/volumes/composition JSON lives on **`aiSceneSidecar`**
+(heap UTF-8 via `aiGetSceneSidecar` / `aiSceneHasSceneSidecar`). Do **not** store
+the bag as `aiString` under `SceneSidecarJson` (`AI_MAXLEN` truncates).
+
+| Key / API | Type | Meaning |
 |---|---|---|
-| `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | `aiString` | UTF-8 JSON bag below |
-| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `usd` / `usda` / `usdc` / `usdz` |
+| `aiGetSceneSidecar` / `AI_METADATA_SCENE_SIDECAR` (`HasSceneSidecar`) | heap JSON / bool | Full scene bag (unlimited) |
+| `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | legacy name only | Deprecated as value channel; Host must use `aiGetSceneSidecar` |
+| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `usd` / `usda` / `usdc` / `usdz` / `blend` |
 
 JSON shape (schemaVersion 1):
 
@@ -239,11 +407,13 @@ Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTE
 | S1 | `aiMeshSidecar.mExtensionsJson` | `primPath`, `primvars` (texcoord slots, normals, displayColor/Opacity), blendShapes, skel |
 | S2 | `aiAnimationSidecar` | `USD_skel_channels[]`, `blendshapeWeights[]` when TinyUSDZ emits clips |
 | S3 | `aiMaterialSidecar` | `UsdPreviewSurface` remainder (diffuse/metallic/roughness/ior/clearcoat/…) |
-| S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
+| S4 | `aiSceneSidecar` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
 | S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` + optional `mass` from `physics:mass` |
 | S6 | (same physics bag) | Soft/cloth USD schemas recorded when present; else listed under `skipped` |
-| S7 | `SceneSidecarJson` | `volumes[]` (`Volume`/`OpenVDBAsset` + presence (filePath when TinyUSDZ exposes OpenVDB props)), `pointInstancers[]` |
-| S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
+| S7 | `aiSceneSidecar` + Physics bag | `volumes[]` / mat `BLEND_shader_volume`: Presence `density` (unlinked), `densityLinked` + optional `densityDefault` (linked; no fake `density`), `color`, `densityAttribute`, optional `anisotropy` / `absorptionColor` / `emissionStrength` / `emissionColor` when unlinked. `pointInstancers[]` stub (`count`+`bag`) — **BLEND C13 detail** in Physics `BLEND_point_instancers.nodes[]` (collection bind, prototypes, totpart/seed; `arraysResolved` + positions/orients/scales/protoIndices only when DNA `ParticleSystem.particles` present). Scene bag is heap (`aiSceneSidecar`, no `AI_MAXLEN`) |
+| S8 | `aiSceneSidecar` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
+
+**BLEND Host read (2026-11-22):** Scene-Cam = `BLEND_scene.camera`/`cameraIndex` + `cameras[].sceneCamera` (not an `aiCamera` field); if missing → app settings active cam. C13 = `BLEND_point_instancers` (`totpart` from `ParticleSettings.totpart`; TRS only if `arraysResolved`); Highrise-style objects stay typed nodes outside the particle collection. Full Host guide: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md` (rev 22k).
 
 Host-probe hardening (2026-11-19):
 
@@ -259,8 +429,45 @@ Tests: `utUSDImport.categorySidecarsS1toS8Test`, `gprimPhysicsTessellationTest`,
 `payloadCompositionHonestyTest`.
 Spec map: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md`.
 
-### BLEND Zstandard (Blender 3+ default) — `feature/blend-sidecar`
+### BLEND compressed containers + DNA (Host probe 2026-11-19)
 
-Blender 3+ often writes multi-frame **Zstandard** `.blend` (`28 b5 2f fd`) instead of gzip.
-Assimp decompresses the full ZSTD stream before DNA parse when built with ZSTD
-(`ASSIMP_BLEND_SUPPORT_ZSTD`). See commit on `feature/blend-sidecar`.
+- Gzip (`.blend` with `1f 8b`) and **Zstandard** (`28 b5 2f fd`, Blender 3+ default,
+  often multi-frame) are decompressed in `ParseMagicToken` before DNA parse
+  (`ASSIMP_BLEND_SUPPORT_ZSTD`).
+- Fixture: `test/models/BLEND/BlenderDefault_250_zstd.blend`
+  (`utBlenderImporter.importBlenderDefault250ZstdCompressed`).
+- Empty `mesh->mat[]` slots are skipped in UV/texture mapping and `BuildMaterials`
+  (avoids SEGV on large fluid demos such as `lava_fluid-viscosity-demo.blend`).
+- DNA `TYPE`/`TLEN`/`STRC` padding follows Blender `pad_up_4` relative to the
+  **SDNA blob base** (not absolute file offset). DNA1 bodies can start at
+  `file_off % 4 != 0` while markers stay aligned inside the DNA payload.
+
+### BLEND file format version 0 vs 1 (Blender 5.0+ LargeBHead8)
+
+Blender low-level container (see `BLO_core_blend_header.hh` / `BLO_core_bhead.hh`):
+
+| Format | Header | Block header | Notes |
+|---|---|---|---|
+| **v0** | 12 bytes `BLENDER` + `[-_]` + `[vV]` + 3-digit ver | `BHead4` (4-byte ptr) or `SmallBHead8` (8-byte ptr) | Blender <=4.x write path |
+| **v1** | 17 bytes `BLENDER` + `17` + `-` + `01` + `v` + 4-digit ver | always **`LargeBHead8`** (`code`, `SDNAnr`, `old`, `len` i64, `nr` i64) | Blender 5.0+; blocks can exceed 2GiB |
+
+Assimp decodes v0/v1 before DNA walk. Unknown format version (`>01`) or bad header ->
+`DeadlyImportError` with header dump (no silent mis-parse).
+
+`SceneSidecarJson.source` / `BLEND_file` include:
+
+| Key | Meaning |
+|---|---|
+| `formatVersion` | `0` or `1` |
+| `blenderFileVersion` | integer from header (`282`, `500`, …) |
+
+Fixture: `BlenderFormatV1_Header.blend` (ZSTD + `BLENDER17-01v0500`).
+Test: `importBlenderFormatV1Header`.
+
+Blender 5+ meshes often leave classic `*mvert` / `*mloop` / `*mpoly` null and
+store geometry in `AttributeStorage` (see blender.git
+`DNA_attribute_types.h` / `BKE_attribute_enums.hh`: `position` Float3 on Point,
+`.corner_vert` Int32 on Corner) plus `face_offset_indices` (DNA rename of
+`poly_offset_indices`). Assimp hydrates those into the classic arrays in
+`BlenderMeshAttributes.cpp` before `ConvertMesh` (shared generated block
+addresses are disambiguated by size and locality).

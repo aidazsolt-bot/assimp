@@ -57,6 +57,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -145,9 +146,20 @@ namespace {
         json << "}}";
 
         const std::string jsonStr = json.str();
-        pScene->mMetaData->Add(AI_METADATA_SCENE_SIDECAR_JSON, aiString(jsonStr));
+        // Heap scene bag (not aiString / AI_MAXLEN). Full S0-S8 may replace later.
+        {
+            auto *ssc = new aiSceneSidecar();
+            const size_t n = jsonStr.size();
+            char *p = new char[n + 1];
+            std::memcpy(p, jsonStr.c_str(), n + 1);
+            ssc->mExtensionsJson = p;
+            ssc->mExtensionsJsonLength = n;
+            Assimp::AttachSceneSidecar(pScene, ssc);
+        }
         // Prefer package token over generic importer name for host inject.
         pScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString(format));
+        const bool flag = true;
+        pScene->mMetaData->Add(AI_METADATA_SCENE_SIDECAR, flag);
     }
 }
 

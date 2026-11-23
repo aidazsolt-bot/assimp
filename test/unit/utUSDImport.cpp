@@ -105,9 +105,11 @@ TEST_F(utUSDImport, sceneTimingSidecarS0Test) {
     ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SOURCE_FORMAT, format));
     EXPECT_STREQ("usda", format.C_Str());
 
-    aiString json;
-    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, json));
-    const char *j = json.C_Str();
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *j = ssc->mExtensionsJson;
     EXPECT_NE(nullptr, std::strstr(j, "\"schemaVersion\":1"));
     EXPECT_NE(nullptr, std::strstr(j, "\"format\":\"usda\""));
     EXPECT_NE(nullptr, std::strstr(j, "\"upAxis\":\"Z\""));
@@ -146,9 +148,11 @@ TEST_F(utUSDImport, categorySidecarsS1toS8Test) {
     ASSERT_NE(nullptr, phys->mExtensionsJson);
     EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "USD_physics_rigid"));
 
-    aiString sceneJson;
-    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
-    const char *sj = sceneJson.C_Str();
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *sj = ssc->mExtensionsJson;
     EXPECT_NE(nullptr, std::strstr(sj, "\"cameras\""));
     EXPECT_NE(nullptr, std::strstr(sj, "\"lights\""));
     EXPECT_NE(nullptr, std::strstr(sj, "\"pointInstancers\""));
@@ -199,10 +203,12 @@ TEST_F(utUSDImport, gprimPhysicsTessellationTest) {
     EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "USD_physics_rigid"));
     EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "PhysicsRigidBodyAPI"));
     ASSERT_NE(nullptr, scene->mMetaData);
-    aiString sceneJson;
-    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
     // kilogramsPerUnit kept via TinyUSDZ (not Assimp ASCII strip).
-    EXPECT_NE(nullptr, std::strstr(sceneJson.C_Str(), "kilogramsPerUnit"));
+    EXPECT_NE(nullptr, std::strstr(ssc->mExtensionsJson, "kilogramsPerUnit"));
 }
 
 // Host probe: payload/reference + unknown plugin dict meta -> incomplete, honest skipped[].
@@ -216,9 +222,11 @@ TEST_F(utUSDImport, payloadCompositionHonestyTest) {
     EXPECT_EQ(0u, scene->mNumMeshes);
     EXPECT_NE(0u, scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE);
     ASSERT_NE(nullptr, scene->mMetaData);
-    aiString sceneJson;
-    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SCENE_SIDECAR_JSON, sceneJson));
-    const char *sj = sceneJson.C_Str();
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *sj = ssc->mExtensionsJson;
     EXPECT_NE(nullptr, std::strstr(sj, "composition:payload_or_reference"));
     // Unknown Usd_DCE_Params is ignored by TinyUSDZ (not Assimp-stripped).
     EXPECT_EQ(nullptr, std::strstr(sj, "sanitized:stripped"));

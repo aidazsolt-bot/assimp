@@ -4,6 +4,7 @@ Open Asset Import Library (assimp)
 
 Copyright (c) 2006-2026, assimp team
 
+
 All rights reserved.
 
 Redistribution and use of this software in source and binary forms,
@@ -57,6 +58,7 @@ namespace Assimp {
 class Importer;
 
 struct ScenePrivateData {
+    //  The struct constructor.
     ScenePrivateData() AI_NO_EXCEPT;
 
     ~ScenePrivateData();
@@ -87,6 +89,10 @@ struct ScenePrivateData {
 
     // Optional scene-level physics sidecar (KHR_physics_* JSON bag).
     aiPhysicsSidecar *mPhysicsSidecar;
+
+    // Optional scene-level JSON sidecar (timing/units/cameras/volumes/…).
+    // Heap-backed - not aiString SceneSidecarJson (AI_MAXLEN).
+    aiSceneSidecar *mSceneSidecar;
 };
 
 inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
@@ -96,7 +102,8 @@ inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
           mMeshSidecars(),
           mMaterialSidecars(),
           mAnimationSidecars(),
-          mPhysicsSidecar(nullptr) {
+          mPhysicsSidecar(nullptr),
+          mSceneSidecar(nullptr) {
     // empty
 }
 
@@ -115,25 +122,25 @@ inline ScenePrivateData::~ScenePrivateData() {
     mAnimationSidecars.clear();
     delete mPhysicsSidecar;
     mPhysicsSidecar = nullptr;
+    delete mSceneSidecar;
+    mSceneSidecar = nullptr;
 }
 
 // Access private data stored in the scene
-inline
-ScenePrivateData* ScenePriv(aiScene* in) {
-    ai_assert( nullptr != in );
-    if ( nullptr == in ) {
+inline ScenePrivateData *ScenePriv(aiScene *in) {
+    ai_assert(nullptr != in);
+    if (nullptr == in) {
         return nullptr;
     }
-    return static_cast<ScenePrivateData*>(in->mPrivate);
+    return static_cast<ScenePrivateData *>(in->mPrivate);
 }
 
-inline
-const ScenePrivateData* ScenePriv(const aiScene* in) {
-    ai_assert( nullptr != in );
-    if ( nullptr == in ) {
+inline const ScenePrivateData *ScenePriv(const aiScene *in) {
+    ai_assert(nullptr != in);
+    if (nullptr == in) {
         return nullptr;
     }
-    return static_cast<const ScenePrivateData*>(in->mPrivate);
+    return static_cast<const ScenePrivateData *>(in->mPrivate);
 }
 
 } // Namespace Assimp
