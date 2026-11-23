@@ -53,6 +53,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderIntermediate.h"
 #include "BlenderMeshAttributes.h"
 #include "BlenderModifier.h"
+#include "BlenderParticleDistribute.h"
 #include <assimp/StringUtils.h>
 #include <assimp/commonMetaData.h>
 #include <assimp/importerdesc.h>
@@ -4211,7 +4212,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                     pi.prototypeCounts.push_back(1);
                     pi.prototypeIndices.push_back(0);
                 }
-                // Instance arrays only when ParticleSystem.particles was written to the blend.
+                // Instance arrays: DNA ParticleData when present; else mesh-face eval for FACE emit.
                 if (!ps->particles.empty()) {
                     const size_t n = ps->particles.size();
                     pi.positions.reserve(n * 3);
@@ -4235,6 +4236,29 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                         }
                     }
                     pi.arraysResolved = true;
+                    pi.arraysSource = "dna_particles";
+                } else if (obj->type == Object::Type_MESH && obj->data) {
+                    const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
+                    ParticleFaceDistributeParams dp;
+                    dp.totpart = p.totpart;
+                    dp.seed = ps->seed;
+                    dp.from = p.from;
+                    dp.distr = p.distr;
+                    dp.flag = p.flag;
+                    dp.jitfac = p.jitfac;
+                    dp.userjit = p.hasUserjit ? p.userjit : 0;
+                    dp.size = p.size;
+                    dp.randsize = p.randsize;
+                    if (p.hasNormfac) {
+                        dp.hairLength = p.normfac * 4.f;
+                    }
+                    dp.prototypeCounts = pi.prototypeCounts;
+                    if (BlendDistributeParticlesOnMeshFaces(*emesh, dp, pi.positions, pi.orients,
+                                pi.scales, pi.protoIndices)) {
+                        pi.arraysResolved = true;
+                        pi.arraysSource = "mesh_face_eval";
+                        pi.totpart = static_cast<int>(pi.scales.size());
+                    }
                 }
                 conv.pointInstancers.push_back(std::move(pi));
             }
@@ -5241,6 +5265,9 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                 pjson << ']';
                 if (inst.arraysResolved) {
                     pjson << ",\"arraysResolved\":true";
+                    if (!inst.arraysSource.empty()) {
+                        pjson << ",\"arraysSource\":\"" << BlendJsonEscape(inst.arraysSource) << '"';
+                    }
                     BlendEmitFloatArray(pjson, "positions", inst.positions);
                     BlendEmitFloatArray(pjson, "orients", inst.orients);
                     BlendEmitFloatArray(pjson, "scales", inst.scales);
@@ -7040,6 +7067,65 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
     // apply modifiers
     modifier_cache->ApplyModifiers(*node, conv_data, in, *obj);
     CollectBlendPhysicsModifiers(obj, conv_data, node.get());
+
+    // Hierarchy Presence: authored ModifierData + ParticleSystem as empty child nodes
+    // under the emitter (not expanded instance meshes).
+    {
+        std::vector<aiNode *> markerNodes;
+        for (const SharedModifierData *cur =
+                        static_cast<const SharedModifierData *>(obj->modifiers.first.get());
+                cur;
+                cur = static_cast<const SharedModifierData *>(cur->modifier.next.get())) {
+            const ModifierData &dat = cur->modifier;
+            if (dat.name[0] == '\0') {
+                continue;
+            }
+            std::string nm = std::string("Modifier:") + dat.name;
+            auto *mn = new aiNode(nm);
+            mn->mParent = node.get();
+            if (!mn->mMetaData) {
+                mn->mMetaData = new aiMetadata();
+            }
+            mn->mMetaData->Add("BLEND_modifier_type", static_cast<int32_t>(dat.type));
+            mn->mMetaData->Add("BLEND_modifier_name", aiString(dat.name));
+            markerNodes.push_back(mn);
+        }
+        for (const ParticleSystem *ps =
+                        static_cast<const ParticleSystem *>(obj->particlesystem.first.get());
+                ps;
+                ps = static_cast<const ParticleSystem *>(ps->next.get())) {
+            const char *psName = (ps->name[0] != '\0') ? ps->name : "ParticleSystem";
+            std::string nm = std::string("ParticleSystem:") + psName;
+            auto *mn = new aiNode(nm);
+            mn->mParent = node.get();
+            if (!mn->mMetaData) {
+                mn->mMetaData = new aiMetadata();
+            }
+            mn->mMetaData->Add("BLEND_particle_system", aiString(psName));
+            if (ps->part && ps->part->id.name[0] != '\0') {
+                mn->mMetaData->Add("BLEND_particle_settings", aiString(ps->part->id.name + 2));
+            }
+            if (ps->part) {
+                mn->mMetaData->Add("BLEND_particle_totpart", static_cast<int32_t>(ps->part->totpart));
+                mn->mMetaData->Add("BLEND_particle_ren_as", static_cast<int32_t>(ps->part->ren_as));
+            }
+            markerNodes.push_back(mn);
+        }
+        if (!markerNodes.empty()) {
+            const unsigned oldN = node->mNumChildren;
+            const unsigned addN = static_cast<unsigned>(markerNodes.size());
+            aiNode **merged = new aiNode *[oldN + addN]();
+            for (unsigned i = 0; i < oldN; ++i) {
+                merged[i] = node->mChildren[i];
+            }
+            for (unsigned i = 0; i < addN; ++i) {
+                merged[oldN + i] = markerNodes[i];
+            }
+            delete[] node->mChildren;
+            node->mChildren = merged;
+            node->mNumChildren = oldN + addN;
+        }
+    }
 
     // Asset Browser fields on Object ID (Presence).
     BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);
