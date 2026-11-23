@@ -4237,6 +4237,9 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                     }
                     pi.arraysResolved = true;
                     pi.arraysSource = "dna_particles";
+                    // Host 0ai: DNA ParticleData.co / size are emitter-local (pre parent scale).
+                    pi.positionsSpace = "emitterLocal";
+                    pi.scalesSpace = "emitterLocal";
                 } else if (obj->type == Object::Type_MESH && obj->data) {
                     const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
                     ParticleFaceDistributeParams dp;
@@ -4267,6 +4270,15 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                         pi.arraysResolved = true;
                         pi.arraysSource = "mesh_face_eval";
                         pi.totpart = static_cast<int>(pi.scales.size());
+                        // Host 0ai: mesh-local positions; scales = size*(1-rand)*hair_length
+                        // in emitter-local (Blender size*path_len), not worldUniform.
+                        pi.positionsSpace = "emitterLocal";
+                        pi.scalesSpace = "emitterLocal";
+                        if (p.hasNormfac) {
+                            pi.scalesMeaning = "size_times_hair_length";
+                        } else {
+                            pi.scalesMeaning = "size";
+                        }
                     }
                 }
                 conv.pointInstancers.push_back(std::move(pi));
@@ -5276,6 +5288,16 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                     pjson << ",\"arraysResolved\":true";
                     if (!inst.arraysSource.empty()) {
                         pjson << ",\"arraysSource\":\"" << BlendJsonEscape(inst.arraysSource) << '"';
+                    }
+                    // Host 0ai Presence: explicit transform spaces (no invent if unset).
+                    if (!inst.positionsSpace.empty()) {
+                        pjson << ",\"positionsSpace\":\"" << BlendJsonEscape(inst.positionsSpace) << '"';
+                    }
+                    if (!inst.scalesSpace.empty()) {
+                        pjson << ",\"scalesSpace\":\"" << BlendJsonEscape(inst.scalesSpace) << '"';
+                    }
+                    if (!inst.scalesMeaning.empty()) {
+                        pjson << ",\"scalesMeaning\":\"" << BlendJsonEscape(inst.scalesMeaning) << '"';
                     }
                     BlendEmitFloatArray(pjson, "positions", inst.positions);
                     BlendEmitFloatArray(pjson, "orients", inst.orients);
