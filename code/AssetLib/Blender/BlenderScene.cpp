@@ -549,6 +549,52 @@ void Structure::Convert<SolidifyModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure::Convert<CacheFile>(
+        CacheFile &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.filepath, "filepath", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.frame, "frame", db);
+    ReadField<ErrorPolicy_Igno>(dest.frame_offset, "frame_offset", db);
+    ReadField<ErrorPolicy_Igno>(dest.override_frame, "override_frame", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<MeshCacheModifierData>(
+        MeshCacheModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.time_mode, "time_mode", db);
+    ReadField<ErrorPolicy_Igno>(dest.play_mode, "play_mode", db);
+    ReadField<ErrorPolicy_Igno>(dest.factor, "factor", db);
+    ReadField<ErrorPolicy_Igno>(dest.frame_start, "frame_start", db);
+    ReadField<ErrorPolicy_Igno>(dest.frame_scale, "frame_scale", db);
+    ReadField<ErrorPolicy_Igno>(dest.eval_frame, "eval_frame", db);
+    ReadField<ErrorPolicy_Igno>(dest.eval_time, "eval_time", db);
+    ReadField<ErrorPolicy_Igno>(dest.eval_factor, "eval_factor", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.filepath, "filepath", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<MeshSeqCacheModifierData>(
+        MeshSeqCacheModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.cache_file, "*cache_file", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.object_path, "object_path", db);
+    ReadField<ErrorPolicy_Igno>(dest.read_flag, "read_flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.velocity_scale, "velocity_scale", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure::Convert<SoftBody>(
         SoftBody &dest,
         const FileDatabase &db) const {
@@ -2001,7 +2047,8 @@ void DNA::RegisterConverters() {
     converters["ClothSimSettings"] = DNA::FactoryPair(&Structure::Allocate<ClothSimSettings>, &Structure::Convert<ClothSimSettings>);
     converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
     {
-        // All blender.git *ModifierData DNA names except Subsurf/Mirror/Fluid/Cloth (specialized).
+        // All blender.git *ModifierData DNA names except Subsurf/Mirror/Fluid/Cloth/
+        // MeshCache/MeshSeqCache (specialized).
         static const char *const kGenericModifierDnaNames[] = {
 #include "BlenderModifierDnaNames.inc"
         };
@@ -2012,6 +2059,10 @@ void DNA::RegisterConverters() {
             converters[dnaName] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
         }
     }
+    // After generic map: MeshCache / MeshSeqCache / CacheFile (0al path inventory).
+    converters["CacheFile"] = DNA::FactoryPair(&Structure::Allocate<CacheFile>, &Structure::Convert<CacheFile>);
+    converters["MeshCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshCacheModifierData>, &Structure::Convert<MeshCacheModifierData>);
+    converters["MeshSeqCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshSeqCacheModifierData>, &Structure::Convert<MeshSeqCacheModifierData>);
     converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
     converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
     converters["RigidBodyCon"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyCon>, &Structure::Convert<RigidBodyCon>);

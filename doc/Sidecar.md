@@ -243,6 +243,26 @@ Fluid / smoke nodes additionally bind the visual mesh:
 
 `BLEND_physics_blast`: ExplodeModifier inventory (`index`/`settings`); Geometry Nodes fracture is listed under scene `skipped[]` (unevaluated - no invent chunks).
 
+### BLEND `BLEND_mesh_cache` (0al — paths only)
+
+Mesh Cache / Mesh Sequence Cache inventory in the **Physics** bag (`BLEND_mesh_cache.nodes[]`).
+Assimp does **not** decode `.mdd` / `.abc` / `.pc2` into vertex buffers — Host loads
+files (like textures / MTL).
+
+| Field | Meaning |
+|---|---|
+| `index` / `name` / `meshes[]` | Same DFS bind as fluid domain |
+| `type` | `mesh_cache` (MDD/PC2) or `mesh_sequence_cache` (Alembic/USD) |
+| `settings.cacheKind` | `mdd` \| `pc2` \| `alembic` \| `usd` (DNA type, else authored path suffix) |
+| `settings.cacheFileType` | Raw DNA `CacheFile.type` int when MeshSeqCache |
+| `settings.cachePath` | DNA filepath Presence (`//…` or absolute); omit if empty |
+| `settings.cachePathBlendRelative` | `true` when path starts with `//` |
+| `settings.objectPath` | Archive object path (MeshSeqCache) when authored |
+| `settings.cacheFile` / frame keys | CacheFile ID name + frame/offset Presence |
+| `settings.eval_frame` / `frame_start` / … | MeshCache timing Presence (no invent) |
+
+Missing path → no `cachePath` + optional scene `skipped[]` `BLEND_mesh_cache_no_path:…`.
+
 KHR rigid (same bag):
 
 - `collisionFilters` from `RigidBodyOb.col_groups` (`System_N` bits)

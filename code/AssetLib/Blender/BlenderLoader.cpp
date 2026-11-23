@@ -3889,6 +3889,16 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             bag = &conv.physicsSolidifyNodes;
             bagKey = "solidify";
             break;
+        case ModifierData::eModifierType_MeshCache:
+            bag = &conv.meshCacheNodes;
+            bagKey = "mesh_cache";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_MeshSequenceCache:
+            bag = &conv.meshCacheNodes;
+            bagKey = "mesh_sequence_cache";
+            wantMeshMatBind = true;
+            break;
         case ModifierData::eModifierType_Nodes: {
 
             // Blender 3+ often drives cloth/soft via Geometry Nodes - map by name heuristic.
@@ -4045,6 +4055,105 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 std::strcmp(cur->dna_type, "SolidifyModifierData") == 0) {
             const auto *sol = static_cast<const SolidifyModifierData *>(cur);
             settings << ",\"source\":\"SolidifyModifierData\",\"thickness\":" << sol->offset;
+        }
+        // 0al: Mesh Cache (MDD/PC2) / Mesh Sequence Cache (Alembic/USD) - paths only.
+        if (dat.type == ModifierData::eModifierType_MeshCache &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "MeshCacheModifierData") == 0) {
+            const auto *mc = static_cast<const MeshCacheModifierData *>(cur);
+            settings << ",\"source\":\"MeshCacheModifierData\"";
+            const char *kind = "mesh_cache";
+            if (mc->type == MeshCacheModifierData::Type_MDD) {
+                kind = "mdd";
+            } else if (mc->type == MeshCacheModifierData::Type_PC2) {
+                kind = "pc2";
+            }
+            settings << ",\"cacheKind\":\"" << kind << '"';
+            if (mc->filepath[0] != '\0') {
+                settings << ",\"cachePath\":\"" << BlendJsonEscape(mc->filepath) << '"';
+                if (mc->filepath[0] == '/' && mc->filepath[1] == '/') {
+                    settings << ",\"cachePathBlendRelative\":true";
+                }
+            } else {
+                conv.skippedCategories.push_back(
+                        std::string("BLEND_mesh_cache_no_path:") + (objName ? objName : "?") + "/" +
+                        dat.name);
+            }
+            settings << ",\"time_mode\":" << static_cast<int>(mc->time_mode)
+                     << ",\"play_mode\":" << static_cast<int>(mc->play_mode)
+                     << ",\"factor\":" << mc->factor
+                     << ",\"frame_start\":" << mc->frame_start
+                     << ",\"frame_scale\":" << mc->frame_scale
+                     << ",\"eval_frame\":" << mc->eval_frame
+                     << ",\"eval_time\":" << mc->eval_time
+                     << ",\"eval_factor\":" << mc->eval_factor;
+        }
+        if (dat.type == ModifierData::eModifierType_MeshSequenceCache &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "MeshSeqCacheModifierData") == 0) {
+            const auto *ms = static_cast<const MeshSeqCacheModifierData *>(cur);
+            settings << ",\"source\":\"MeshSeqCacheModifierData\"";
+            // cacheKind: DNA CacheFile.type when set; else Presence from authored filepath suffix.
+            auto kindFromPath = [](const char *path) -> const char * {
+                if (path == nullptr || path[0] == '\0') {
+                    return nullptr;
+                }
+                const char *dot = std::strrchr(path, '.');
+                if (dot == nullptr) {
+                    return nullptr;
+                }
+                if (std::strcmp(dot, ".abc") == 0) {
+                    return "alembic";
+                }
+                if (std::strcmp(dot, ".usd") == 0 || std::strcmp(dot, ".usda") == 0 ||
+                        std::strcmp(dot, ".usdc") == 0 || std::strcmp(dot, ".usdz") == 0) {
+                    return "usd";
+                }
+                return nullptr;
+            };
+            const char *kind = "mesh_sequence_cache";
+            if (ms->cache_file) {
+                if (ms->cache_file->type == CacheFile::Type_Alembic) {
+                    kind = "alembic";
+                } else if (ms->cache_file->type == CacheFile::Type_USD) {
+                    kind = "usd";
+                } else if (const char *fromPath = kindFromPath(ms->cache_file->filepath)) {
+                    kind = fromPath;
+                }
+                settings << ",\"cacheKind\":\"" << kind << '"';
+                settings << ",\"cacheFileType\":" << static_cast<int>(ms->cache_file->type);
+                if (ms->cache_file->filepath[0] != '\0') {
+                    settings << ",\"cachePath\":\"" << BlendJsonEscape(ms->cache_file->filepath)
+                             << '"';
+                    if (ms->cache_file->filepath[0] == '/' && ms->cache_file->filepath[1] == '/') {
+                        settings << ",\"cachePathBlendRelative\":true";
+                    }
+                } else {
+                    conv.skippedCategories.push_back(
+                            std::string("BLEND_mesh_cache_no_path:") + (objName ? objName : "?") +
+                            "/" + dat.name);
+                }
+                if (ms->cache_file->id.name[0] != '\0') {
+                    settings << ",\"cacheFile\":\""
+                             << BlendJsonEscape(ms->cache_file->id.name + 2) << '"';
+                }
+                // Presence: CacheFile.frame / frame_offset when DNA resolved.
+                settings << ",\"cacheFileFrame\":" << ms->cache_file->frame
+                         << ",\"cacheFileFrameOffset\":" << ms->cache_file->frame_offset;
+                if (ms->cache_file->override_frame) {
+                    settings << ",\"cacheFileOverrideFrame\":true";
+                }
+            } else {
+                settings << ",\"cacheKind\":\"" << kind << '"';
+                conv.skippedCategories.push_back(
+                        std::string("BLEND_mesh_cache_no_cachefile:") + (objName ? objName : "?") +
+                        "/" + dat.name);
+            }
+            if (ms->object_path[0] != '\0') {
+                settings << ",\"objectPath\":\"" << BlendJsonEscape(ms->object_path) << '"';
+            }
+            settings << ",\"read_flag\":" << static_cast<int>(ms->read_flag)
+                     << ",\"velocity_scale\":" << ms->velocity_scale;
         }
         settings << '}';
 
@@ -4702,6 +4811,7 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                          !conv.physicsRigidNodes.empty() || !conv.physicsParticleNodes.empty() ||
                          !conv.physicsJointNodes.empty() || !conv.physicsBlastNodes.empty() ||
                          !conv.physicsOceanNodes.empty() || !conv.physicsDynamicPaintNodes.empty() ||
+                         !conv.meshCacheNodes.empty() ||
                          !conv.physicsSolidifyNodes.empty() ||
                          !conv.khrBodies.empty() || !conv.khrJoints.empty() ||
                          !conv.pointInstancers.empty();
@@ -4727,6 +4837,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_ocean", conv.physicsOceanNodes, nameToIndex);
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_dynamic_paint", conv.physicsDynamicPaintNodes, nameToIndex);
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_solidify", conv.physicsSolidifyNodes, nameToIndex);
+        // 0al: Mesh Cache / Mesh Sequence Cache / MDD / Alembic - paths + bind only.
+        BlendEmitPhysicsInvBag(pjson, "BLEND_mesh_cache", conv.meshCacheNodes, nameToIndex);
         // C13 PointInstancer (particle collection/object) - full detail in Physics heap bag.
         if (!conv.pointInstancers.empty()) {
             bool anyUnresolvedArrays = false;

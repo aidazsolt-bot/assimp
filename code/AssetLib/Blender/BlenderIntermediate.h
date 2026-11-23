@@ -209,6 +209,8 @@ namespace Blender {
         std::vector<PhysicsInvNode> physicsOceanNodes;
         std::vector<PhysicsInvNode> physicsDynamicPaintNodes;
         std::vector<PhysicsInvNode> physicsSolidifyNodes;
+        /** 0al: Mesh Cache / Mesh Sequence Cache path inventory (Physics bag). */
+        std::vector<PhysicsInvNode> meshCacheNodes;
         /** Modifier-prop / pointer anim channels for aiAnimationSidecar (C5). */
         struct AnimPointerChannel {
             std::string actionName;
