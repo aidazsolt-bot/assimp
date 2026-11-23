@@ -576,6 +576,8 @@ ADD_ASSIMP_IMPORTER( BLEND
   AssetLib/Blender/BlenderCustomData.cpp
   AssetLib/Blender/BlenderMeshAttributes.h
   AssetLib/Blender/BlenderMeshAttributes.cpp
+  AssetLib/Blender/BlenderParticleDistribute.h
+  AssetLib/Blender/BlenderParticleDistribute.cpp
 )
 
 # Blender 3+ writes .blend as Zstandard by default. Prefer system libzstd;

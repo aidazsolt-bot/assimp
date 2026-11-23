@@ -300,11 +300,13 @@ namespace Blender {
             std::vector<std::string> prototypeNames;
             std::vector<int> prototypeCounts;
             std::vector<int> prototypeIndices;
-            std::vector<float> positions; // xyz * N when DNA ParticleData present
+            std::vector<float> positions; // xyz * N when DNA ParticleData or mesh-face eval
             std::vector<float> orients; // wxyz * N
             std::vector<float> scales; // uniform * N
             std::vector<int> protoIndices; // per-instance prototype slot
             bool arraysResolved{ false };
+            /** "dna_particles" | "mesh_face_eval" when arraysResolved. */
+            std::string arraysSource;
         };
         std::vector<PointInstancerPending> pointInstancers;
         /** Material indices with resolved Principled Volume (parallel to materials_raw). */
