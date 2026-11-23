@@ -96,6 +96,10 @@ struct ScenePrivateData {
 
     // Optional scene-level physics sidecar (KHR_physics_* JSON bag).
     aiPhysicsSidecar *mPhysicsSidecar;
+
+    // Optional scene-level JSON sidecar (timing/units/cameras/volumes/…).
+    // Heap-backed - not aiString SceneSidecarJson (AI_MAXLEN).
+    aiSceneSidecar *mSceneSidecar;
 };
 
 inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
@@ -107,7 +111,8 @@ inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
           mMeshSidecars(),
           mMaterialSidecars(),
           mAnimationSidecars(),
-          mPhysicsSidecar(nullptr) {
+          mPhysicsSidecar(nullptr),
+          mSceneSidecar(nullptr) {
     // empty
 }
 
@@ -137,6 +142,8 @@ inline ScenePrivateData::~ScenePrivateData() {
     mAnimationSidecars.clear();
     delete mPhysicsSidecar;
     mPhysicsSidecar = nullptr;
+    delete mSceneSidecar;
+    mSceneSidecar = nullptr;
 }
 
 // Access private data stored in the scene

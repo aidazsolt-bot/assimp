@@ -4992,7 +4992,7 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_ocean", conv.physicsOceanNodes, nameToIndex);
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_dynamic_paint", conv.physicsDynamicPaintNodes, nameToIndex);
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_solidify", conv.physicsSolidifyNodes, nameToIndex);
-        // C13 PointInstancer (particle collection/object) - full detail (SceneSidecarJson is aiString-capped).
+        // C13 PointInstancer (particle collection/object) - full detail in Physics heap bag.
         if (!conv.pointInstancers.empty()) {
             bool anyUnresolvedArrays = false;
             pjson << ",\"BLEND_point_instancers\":{\"nodes\":[";
@@ -5439,7 +5439,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         }
         json << conv.volumeJsonEntries[vi];
     }
-    // C13 detail lives in Physics bag (heap). SceneSidecarJson is aiString-capped (AI_MAXLEN).
+    // C13 detail lives in Physics bag (heap). Scene JSON is heap via aiSceneSidecar
+    // (not aiString / AI_MAXLEN - Cityscapes volumes[] + worldEnv exceed 1023).
     json << "],\"pointInstancers\":[";
     if (!conv.pointInstancers.empty()) {
         json << "{\"count\":" << conv.pointInstancers.size()
@@ -5454,7 +5455,11 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     }
     json << "]}";
 
-    out->mMetaData->Add(AI_METADATA_SCENE_SIDECAR_JSON, aiString(json.str()));
+    {
+        auto *ssc = new aiSceneSidecar();
+        ssc->mExtensionsJson = BlendDupJson(json.str(), ssc->mExtensionsJsonLength);
+        AttachSceneSidecar(out, ssc);
+    }
     out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString("blend"));
     const bool flag = true;
     if (aiSceneHasMeshSidecar(out)) {
@@ -5465,6 +5470,9 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     }
     if (aiSceneHasPhysicsSidecar(out)) {
         out->mMetaData->Add(AI_METADATA_PHYSICS_SIDECAR, flag);
+    }
+    if (aiSceneHasSceneSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_SCENE_SIDECAR, flag);
     }
 }
 

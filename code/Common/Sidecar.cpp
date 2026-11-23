@@ -209,3 +209,34 @@ void Assimp::AttachPhysicsSidecar(aiScene *scene, aiPhysicsSidecar *sidecar) {
     delete priv->mPhysicsSidecar;
     priv->mPhysicsSidecar = sidecar;
 }
+
+// ------------------------------------------------------------------------------------------------
+ASSIMP_API int aiSceneHasSceneSidecar(const aiScene *pScene) {
+    if (pScene == nullptr || pScene->mPrivate == nullptr) {
+        return 0;
+    }
+    const ScenePrivateData *priv = ScenePriv(pScene);
+    return (priv->mSceneSidecar != nullptr && priv->mSceneSidecar->mExtensionsJson != nullptr &&
+            priv->mSceneSidecar->mExtensionsJsonLength > 0)
+                   ? 1
+                   : 0;
+}
+
+// ------------------------------------------------------------------------------------------------
+ASSIMP_API const aiSceneSidecar *aiGetSceneSidecar(const aiScene *pScene) {
+    if (pScene == nullptr || pScene->mPrivate == nullptr) {
+        return nullptr;
+    }
+    return ScenePriv(pScene)->mSceneSidecar;
+}
+
+// ------------------------------------------------------------------------------------------------
+void Assimp::AttachSceneSidecar(aiScene *scene, aiSceneSidecar *sidecar) {
+    if (scene == nullptr || scene->mPrivate == nullptr || sidecar == nullptr) {
+        delete sidecar;
+        return;
+    }
+    ScenePrivateData *priv = ScenePriv(scene);
+    delete priv->mSceneSidecar;
+    priv->mSceneSidecar = sidecar;
+}

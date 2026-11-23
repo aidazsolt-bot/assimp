@@ -364,14 +364,17 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
   window lights). **Look-specific Bake/render** in the renderer remains an
   optional alternate path (not Assimp Authoring-Bake).
 
-## USD scene timing / units (C0 / S0)
+## USD / BLEND scene bag (C0 / S0-S8)
 
-No new C API. Stage metas are emitted on `aiScene::mMetaData`:
+Scene timing/units/cameras/volumes/composition JSON lives on **`aiSceneSidecar`**
+(heap UTF-8 via `aiGetSceneSidecar` / `aiSceneHasSceneSidecar`). Do **not** store
+the bag as `aiString` under `SceneSidecarJson` (`AI_MAXLEN` truncates).
 
-| Key | Type | Meaning |
+| Key / API | Type | Meaning |
 |---|---|---|
-| `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | `aiString` | UTF-8 JSON bag below |
-| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `usd` / `usda` / `usdc` / `usdz` |
+| `aiGetSceneSidecar` / `AI_METADATA_SCENE_SIDECAR` (`HasSceneSidecar`) | heap JSON / bool | Full scene bag (unlimited) |
+| `AI_METADATA_SCENE_SIDECAR_JSON` (`SceneSidecarJson`) | legacy name only | Deprecated as value channel; Host must use `aiGetSceneSidecar` |
+| `AI_METADATA_SOURCE_FORMAT` | `aiString` | `usd` / `usda` / `usdc` / `usdz` / `blend` |
 
 JSON shape (schemaVersion 1):
 
@@ -404,11 +407,11 @@ Test: `utUSDImport.sceneTimingSidecarS0Test` (requires `ASSIMP_BUILD_USD_IMPORTE
 | S1 | `aiMeshSidecar.mExtensionsJson` | `primPath`, `primvars` (texcoord slots, normals, displayColor/Opacity), blendShapes, skel |
 | S2 | `aiAnimationSidecar` | `USD_skel_channels[]`, `blendshapeWeights[]` when TinyUSDZ emits clips |
 | S3 | `aiMaterialSidecar` | `UsdPreviewSurface` remainder (diffuse/metallic/roughness/ior/clearcoat/…) |
-| S4 | `SceneSidecarJson` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
+| S4 | `aiSceneSidecar` | `cameras[]`, `lights[]` (RenderScene + stage walk) |
 | S5 | `aiPhysicsSidecar` | `USD_physics_rigid.nodes[]` + optional `mass` from `physics:mass` |
 | S6 | (same physics bag) | Soft/cloth USD schemas recorded when present; else listed under `skipped` |
-| S7 | `SceneSidecarJson` + Physics bag | `volumes[]` / mat `BLEND_shader_volume`: Presence `density` (unlinked), `densityLinked` + optional `densityDefault` (linked; no fake `density`), `color`, `densityAttribute`, optional `anisotropy` / `absorptionColor` / `emissionStrength` / `emissionColor` when unlinked. `pointInstancers[]` stub (`count`+`bag`) — **BLEND C13 detail** in Physics `BLEND_point_instancers.nodes[]` (collection bind, prototypes, totpart/seed; `arraysResolved` + positions/orients/scales/protoIndices only when DNA `ParticleSystem.particles` present). SceneSidecarJson is `aiString`-capped (`AI_MAXLEN`) |
-| S8 | `SceneSidecarJson` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
+| S7 | `aiSceneSidecar` + Physics bag | `volumes[]` / mat `BLEND_shader_volume`: Presence `density` (unlinked), `densityLinked` + optional `densityDefault` (linked; no fake `density`), `color`, `densityAttribute`, optional `anisotropy` / `absorptionColor` / `emissionStrength` / `emissionColor` when unlinked. `pointInstancers[]` stub (`count`+`bag`) — **BLEND C13 detail** in Physics `BLEND_point_instancers.nodes[]` (collection bind, prototypes, totpart/seed; `arraysResolved` + positions/orients/scales/protoIndices only when DNA `ParticleSystem.particles` present). Scene bag is heap (`aiSceneSidecar`, no `AI_MAXLEN`) |
+| S8 | `aiSceneSidecar` | `composition.defaultPrim/doc`, `skipped[]` (curves, MaterialX, Hydra, payload/reference, USDA sanitize notes) |
 
 **BLEND Host read (2026-11-22):** Scene-Cam = `BLEND_scene.camera`/`cameraIndex` + `cameras[].sceneCamera` (not an `aiCamera` field); if missing → app settings active cam. C13 = `BLEND_point_instancers` (`totpart` from `ParticleSettings.totpart`; TRS only if `arraysResolved`); Highrise-style objects stay typed nodes outside the particle collection. Full Host guide: RenderAssimp `docs/ASSIMP_REQUEST_sidecars_blend_usd.md` (rev 22k).
 
