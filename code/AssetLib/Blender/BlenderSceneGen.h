@@ -116,6 +116,21 @@ void Structure::Convert<SolidifyModifierData>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<CacheFile>(
+        CacheFile &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MeshCacheModifierData>(
+        MeshCacheModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<MeshSeqCacheModifierData>(
+        MeshSeqCacheModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<SoftBody>(
         SoftBody &dest,
         const FileDatabase &db) const;

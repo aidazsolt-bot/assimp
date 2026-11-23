@@ -976,6 +976,72 @@ struct SolidifyModifierData final : SharedModifierData {
             offset(0.01f) {}
 };
 
+/**
+ * DNA CacheFile (ID_CF) - Alembic/USD archive referenced by MeshSeqCache.
+ * Assimp emits filepath Presence only; Host loads .abc/.usd (0al).
+ */
+struct CacheFile final : ElemBase {
+    enum CacheFileType {
+        Type_Invalid = 0,
+        Type_Alembic = 1,
+        Type_USD = 2
+    };
+
+    ID id;
+    char filepath[1024];
+    char type; // eCacheFileType
+    float frame;
+    float frame_offset;
+    char override_frame;
+
+    CacheFile() :
+            type(Type_Invalid), frame(0.f), frame_offset(0.f), override_frame(0) {
+        filepath[0] = '\0';
+    }
+};
+
+/**
+ * DNA MeshCacheModifierData - MDD/PC2 filepath on the modifier (0al).
+ * type: MOD_MESHCACHE_TYPE_MDD=1, PC2=2.
+ */
+struct MeshCacheModifierData final : SharedModifierData {
+    enum CacheType {
+        Type_MDD = 1,
+        Type_PC2 = 2
+    };
+
+    char type; // MeshCacheModifierType
+    char time_mode;
+    char play_mode;
+    float factor;
+    float frame_start;
+    float frame_scale;
+    float eval_frame;
+    float eval_time;
+    float eval_factor;
+    char filepath[1024];
+
+    MeshCacheModifierData() :
+            type(Type_MDD), time_mode(0), play_mode(0), factor(1.f), frame_start(0.f), frame_scale(1.f), eval_frame(0.f), eval_time(0.f), eval_factor(0.f) {
+        filepath[0] = '\0';
+    }
+};
+
+/**
+ * DNA MeshSeqCacheModifierData - Alembic/USD via CacheFile* + archive object_path (0al).
+ */
+struct MeshSeqCacheModifierData final : SharedModifierData {
+    std::shared_ptr<CacheFile> cache_file;
+    char object_path[1024];
+    char read_flag;
+    float velocity_scale;
+
+    MeshSeqCacheModifierData() :
+            read_flag(0), velocity_scale(1.f) {
+        object_path[0] = '\0';
+    }
+};
+
 /** Subset of DNA SoftBody (Object.soft). */
 struct SoftBody final : ElemBase {
     float nodemass WARN;
