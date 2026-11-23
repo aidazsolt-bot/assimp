@@ -65,6 +65,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/StringComparison.h>
 #include <assimp/anim.h>
 #include <assimp/camera.h>
+#include <assimp/commonMetaData.h>
+#include <assimp/metadata.h>
 
 #include <algorithm>
 #include <cctype>
@@ -5500,6 +5502,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     if (blenderVersion != nullptr && blenderVersion[0] != '\0') {
         json << ",\"generator\":\"Blender " << blenderVersion << '"';
         out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(blenderVersion));
+        std::string generator = std::string("Blender ") + blenderVersion;
+        out->mMetaData->Add(AI_METADATA_SOURCE_GENERATOR, aiString(generator));
     }
     json << ",\"formatVersion\":" << file.file_format_version
          << ",\"blenderFileVersion\":" << file.blender_file_version
