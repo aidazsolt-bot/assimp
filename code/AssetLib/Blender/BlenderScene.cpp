@@ -718,6 +718,11 @@ void Structure ::Convert<ParticleSettings>(
     ReadField<ErrorPolicy_Igno>(dest.sta, "sta", db);
     ReadField<ErrorPolicy_Igno>(dest.end, "end", db);
     ReadField<ErrorPolicy_Igno>(dest.jitfac, "jitfac", db);
+    // Presence: only mark hair_length emit when SDNA has normfac (RNA hair_length = *4).
+    dest.hasNormfac = (Get("normfac") != nullptr);
+    if (dest.hasNormfac) {
+        ReadField<ErrorPolicy_Igno>(dest.normfac, "normfac", db);
+    }
     if (Get("*instance_collection") != nullptr) {
         ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*instance_collection", db);
     } else {
