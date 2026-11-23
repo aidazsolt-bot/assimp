@@ -41,10 +41,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "AbstractImportExportBase.h"
 #include "UnitTestPCH.h"
 
+#include <assimp/commonMetaData.h>
 #include <assimp/postprocess.h>
 #include <assimp/Importer.hpp>
+#include <assimp/metadata.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 #include <assimp/SpatialSort.h>
+#include <cstring>
 
 using namespace Assimp;
 
@@ -93,13 +97,22 @@ TEST(utBlenderImporter, importBlenderDefault250ZstdCompressed) {
 
 TEST(utBlenderImporter, importBlenderFormatV1Header) {
     // Blender 5.0 format-v1 container (ZSTD + BLENDER17-01v0500). Must not hit
-    // "invalid size of file block". Mesh count depends on AttributeStorage hydrate.
+    // "invalid size of file block". Mesh count depends on AttributeStorage hydrate;
+    // GN-only / CD-attribute meshes may be 0. Sidecar still reports format v1.
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(
             ASSIMP_TEST_MODELS_DIR "/BLEND/BlenderFormatV1_Header.blend", 0);
     ASSERT_NE(nullptr, scene) << importer.GetErrorString();
     EXPECT_EQ(std::string::npos, std::string(importer.GetErrorString()).find("invalid size of file block"));
     EXPECT_GE(scene->mNumMeshes, 1u);
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(ssc->mExtensionsJson, "\"formatVersion\":1"));
+    EXPECT_NE(nullptr, std::strstr(ssc->mExtensionsJson, "\"blenderFileVersion\":500"));
+    EXPECT_NE(nullptr, std::strstr(ssc->mExtensionsJson, "BLEND_file"));
 }
 
 TEST(utBlenderImporter, importBlenderDefault250Compressed) {
@@ -258,4 +271,67 @@ TEST_F(utBlenderImporterExporter, importBlendWithSubdivisionSurface) {
 
         EXPECT_TRUE(scene->mMeshes[0]->mVertices[spatialSortResult[0]].Equal(positionMesh1));
     }
+}
+
+TEST(utBlenderImporter, sceneTimingSidecarS0Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    aiString format;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SOURCE_FORMAT, format));
+    EXPECT_STREQ("blend", format.C_Str());
+
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *j = ssc->mExtensionsJson;
+    EXPECT_NE(nullptr, std::strstr(j, "\"schemaVersion\":1"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"format\":\"blend\""));
+    EXPECT_NE(nullptr, std::strstr(j, "\"metersPerUnit\":"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"startTimeCode\":"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"endTimeCode\":"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"framesPerSecond\":"));
+}
+
+TEST(utBlenderImporter, categorySidecarsS1toS8Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/BLEND/SidecarSceneTiming/SidecarSceneTiming.blend",
+            0);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    // S1 mesh CustomData inventory (may be empty layers array, but bag present)
+    EXPECT_NE(0, aiSceneHasMeshSidecar(scene));
+    ASSERT_GE(scene->mNumMeshes, 1u);
+    const aiMeshSidecar *meshSc = aiGetMeshSidecar(scene, 0);
+    ASSERT_NE(nullptr, meshSc);
+    ASSERT_NE(nullptr, meshSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(meshSc->mExtensionsJson, "customDataLayers"));
+
+    // S3 material bag
+    EXPECT_NE(0, aiSceneHasMaterialSidecar(scene));
+    ASSERT_GE(scene->mNumMaterials, 1u);
+    const aiMaterialSidecar *matSc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, matSc);
+    ASSERT_NE(nullptr, matSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "BLEND_shader"));
+
+    // S4 cameras/lights + S8 skipped in heap scene JSON
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *sj = ssc->mExtensionsJson;
+    EXPECT_NE(nullptr, std::strstr(sj, "\"cameras\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"lights\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"skipped\""));
+
+    // Default cube fixture has no Soft/Cloth/Fluid modifiers -> physics sidecar absent
+    EXPECT_EQ(0, aiSceneHasPhysicsSidecar(scene));
 }
