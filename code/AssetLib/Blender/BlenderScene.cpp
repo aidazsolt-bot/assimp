@@ -54,7 +54,7 @@ namespace Blender {
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Object>(
+void Structure::Convert<Object>(
         Object &dest,
         const FileDatabase &db) const {
 
@@ -124,7 +124,7 @@ void Structure ::Convert<Object>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<BezTriple>(
+void Structure::Convert<BezTriple>(
         BezTriple &dest,
         const FileDatabase &db) const {
     ReadFieldArray2<ErrorPolicy_Igno>(dest.vec, "vec", db);
@@ -134,7 +134,7 @@ void Structure ::Convert<BezTriple>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<DriverTarget>(
+void Structure::Convert<DriverTarget>(
         DriverTarget &dest,
         const FileDatabase &db) const {
     // *id is polymorphic (Object/Material/...); read leading DNA ID only.
@@ -214,7 +214,7 @@ void Structure ::Convert<DriverTarget>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<DriverVar>(
+void Structure::Convert<DriverVar>(
         DriverVar &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -228,7 +228,7 @@ void Structure ::Convert<DriverVar>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ChannelDriver>(
+void Structure::Convert<ChannelDriver>(
         ChannelDriver &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.variables, "variables", db);
@@ -241,7 +241,7 @@ void Structure ::Convert<ChannelDriver>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<FCurve>(
+void Structure::Convert<FCurve>(
         FCurve &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -327,7 +327,7 @@ void Structure ::Convert<ActionStripKeyframeData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bAction>(
+void Structure::Convert<bAction>(
         bAction &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
@@ -339,7 +339,7 @@ void Structure ::Convert<bAction>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<NlaStrip>(
+void Structure::Convert<NlaStrip>(
         NlaStrip &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -352,7 +352,7 @@ void Structure ::Convert<NlaStrip>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<NlaTrack>(
+void Structure::Convert<NlaTrack>(
         NlaTrack &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -363,7 +363,7 @@ void Structure ::Convert<NlaTrack>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<AnimData>(
+void Structure::Convert<AnimData>(
         AnimData &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Igno>(dest.action, "*action", db);
@@ -374,7 +374,7 @@ void Structure ::Convert<AnimData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Group>(
+void Structure::Convert<Group>(
         Group &dest,
         const FileDatabase &db) const {
 
@@ -429,7 +429,7 @@ void Structure::Convert<Collection>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MTex>(
+void Structure::Convert<MTex>(
         MTex &dest,
         const FileDatabase &db) const {
 
@@ -474,7 +474,7 @@ void Structure ::Convert<MTex>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<TFace>(
+void Structure::Convert<TFace>(
         TFace &dest,
         const FileDatabase &db) const {
 
@@ -490,7 +490,7 @@ void Structure ::Convert<TFace>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<SubsurfModifierData>(
+void Structure::Convert<SubsurfModifierData>(
         SubsurfModifierData &dest,
         const FileDatabase &db) const {
 
@@ -505,7 +505,7 @@ void Structure ::Convert<SubsurfModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<GenericModifierData>(
+void Structure::Convert<GenericModifierData>(
         GenericModifierData &dest,
         const FileDatabase &db) const {
     // Only the ModifierData header (next/type/name) - enough to walk the list
@@ -516,7 +516,7 @@ void Structure ::Convert<GenericModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<FluidDomainSettings>(
+void Structure::Convert<FluidDomainSettings>(
         FluidDomainSettings &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
@@ -529,7 +529,7 @@ void Structure ::Convert<FluidDomainSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<FluidFlowSettings>(
+void Structure::Convert<FluidFlowSettings>(
         FluidFlowSettings &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.density, "density", db);
@@ -542,7 +542,7 @@ void Structure ::Convert<FluidFlowSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<FluidModifierData>(
+void Structure::Convert<FluidModifierData>(
         FluidModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
@@ -555,7 +555,7 @@ void Structure ::Convert<FluidModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<OceanModifierData>(
+void Structure::Convert<OceanModifierData>(
         OceanModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
@@ -573,7 +573,7 @@ void Structure ::Convert<OceanModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<DynamicPaintModifierData>(
+void Structure::Convert<DynamicPaintModifierData>(
         DynamicPaintModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
@@ -583,7 +583,7 @@ void Structure ::Convert<DynamicPaintModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<SolidifyModifierData>(
+void Structure::Convert<SolidifyModifierData>(
         SolidifyModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
@@ -591,10 +591,9 @@ void Structure ::Convert<SolidifyModifierData>(
     db.reader->IncPtr(size);
 }
 
-
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<SoftBody>(
+void Structure::Convert<SoftBody>(
         SoftBody &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.nodemass, "nodemass", db);
@@ -612,7 +611,7 @@ void Structure ::Convert<SoftBody>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<RigidBodyOb>(
+void Structure::Convert<RigidBodyOb>(
         RigidBodyOb &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
@@ -630,7 +629,7 @@ void Structure ::Convert<RigidBodyOb>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<RigidBodyCon>(
+void Structure::Convert<RigidBodyCon>(
         RigidBodyCon &dest,
         const FileDatabase &db) const {
     {
@@ -679,7 +678,7 @@ void Structure ::Convert<RigidBodyCon>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ClothSimSettings>(
+void Structure::Convert<ClothSimSettings>(
         ClothSimSettings &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.mass, "mass", db);
@@ -695,7 +694,7 @@ void Structure ::Convert<ClothSimSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ClothModifierData>(
+void Structure::Convert<ClothModifierData>(
         ClothModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
@@ -705,7 +704,7 @@ void Structure ::Convert<ClothModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ParticleKey>(
+void Structure::Convert<ParticleKey>(
         ParticleKey &dest,
         const FileDatabase &db) const {
     ReadFieldArray<ErrorPolicy_Igno>(dest.co, "co", db);
@@ -718,7 +717,7 @@ void Structure ::Convert<ParticleKey>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ParticleData>(
+void Structure::Convert<ParticleData>(
         ParticleData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.state, "state", db);
@@ -728,7 +727,7 @@ void Structure ::Convert<ParticleData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ParticleDupliWeight>(
+void Structure::Convert<ParticleDupliWeight>(
         ParticleDupliWeight &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -745,7 +744,7 @@ void Structure ::Convert<ParticleDupliWeight>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ParticleSettings>(
+void Structure::Convert<ParticleSettings>(
         ParticleSettings &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
@@ -824,7 +823,7 @@ void Structure ::Convert<ParticleSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ParticleSystem>(
+void Structure::Convert<ParticleSystem>(
         ParticleSystem &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -838,7 +837,7 @@ void Structure ::Convert<ParticleSystem>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MFace>(
+void Structure::Convert<MFace>(
         MFace &dest,
         const FileDatabase &db) const {
 
@@ -854,7 +853,7 @@ void Structure ::Convert<MFace>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Lamp>(
+void Structure::Convert<Lamp>(
         Lamp &dest,
         const FileDatabase &db) const {
 
@@ -891,7 +890,7 @@ void Structure ::Convert<Lamp>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MDeformWeight>(
+void Structure::Convert<MDeformWeight>(
         MDeformWeight &dest,
         const FileDatabase &db) const {
 
@@ -903,7 +902,7 @@ void Structure ::Convert<MDeformWeight>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<PackedFile>(
+void Structure::Convert<PackedFile>(
         PackedFile &dest,
         const FileDatabase &db) const {
 
@@ -916,7 +915,7 @@ void Structure ::Convert<PackedFile>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ImagePackedFile>(
+void Structure::Convert<ImagePackedFile>(
         ImagePackedFile &dest,
         const FileDatabase &db) const {
 
@@ -931,7 +930,7 @@ void Structure ::Convert<ImagePackedFile>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Base>(
+void Structure::Convert<Base>(
         Base &dest,
         const FileDatabase &db) const {
     // note: as per https://github.com/assimp/assimp/issues/128,
@@ -968,7 +967,7 @@ void Structure ::Convert<Base>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MTFace>(
+void Structure::Convert<MTFace>(
         MTFace &dest,
         const FileDatabase &db) const {
 
@@ -983,7 +982,7 @@ void Structure ::Convert<MTFace>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Material>(
+void Structure::Convert<Material>(
         Material &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
@@ -1108,7 +1107,7 @@ void Structure ::Convert<Material>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MaterialGPencilStyle>(
+void Structure::Convert<MaterialGPencilStyle>(
         MaterialGPencilStyle &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Igno>(dest.sima, "*sima", db);
@@ -1118,7 +1117,7 @@ void Structure ::Convert<MaterialGPencilStyle>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<GreasePencil>(
+void Structure::Convert<GreasePencil>(
         GreasePencil &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
@@ -1130,7 +1129,7 @@ void Structure ::Convert<GreasePencil>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeStack>(
+void Structure::Convert<bNodeStack>(
         bNodeStack &dest,
         const FileDatabase &db) const {
     ReadFieldArray<ErrorPolicy_Igno>(dest.vec, "vec", db);
@@ -1141,7 +1140,7 @@ void Structure ::Convert<bNodeStack>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeSocketValueFloat>(
+void Structure::Convert<bNodeSocketValueFloat>(
         bNodeSocketValueFloat &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
@@ -1151,7 +1150,7 @@ void Structure ::Convert<bNodeSocketValueFloat>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeSocketValueRGBA>(
+void Structure::Convert<bNodeSocketValueRGBA>(
         bNodeSocketValueRGBA &dest,
         const FileDatabase &db) const {
     ReadFieldArray<ErrorPolicy_Igno>(dest.value, "value", db);
@@ -1160,7 +1159,18 @@ void Structure ::Convert<bNodeSocketValueRGBA>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeSocketValueString>(
+void Structure::Convert<bNodeSocketValueVector>(
+        bNodeSocketValueVector &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.value, "value", db);
+    ReadField<ErrorPolicy_Igno>(dest.dimensions, "dimensions", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<bNodeSocketValueString>(
         bNodeSocketValueString &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
@@ -1170,7 +1180,7 @@ void Structure ::Convert<bNodeSocketValueString>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<CBData>(
+void Structure::Convert<CBData>(
         CBData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.r, "r", db);
@@ -1184,7 +1194,7 @@ void Structure ::Convert<CBData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ColorBand>(
+void Structure::Convert<ColorBand>(
         ColorBand &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.tot, "tot", db);
@@ -1198,7 +1208,7 @@ void Structure ::Convert<ColorBand>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<NodeShaderUVMap>(
+void Structure::Convert<NodeShaderUVMap>(
         NodeShaderUVMap &dest,
         const FileDatabase &db) const {
     ReadFieldArray<ErrorPolicy_Igno>(dest.uv_map, "uv_map", db);
@@ -1207,7 +1217,18 @@ void Structure ::Convert<NodeShaderUVMap>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<NodeTexNoise>(
+void Structure::Convert<TexMapping>(
+        TexMapping &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.loc, "loc", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.rot, "rot", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.size, "size", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<NodeTexNoise>(
         NodeTexNoise &dest,
         const FileDatabase &db) const {
     // DNA: NodeTexBase base; int dimensions; uint8_t type; uint8_t normalize; ...
@@ -1220,7 +1241,7 @@ void Structure ::Convert<NodeTexNoise>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<NodeTexMusgrave>(
+void Structure::Convert<NodeTexMusgrave>(
         NodeTexMusgrave &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.musgrave_type, "musgrave_type", db);
@@ -1230,7 +1251,7 @@ void Structure ::Convert<NodeTexMusgrave>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeSocket>(
+void Structure::Convert<bNodeSocket>(
         bNodeSocket &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -1241,7 +1262,7 @@ void Structure ::Convert<bNodeSocket>(
 
     // default_value is void* in DNA. Many .blend writers store the pointee DATA
     // block with SDNAnr 0 (appears as "Link"), so typed ResolvePointer fails.
-    // Decode by socket datatype (SOCK_FLOAT / SOCK_RGBA) - never invent values.
+    // Decode by socket datatype (SOCK_FLOAT / VECTOR / RGBA) - never invent values.
     dest.default_value.reset();
     {
         Pointer ptrval;
@@ -1256,10 +1277,14 @@ void Structure ::Convert<bNodeSocket>(
         }
         db.reader->SetCurrentPos(old);
 
-        // eNodeSocketDatatype: SOCK_FLOAT=0, SOCK_RGBA=2 (makesdna DNA_node_types.h).
+        // eNodeSocketDatatype: SOCK_FLOAT=0, SOCK_VECTOR=1, SOCK_RGBA=2, SOCK_STRING=7
+        // (makesdna DNA_node_types.h). SOCK_VECTOR needed for ShaderNodeMapping
+        // Location/Rotation/Scale Presence when SDNAnr is 0.
         const char *valueStruct = nullptr;
         if (dest.type == 0) {
             valueStruct = "bNodeSocketValueFloat";
+        } else if (dest.type == 1) {
+            valueStruct = "bNodeSocketValueVector";
         } else if (dest.type == 2) {
             valueStruct = "bNodeSocketValueRGBA";
         } else if (dest.type == 7) { // SOCK_STRING
@@ -1297,7 +1322,7 @@ void Structure ::Convert<bNodeSocket>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNode>(
+void Structure::Convert<bNode>(
         bNode &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -1334,6 +1359,9 @@ void Structure ::Convert<bNode>(
         const bool isUvMapNode =
                 (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeUVMap") == 0) ||
                 dest.type == 311; // SH_NODE_UVMAP
+        const bool isMappingNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeMapping") == 0) ||
+                dest.type == 109; // SH_NODE_MAPPING (pre-2.81 TexMapping storage)
         const bool isColorRampNode =
                 (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeValToRGB") == 0) ||
                 dest.type == 104; // SH_NODE_VALTORGB
@@ -1346,6 +1374,8 @@ void Structure ::Convert<bNode>(
         const char *forceStorageType = nullptr;
         if (isUvMapNode) {
             forceStorageType = "NodeShaderUVMap";
+        } else if (isMappingNode) {
+            forceStorageType = "TexMapping";
         } else if (isColorRampNode) {
             forceStorageType = "ColorBand";
         } else if (isTexNoiseNode) {
@@ -1382,7 +1412,7 @@ void Structure ::Convert<bNode>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeLink>(
+void Structure::Convert<bNodeLink>(
         bNodeLink &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -1395,7 +1425,7 @@ void Structure ::Convert<bNodeLink>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeTree>(
+void Structure::Convert<bNodeTree>(
         bNodeTree &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
@@ -1406,7 +1436,7 @@ void Structure ::Convert<bNodeTree>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MTexPoly>(
+void Structure::Convert<MTexPoly>(
         MTexPoly &dest,
         const FileDatabase &db) const {
 
@@ -1426,7 +1456,7 @@ void Structure ::Convert<MTexPoly>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Mesh>(
+void Structure::Convert<Mesh>(
         Mesh &dest,
         const FileDatabase &db) const {
 
@@ -1531,7 +1561,7 @@ void Structure ::Convert<Mesh>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MDeformVert>(
+void Structure::Convert<MDeformVert>(
         MDeformVert &dest,
         const FileDatabase &db) const {
 
@@ -1543,7 +1573,7 @@ void Structure ::Convert<MDeformVert>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<World>(
+void Structure::Convert<World>(
         World &dest,
         const FileDatabase &db) const {
 
@@ -1555,7 +1585,7 @@ void Structure ::Convert<World>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<RenderData>(
+void Structure::Convert<RenderData>(
         RenderData &dest,
         const FileDatabase &db) const {
 
@@ -1569,7 +1599,7 @@ void Structure ::Convert<RenderData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<UnitSettings>(
+void Structure::Convert<UnitSettings>(
         UnitSettings &dest,
         const FileDatabase &db) const {
 
@@ -1580,7 +1610,7 @@ void Structure ::Convert<UnitSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MLoopCol>(
+void Structure::Convert<MLoopCol>(
         MLoopCol &dest,
         const FileDatabase &db) const {
 
@@ -1594,14 +1624,14 @@ void Structure ::Convert<MLoopCol>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MVert>(
+void Structure::Convert<MVert>(
         MVert &dest,
         const FileDatabase &db) const {
 
     ReadFieldArray<ErrorPolicy_Fail>(dest.co, "co", db);
     ReadFieldArray<ErrorPolicy_Warn>(dest.no, "no", db);
     ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
-    //ReadField<ErrorPolicy_Warn>(dest.mat_nr,"mat_nr",db);
+    // ReadField<ErrorPolicy_Warn>(dest.mat_nr,"mat_nr",db);
     ReadField<ErrorPolicy_Igno>(dest.bweight, "bweight", db);
 
     db.reader->IncPtr(size);
@@ -1609,7 +1639,7 @@ void Structure ::Convert<MVert>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MEdge>(
+void Structure::Convert<MEdge>(
         MEdge &dest,
         const FileDatabase &db) const {
 
@@ -1624,7 +1654,7 @@ void Structure ::Convert<MEdge>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MLoopUV>(
+void Structure::Convert<MLoopUV>(
         MLoopUV &dest,
         const FileDatabase &db) const {
 
@@ -1636,7 +1666,7 @@ void Structure ::Convert<MLoopUV>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<GroupObject>(
+void Structure::Convert<GroupObject>(
         GroupObject &dest,
         const FileDatabase &db) const {
 
@@ -1649,7 +1679,7 @@ void Structure ::Convert<GroupObject>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ListBase>(
+void Structure::Convert<ListBase>(
         ListBase &dest,
         const FileDatabase &db) const {
 
@@ -1663,7 +1693,7 @@ void Structure ::Convert<ListBase>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MLoop>(
+void Structure::Convert<MLoop>(
         MLoop &dest,
         const FileDatabase &db) const {
 
@@ -1675,7 +1705,7 @@ void Structure ::Convert<MLoop>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ModifierData>(
+void Structure::Convert<ModifierData>(
         ModifierData &dest,
         const FileDatabase &db) const {
 
@@ -1692,7 +1722,7 @@ void Structure ::Convert<ModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<AssetMetaData>(
+void Structure::Convert<AssetMetaData>(
         AssetMetaData &dest,
         const FileDatabase &db) const {
     // Presence: Asset Browser char* fields (DATA blocks), same pattern as FCurve.rna_path.
@@ -1738,7 +1768,7 @@ void Structure ::Convert<AssetMetaData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ID>(
+void Structure::Convert<ID>(
         ID &dest,
         const FileDatabase &db) const {
 
@@ -1754,7 +1784,7 @@ void Structure ::Convert<ID>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MCol>(
+void Structure::Convert<MCol>(
         MCol &dest,
         const FileDatabase &db) const {
 
@@ -1768,7 +1798,7 @@ void Structure ::Convert<MCol>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MPoly>(
+void Structure::Convert<MPoly>(
         MPoly &dest,
         const FileDatabase &db) const {
 
@@ -1782,7 +1812,7 @@ void Structure ::Convert<MPoly>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Scene>(
+void Structure::Convert<Scene>(
         Scene &dest,
         const FileDatabase &db) const {
 
@@ -1800,7 +1830,7 @@ void Structure ::Convert<Scene>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Library>(
+void Structure::Convert<Library>(
         Library &dest,
         const FileDatabase &db) const {
 
@@ -1814,7 +1844,7 @@ void Structure ::Convert<Library>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Tex>(
+void Structure::Convert<Tex>(
         Tex &dest,
         const FileDatabase &db) const {
     short temp_short = 0;
@@ -1830,7 +1860,7 @@ void Structure ::Convert<Tex>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Camera>(
+void Structure::Convert<Camera>(
         Camera &dest,
         const FileDatabase &db) const {
 
@@ -1862,7 +1892,7 @@ void Structure ::Convert<Camera>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<GPUDOFSettings>(
+void Structure::Convert<GPUDOFSettings>(
         GPUDOFSettings &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.focus_distance, "focus_distance", db);
@@ -1877,7 +1907,7 @@ void Structure ::Convert<GPUDOFSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<CameraDOFSettings>(
+void Structure::Convert<CameraDOFSettings>(
         CameraDOFSettings &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Igno>(dest.focus_object, "*focus_object", db);
@@ -1890,7 +1920,7 @@ void Structure ::Convert<CameraDOFSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MirrorModifierData>(
+void Structure::Convert<MirrorModifierData>(
         MirrorModifierData &dest,
         const FileDatabase &db) const {
 
@@ -1907,7 +1937,7 @@ void Structure ::Convert<MirrorModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Image>(
+void Structure::Convert<Image>(
         Image &dest,
         const FileDatabase &db) const {
 
@@ -2051,8 +2081,10 @@ void DNA::RegisterConverters() {
     converters["bNodeStack"] = DNA::FactoryPair(&Structure::Allocate<bNodeStack>, &Structure::Convert<bNodeStack>);
     converters["bNodeSocketValueFloat"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueFloat>, &Structure::Convert<bNodeSocketValueFloat>);
     converters["bNodeSocketValueRGBA"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueRGBA>, &Structure::Convert<bNodeSocketValueRGBA>);
+    converters["bNodeSocketValueVector"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueVector>, &Structure::Convert<bNodeSocketValueVector>);
     converters["bNodeSocketValueString"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueString>, &Structure::Convert<bNodeSocketValueString>);
     converters["NodeShaderUVMap"] = DNA::FactoryPair(&Structure::Allocate<NodeShaderUVMap>, &Structure::Convert<NodeShaderUVMap>);
+    converters["TexMapping"] = DNA::FactoryPair(&Structure::Allocate<TexMapping>, &Structure::Convert<TexMapping>);
     converters["NodeTexNoise"] = DNA::FactoryPair(&Structure::Allocate<NodeTexNoise>, &Structure::Convert<NodeTexNoise>);
     converters["NodeTexMusgrave"] = DNA::FactoryPair(&Structure::Allocate<NodeTexMusgrave>, &Structure::Convert<NodeTexMusgrave>);
     converters["CBData"] = DNA::FactoryPair(&Structure::Allocate<CBData>, &Structure::Convert<CBData>);
@@ -2096,6 +2128,6 @@ void DNA::RegisterConverters() {
 }
 
 } // namespace Blender
-} //namespace Assimp
+} // namespace Assimp
 
 #endif // ASSIMP_BUILD_NO_BLEND_IMPORTER

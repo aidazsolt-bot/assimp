@@ -176,7 +176,7 @@ struct Group final : ElemBase {
 
 // -------------------------------------------------------------------------------
 struct CollectionObject final : ElemBase {
-    //CollectionObject* prev;
+    // CollectionObject* prev;
     std::shared_ptr<CollectionObject> next;
     Object *ob;
 };
@@ -305,10 +305,10 @@ struct MDeformVert final : ElemBase {
 };
 
 // -------------------------------------------------------------------------------
-constexpr uint32_t MA_RAYMIRROR    = 0x40000;
+constexpr uint32_t MA_RAYMIRROR = 0x40000;
 constexpr uint32_t MA_TRANSPARENCY = 0x10000;
-constexpr uint32_t MA_RAYTRANSP    = 0x20000;
-constexpr uint32_t MA_ZTRANSP      = 0x00040;
+constexpr uint32_t MA_RAYTRANSP = 0x20000;
+constexpr uint32_t MA_ZTRANSP = 0x00040;
 
 struct Material final : ElemBase {
     ID id FAIL;
@@ -451,7 +451,7 @@ struct bNodeStack final : ElemBase {
     float min, max;
 };
 
-/** Subset of DNA bNodeSocketValueFloat / RGBA (default_value pointee). */
+/** Subset of DNA bNodeSocketValueFloat / RGBA / Vector (default_value pointee). */
 struct bNodeSocketValueFloat final : ElemBase {
     int subtype;
     float value;
@@ -459,6 +459,19 @@ struct bNodeSocketValueFloat final : ElemBase {
 
 struct bNodeSocketValueRGBA final : ElemBase {
     float value[4];
+};
+
+/** DNA bNodeSocketValueVector - ShaderNodeMapping Location/Rotation/Scale, etc. */
+struct bNodeSocketValueVector final : ElemBase {
+    int subtype;
+    float value[4];
+    int dimensions;
+
+    bNodeSocketValueVector() :
+            subtype(0),
+            dimensions(0) {
+        value[0] = value[1] = value[2] = value[3] = 0.f;
+    }
 };
 
 struct bNodeSocketValueString final : ElemBase {
@@ -477,6 +490,23 @@ struct NodeShaderUVMap final : ElemBase {
 
     NodeShaderUVMap() {
         memset(uv_map, 0, sizeof uv_map);
+    }
+};
+
+/**
+ * DNA TexMapping (pre-2.81 ShaderNodeMapping storage).
+ * Blender 2.81+ moved loc/rot/size onto Location/Rotation/Scale sockets;
+ * older .blend files still keep TexMapping in bNode.storage.
+ */
+struct TexMapping final : ElemBase {
+    float loc[3];
+    float rot[3];
+    float size[3];
+
+    TexMapping() {
+        loc[0] = loc[1] = loc[2] = 0.f;
+        rot[0] = rot[1] = rot[2] = 0.f;
+        size[0] = size[1] = size[2] = 1.f;
     }
 };
 
@@ -699,8 +729,7 @@ struct GPUDOFSettings final : ElemBase {
     int num_blades WARN;
 
     GPUDOFSettings() :
-            focus_distance(0.f), fstop(0.f), focal_length(0.f), sensor(0.f),
-            rotation(0.f), ratio(0.f), num_blades(0) {}
+            focus_distance(0.f), fstop(0.f), focal_length(0.f), sensor(0.f), rotation(0.f), ratio(0.f), num_blades(0) {}
 };
 
 /** Subset of DNA CameraDOFSettings (Camera.dof, Blender 2.8+). */
@@ -738,8 +767,7 @@ struct Camera : ElemBase {
     CameraDOFSettings dof WARN;
 
     Camera() :
-            type(Type_PERSP), flag(Type_PERSP), lens(0.f), sensor_x(0.f), sensor_y(0.f),
-            ortho_scale(0.f), clipsta(0.f), clipend(0.f) {}
+            type(Type_PERSP), flag(Type_PERSP), lens(0.f), sensor_x(0.f), sensor_y(0.f), ortho_scale(0.f), clipsta(0.f), clipend(0.f) {}
 };
 
 // -------------------------------------------------------------------------------
@@ -763,57 +791,57 @@ struct Lamp final : ElemBase {
     };
 
     ID id FAIL;
-    //AnimData *adt;
+    // AnimData *adt;
 
     Type type FAIL;
     short flags;
 
-    //int mode;
+    // int mode;
 
     short colormodel, totex;
     float r, g, b, k WARN;
-    //float shdwr, shdwg, shdwb;
+    // float shdwr, shdwg, shdwb;
 
     float energy, dist, spotsize, spotblend;
-    //float haint;
+    // float haint;
 
     float constant_coefficient;
     float linear_coefficient;
     float quadratic_coefficient;
 
     float att1, att2;
-    //struct CurveMapping *curfalloff;
+    // struct CurveMapping *curfalloff;
     FalloffType falloff_type;
 
-    //float clipsta, clipend, shadspotsize;
-    //float bias, soft, compressthresh;
-    //short bufsize, samp, buffers, filtertype;
-    //char bufflag, buftype;
+    // float clipsta, clipend, shadspotsize;
+    // float bias, soft, compressthresh;
+    // short bufsize, samp, buffers, filtertype;
+    // char bufflag, buftype;
 
-    //short ray_samp, ray_sampy, ray_sampz;
-    //short ray_samp_type;
+    // short ray_samp, ray_sampy, ray_sampz;
+    // short ray_samp_type;
     short area_shape;
     float area_size, area_sizey, area_sizez;
-    //float adapt_thresh;
-    //short ray_samp_method;
+    // float adapt_thresh;
+    // short ray_samp_method;
 
-    //short texact, shadhalostep;
+    // short texact, shadhalostep;
 
-    //short sun_effect_type;
-    //short skyblendtype;
-    //float horizon_brightness;
-    //float spread;
+    // short sun_effect_type;
+    // short skyblendtype;
+    // float horizon_brightness;
+    // float spread;
     float sun_brightness;
-    //float sun_size;
-    //float backscattered_light;
-    //float sun_intensity;
-    //float atm_turbidity;
-    //float atm_inscattering_factor;
-    //float atm_extinction_factor;
-    //float atm_distance_factor;
-    //float skyblendfac;
-    //float sky_exposure;
-    //short sky_colorspace;
+    // float sun_size;
+    // float backscattered_light;
+    // float sun_intensity;
+    // float atm_turbidity;
+    // float atm_inscattering_factor;
+    // float atm_extinction_factor;
+    // float atm_distance_factor;
+    // float skyblendfac;
+    // float sky_exposure;
+    // short sky_colorspace;
 
     // int YF_numphotons, YF_numsearch;
     // short YF_phdepth, YF_useqmc, YF_bufsize, YF_pad;
@@ -822,11 +850,11 @@ struct Lamp final : ElemBase {
     // float YF_glowint, YF_glowofs;
     // short YF_glowtype, YF_pad2;
 
-    //struct Ipo *ipo;
-    //struct MTex *mtex[18];
-    // short pr_texture;
+    // struct Ipo *ipo;
+    // struct MTex *mtex[18];
+    //  short pr_texture;
 
-    //struct PreviewImage *preview;
+    // struct PreviewImage *preview;
 };
 
 // -------------------------------------------------------------------------------
@@ -841,7 +869,6 @@ struct ModifierData final : ElemBase {
     int type, mode;
     char name[32];
 };
-
 
 // ------------------------------------------------------------------------------------------------
 struct SharedModifierData : ElemBase {
@@ -924,8 +951,7 @@ struct OceanModifierData final : SharedModifierData {
     char cached WARN;
 
     OceanModifierData() :
-            resolution(7), spatial_size(50), depth(200.f), wave_scale(1.f), time(1.f),
-            chop_amount(1.f), wind_velocity(30.f), cached(0) {
+            resolution(7), spatial_size(50), depth(200.f), wave_scale(1.f), time(1.f), chop_amount(1.f), wind_velocity(30.f), cached(0) {
         cachepath[0] = '\0';
     }
 };
@@ -964,13 +990,13 @@ struct SoftBody final : ElemBase {
     float infrict WARN;
 
     SoftBody() :
-            nodemass(1.f), grav(9.8f), mediafrict(0.5f), goalspring(0.5f), goalfrict(0.f),
-            mingoal(0.f), maxgoal(1.f), defgoal(0.7f), inspring(0.5f), infrict(0.5f) {}
+            nodemass(1.f), grav(9.8f), mediafrict(0.5f), goalspring(0.5f), goalfrict(0.f), mingoal(0.f), maxgoal(1.f), defgoal(0.7f), inspring(0.5f), infrict(0.5f) {}
 };
 
 /** Subset of DNA RigidBodyOb (Object.rigidbody_object). */
 struct RigidBodyOb final : ElemBase {
-    enum Type { Type_Active = 0, Type_Passive = 1 };
+    enum Type { Type_Active = 0,
+        Type_Passive = 1 };
     enum Shape {
         Shape_Box = 0,
         Shape_Sphere = 1,
@@ -998,9 +1024,7 @@ struct RigidBodyOb final : ElemBase {
     float ang_damping WARN;
 
     RigidBodyOb() :
-            type(Type_Active), shape(Shape_Box), flag(0), col_groups(0),
-            mass(1.f), friction(0.5f), restitution(0.f), margin(0.04f),
-            lin_damping(0.04f), ang_damping(0.1f) {}
+            type(Type_Active), shape(Shape_Box), flag(0), col_groups(0), mass(1.f), friction(0.5f), restitution(0.f), margin(0.04f), lin_damping(0.04f), ang_damping(0.1f) {}
 };
 
 /** Subset of DNA RigidBodyCon (Object.rigidbody_constraint). */
@@ -1070,19 +1094,7 @@ struct RigidBodyCon final : ElemBase {
     float motor_ang_max_impulse WARN;
 
     RigidBodyCon() :
-            ob1(nullptr), ob2(nullptr), type(Type_Point), flag(Flag_Enabled), breaking_threshold(10.f),
-            limit_lin_x_lower(0.f), limit_lin_x_upper(0.f),
-            limit_lin_y_lower(0.f), limit_lin_y_upper(0.f),
-            limit_lin_z_lower(0.f), limit_lin_z_upper(0.f),
-            limit_ang_x_lower(0.f), limit_ang_x_upper(0.f),
-            limit_ang_y_lower(0.f), limit_ang_y_upper(0.f),
-            limit_ang_z_lower(0.f), limit_ang_z_upper(0.f),
-            spring_stiffness_x(0.f), spring_stiffness_y(0.f), spring_stiffness_z(0.f),
-            spring_stiffness_ang_x(0.f), spring_stiffness_ang_y(0.f), spring_stiffness_ang_z(0.f),
-            spring_damping_x(0.f), spring_damping_y(0.f), spring_damping_z(0.f),
-            spring_damping_ang_x(0.f), spring_damping_ang_y(0.f), spring_damping_ang_z(0.f),
-            motor_lin_target_velocity(0.f), motor_ang_target_velocity(0.f),
-            motor_lin_max_impulse(1.f), motor_ang_max_impulse(1.f) {}
+            ob1(nullptr), ob2(nullptr), type(Type_Point), flag(Flag_Enabled), breaking_threshold(10.f), limit_lin_x_lower(0.f), limit_lin_x_upper(0.f), limit_lin_y_lower(0.f), limit_lin_y_upper(0.f), limit_lin_z_lower(0.f), limit_lin_z_upper(0.f), limit_ang_x_lower(0.f), limit_ang_x_upper(0.f), limit_ang_y_lower(0.f), limit_ang_y_upper(0.f), limit_ang_z_lower(0.f), limit_ang_z_upper(0.f), spring_stiffness_x(0.f), spring_stiffness_y(0.f), spring_stiffness_z(0.f), spring_stiffness_ang_x(0.f), spring_stiffness_ang_y(0.f), spring_stiffness_ang_z(0.f), spring_damping_x(0.f), spring_damping_y(0.f), spring_damping_z(0.f), spring_damping_ang_x(0.f), spring_damping_ang_y(0.f), spring_damping_ang_z(0.f), motor_lin_target_velocity(0.f), motor_ang_target_velocity(0.f), motor_lin_max_impulse(1.f), motor_ang_max_impulse(1.f) {}
 };
 
 /** Subset of DNA ClothSimSettings (*ClothModifierData.sim_parms). */
@@ -1097,8 +1109,7 @@ struct ClothSimSettings final : ElemBase {
     int stepsPerFrame WARN;
 
     ClothSimSettings() :
-            mass(0.3f), shear(5.f), bending(0.5f), tension(15.f),
-            goalspring(1.f), goalfrict(0.f), stepsPerFrame(5) {
+            mass(0.3f), shear(5.f), bending(0.5f), tension(15.f), goalspring(1.f), goalfrict(0.f), stepsPerFrame(5) {
         gravity[0] = 0.f;
         gravity[1] = 0.f;
         gravity[2] = -9.81f;
@@ -1245,7 +1256,6 @@ struct ParticleSettings final : ElemBase {
             hasDrawAs(false),
             hasDraw(false) {}
 };
-
 
 /** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
 struct ParticleSystem final : ElemBase {
@@ -1457,7 +1467,7 @@ struct Image final : ElemBase {
     /** Legacy DNA `name` or modern `filepath` (FILE_MAX). */
     char name[MaxNameLen] WARN;
 
-    //struct anim *anim;
+    // struct anim *anim;
 
     short ok, flag;
     short source, type, pad, pad1;
@@ -1466,14 +1476,14 @@ struct Image final : ElemBase {
     short tpageflag, totbind;
     short xrep, yrep;
     short twsta, twend;
-    //unsigned int bindcode;
-    //unsigned int *repbind;
+    // unsigned int bindcode;
+    // unsigned int *repbind;
 
     /** Deprecated DNA pointer; often null when packedfiles is used. */
     std::shared_ptr<PackedFile> packedfile;
     /** Blender 2.77+ / 4.x: ListBase of ImagePackedFile. */
     ListBase packedfiles WARN;
-    //struct PreviewImage * preview;
+    // struct PreviewImage * preview;
 
     float lastupdate;
     int lastused;
@@ -1530,54 +1540,54 @@ struct Tex final : ElemBase {
     ID id FAIL;
     // AnimData *adt;
 
-    //float noisesize, turbul;
-    //float bright, contrast, rfac, gfac, bfac;
-    //float filtersize;
+    // float noisesize, turbul;
+    // float bright, contrast, rfac, gfac, bfac;
+    // float filtersize;
 
-    //float mg_H, mg_lacunarity, mg_octaves, mg_offset, mg_gain;
-    //float dist_amount, ns_outscale;
+    // float mg_H, mg_lacunarity, mg_octaves, mg_offset, mg_gain;
+    // float dist_amount, ns_outscale;
 
-    //float vn_w1;
-    //float vn_w2;
-    //float vn_w3;
-    //float vn_w4;
-    //float vn_mexp;
-    //short vn_distm, vn_coltype;
+    // float vn_w1;
+    // float vn_w2;
+    // float vn_w3;
+    // float vn_w4;
+    // float vn_mexp;
+    // short vn_distm, vn_coltype;
 
-    //short noisedepth, noisetype;
-    //short noisebasis, noisebasis2;
+    // short noisedepth, noisetype;
+    // short noisebasis, noisebasis2;
 
-    //short flag;
+    // short flag;
     ImageFlags imaflag;
     Type type FAIL;
-    //short stype;
+    // short stype;
 
-    //float cropxmin, cropymin, cropxmax, cropymax;
-    //int texfilter;
-    //int afmax;
-    //short xrepeat, yrepeat;
-    //short extend;
+    // float cropxmin, cropymin, cropxmax, cropymax;
+    // int texfilter;
+    // int afmax;
+    // short xrepeat, yrepeat;
+    // short extend;
 
-    //short fie_ima;
-    //int len;
-    //int frames, offset, sfra;
+    // short fie_ima;
+    // int len;
+    // int frames, offset, sfra;
 
-    //float checkerdist, nabla;
-    //float norfac;
+    // float checkerdist, nabla;
+    // float norfac;
 
-    //ImageUser iuser;
+    // ImageUser iuser;
 
-    //bNodeTree *nodetree;
-    //Ipo *ipo;
+    // bNodeTree *nodetree;
+    // Ipo *ipo;
     std::shared_ptr<Image> ima WARN;
-    //PluginTex *plugin;
-    //ColorBand *coba;
-    //EnvMap *env;
-    //PreviewImage * preview;
-    //PointDensity *pd;
-    //VoxelData *vd;
+    // PluginTex *plugin;
+    // ColorBand *coba;
+    // EnvMap *env;
+    // PreviewImage * preview;
+    // PointDensity *pd;
+    // VoxelData *vd;
 
-    //char use_nodes;
+    // char use_nodes;
 
     Tex() : imaflag(ImageFlags_INTERPOL), type(Type_CLOUDS) {
         // empty
@@ -1650,26 +1660,26 @@ struct MTex final : ElemBase {
 
     int texflag;
     short colormodel, pmapto, pmaptoneg;
-    //short normapspace, which_output;
-    //char brush_map_mode;
+    // short normapspace, which_output;
+    // char brush_map_mode;
     float r, g, b, k WARN;
-    //float def_var, rt;
+    // float def_var, rt;
 
-    //float colfac, varfac;
+    // float colfac, varfac;
 
     float norfac;
-    //float dispfac, warpfac;
+    // float dispfac, warpfac;
     float colspecfac, mirrfac, alphafac;
     float difffac, specfac, emitfac, hardfac;
-    //float raymirrfac, translfac, ambfac;
-    //float colemitfac, colreflfac, coltransfac;
-    //float densfac, scatterfac, reflfac;
+    // float raymirrfac, translfac, ambfac;
+    // float colemitfac, colreflfac, coltransfac;
+    // float densfac, scatterfac, reflfac;
 
-    //float timefac, lengthfac, clumpfac;
-    //float kinkfac, roughfac, padensfac;
-    //float lifefac, sizefac, ivelfac, pvelfac;
-    //float shadowfac;
-    //float zenupfac, zendownfac, blendfac;
+    // float timefac, lengthfac, clumpfac;
+    // float kinkfac, roughfac, padensfac;
+    // float lifefac, sizefac, ivelfac, pvelfac;
+    // float shadowfac;
+    // float zenupfac, zendownfac, blendfac;
 
     MTex() = default;
 };
