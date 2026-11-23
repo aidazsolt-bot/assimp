@@ -1998,6 +1998,46 @@ if (MINGW)
   )
   if (NOT BUILD_SHARED_LIBS)
     TARGET_LINK_LIBRARIES ( assimp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lwinpthread ) # winpthread is for libminizip.
+  else ()
+    # Shared MinGW links winpthread/zlib dynamically; copy runtime DLLs next to
+    # libassimp / tools / samples (ASSIMP_RUNTIME_OUTPUT_DIRECTORY). CMake does
+    # not stage sysroot DLLs automatically.
+    set(_assimp_mingw_runtime_dll_names
+      libwinpthread-1.dll
+      zlib1.dll
+    )
+    set(_assimp_mingw_runtime_search_dirs "")
+    if (DEFINED MINGW_DEPS_PREFIX AND EXISTS "${MINGW_DEPS_PREFIX}/bin")
+      list(APPEND _assimp_mingw_runtime_search_dirs "${MINGW_DEPS_PREFIX}/bin")
+    endif ()
+    if (CMAKE_CXX_COMPILER)
+      get_filename_component(_assimp_mingw_cxx_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+      list(APPEND _assimp_mingw_runtime_search_dirs "${_assimp_mingw_cxx_bin}")
+    endif ()
+    list(APPEND _assimp_mingw_runtime_search_dirs
+      "/usr/x86_64-w64-mingw32/sys-root/mingw/bin"
+      "/usr/i686-w64-mingw32/sys-root/mingw/bin"
+    )
+    foreach (_assimp_mingw_dll ${_assimp_mingw_runtime_dll_names})
+      set(_assimp_mingw_dll_path "${_assimp_mingw_dll}-NOTFOUND")
+      foreach (_assimp_mingw_dir ${_assimp_mingw_runtime_search_dirs})
+        if (EXISTS "${_assimp_mingw_dir}/${_assimp_mingw_dll}")
+          set(_assimp_mingw_dll_path "${_assimp_mingw_dir}/${_assimp_mingw_dll}")
+          break ()
+        endif ()
+      endforeach ()
+      if (_assimp_mingw_dll_path AND NOT _assimp_mingw_dll_path STREQUAL "${_assimp_mingw_dll}-NOTFOUND")
+        add_custom_command(TARGET assimp POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_assimp_mingw_dll_path}"
+            "$<TARGET_FILE_DIR:assimp>/${_assimp_mingw_dll}"
+          COMMENT "Copy MinGW runtime ${_assimp_mingw_dll} next to assimp"
+          VERBATIM)
+        message(STATUS "MinGW runtime DLL for bin/: ${_assimp_mingw_dll_path}")
+      else ()
+        message(WARNING "MinGW runtime DLL not found (will not copy to bin/): ${_assimp_mingw_dll}")
+      endif ()
+    endforeach ()
   endif ()
 endif()
 
