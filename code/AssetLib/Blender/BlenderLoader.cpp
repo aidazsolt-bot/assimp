@@ -4542,11 +4542,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         out->mFlags |= AI_SCENE_FLAGS_INCOMPLETE;
     }
 
-<<<<<<< HEAD
     // C0-S8 sidecars (doc/Sidecar.md BLEND). Always emit scene bag when Scene DNA loaded.
-=======
-    // Typed scene metadata: BLENDER header identity + optional Scene Asset Browser fields.
->>>>>>> 91a3f2a9f (BLEND: emit Asset Browser author/description/copyright/license.)
+    // Typed: header SourceAsset_* + optional Scene Asset Browser fields (AssetMetaData).
     if (out->mMetaData == nullptr) {
         out->mMetaData = new aiMetadata();
     }
@@ -5017,7 +5014,6 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         std::string generator = std::string("Blender ") + blenderVersion;
         out->mMetaData->Add(AI_METADATA_SOURCE_GENERATOR, aiString(generator));
     }
-<<<<<<< HEAD
     json << ",\"formatVersion\":" << file.file_format_version
          << ",\"blenderFileVersion\":" << file.blender_file_version
          << ",\"metersPerUnit\":" << metersPerUnit
@@ -5129,6 +5125,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         AttachSceneSidecar(out, ssc);
     }
     out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString("blend"));
+    // Presence: DNA AssetMetaData on Scene ID (not Text datablocks).
+    BlendEmitAssetBrowserMetadata(out->mMetaData, in.id.asset_data.get(), true);
     const bool flag = true;
     if (aiSceneHasMeshSidecar(out)) {
         out->mMetaData->Add(AI_METADATA_MESH_SIDECAR, flag);
@@ -5142,11 +5140,6 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     if (aiSceneHasSceneSidecar(out)) {
         out->mMetaData->Add(AI_METADATA_SCENE_SIDECAR, flag);
     }
-=======
-    // Presence: only DNA AssetMetaData strings (not Text datablocks).
-    BlendEmitAssetBrowserMetadata(out->mMetaData, in.id.asset_data.get(), true);
-
->>>>>>> 91a3f2a9f (BLEND: emit Asset Browser author/description/copyright/license.)
 }
 
 // ------------------------------------------------------------------------------------------------
