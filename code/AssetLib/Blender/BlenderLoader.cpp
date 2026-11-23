@@ -4937,6 +4937,32 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
 }
 
 // ------------------------------------------------------------------------------------------------
+
+/** Emit Asset Browser strings onto aiMetadata (Presence; aiString caps at AI_MAXLEN). */
+void BlendEmitAssetBrowserMetadata(aiMetadata *&meta, const Assimp::Blender::AssetMetaData *asset,
+        bool alsoSourceCopyright) {
+    if (asset == nullptr) {
+        return;
+    }
+    auto addStr = [&](const char *key, const std::string &val) {
+        if (val.empty()) {
+            return;
+        }
+        if (meta == nullptr) {
+            meta = new aiMetadata();
+        }
+        // aiString(std::string) truncates to AI_MAXLEN-1.
+        meta->Add(key, aiString(val));
+    };
+    addStr("Asset.Author", asset->author);
+    addStr("Asset.Description", asset->description);
+    addStr("Asset.Copyright", asset->copyright);
+    addStr("Asset.License", asset->license);
+    if (alsoSourceCopyright && !asset->copyright.empty()) {
+        addStr(AI_METADATA_SOURCE_COPYRIGHT, asset->copyright);
+    }
+}
+
 void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file,
         const char *blenderVersion) {
     ConversionData conv(file);
@@ -5035,6 +5061,7 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     }
 
     // C0-S8 sidecars (doc/Sidecar.md BLEND). Always emit scene bag when Scene DNA loaded.
+    // Typed: header SourceAsset_* + optional Scene Asset Browser fields (AssetMetaData).
     if (out->mMetaData == nullptr) {
         out->mMetaData = new aiMetadata();
     }
@@ -5616,6 +5643,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         AttachSceneSidecar(out, ssc);
     }
     out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString("blend"));
+    // Presence: DNA AssetMetaData on Scene ID (not Text datablocks).
+    BlendEmitAssetBrowserMetadata(out->mMetaData, in.id.asset_data.get(), true);
     const bool flag = true;
     if (aiSceneHasMeshSidecar(out)) {
         out->mMetaData->Add(AI_METADATA_MESH_SIDECAR, flag);
@@ -7011,6 +7040,9 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
     // apply modifiers
     modifier_cache->ApplyModifiers(*node, conv_data, in, *obj);
     CollectBlendPhysicsModifiers(obj, conv_data, node.get());
+
+    // Asset Browser fields on Object ID (Presence).
+    BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);
 
     return node.release();
 }
