@@ -211,6 +211,10 @@ namespace Blender {
         std::vector<PhysicsInvNode> physicsSolidifyNodes;
         /** 0al: Mesh Cache / Mesh Sequence Cache path inventory (Physics bag). */
         std::vector<PhysicsInvNode> meshCacheNodes;
+        /** Collision modifier + Object.pd (PartDeflect) inventory. */
+        std::vector<PhysicsInvNode> physicsCollisionNodes;
+        /** Curve modifier (deform along curve) inventory. */
+        std::vector<PhysicsInvNode> physicsCurveNodes;
         /** Modifier-prop / pointer anim channels for aiAnimationSidecar (C5). */
         struct AnimPointerChannel {
             std::string actionName;

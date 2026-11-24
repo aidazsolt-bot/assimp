@@ -96,8 +96,33 @@ void Structure::Convert<FluidFlowSettings>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<FluidEffectorSettings>(
+        FluidEffectorSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<FluidModifierData>(
         FluidModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<SmokeModifierData>(
+        SmokeModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<CollisionModifierData>(
+        CollisionModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<CurveModifierData>(
+        CurveModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<PartDeflect>(
+        PartDeflect &dest,
         const FileDatabase &db) const;
 
 template <>

@@ -922,6 +922,30 @@ struct FluidFlowSettings final : ElemBase {
             density(1.f), fuel_amount(1.f), temperature(1.f), type(Flow_Smoke), behavior(Behavior_Geometry) {}
 };
 
+/** Subset of DNA FluidEffectorSettings (fluid collision / guiding). */
+struct FluidEffectorSettings final : ElemBase {
+    enum EffectorType {
+        Type_Collision = 0,
+        Type_Guide = 1
+    };
+    enum GuideMode {
+        Guide_Max = 0,
+        Guide_Min = 1,
+        Guide_Override = 2,
+        Guide_Averaged = 3
+    };
+
+    float surface_distance WARN;
+    int flags WARN;
+    int subframes WARN;
+    short type WARN; // eFluidEffector_Type
+    float vel_multi WARN;
+    short guide_mode WARN;
+
+    FluidEffectorSettings() :
+            surface_distance(0.f), flags(0), subframes(0), type(Type_Collision), vel_multi(1.f), guide_mode(Guide_Override) {}
+};
+
 struct FluidModifierData final : SharedModifierData {
     enum FluidModifierType {
         MOD_FLUID_TYPE_DOMAIN = (1 << 0),
@@ -931,11 +955,52 @@ struct FluidModifierData final : SharedModifierData {
 
     std::shared_ptr<FluidDomainSettings> domain;
     std::shared_ptr<FluidFlowSettings> flow;
+    std::shared_ptr<FluidEffectorSettings> effector;
     float time WARN;
     int type WARN; // FluidModifierType bitflags
 
     FluidModifierData() :
             time(0.f), type(0) {}
+};
+
+/**
+ * Legacy DNA SmokeModifierData (pre-Manta FluidModifier).
+ * Only `type` bitflags survive in modern SDNA - map to fluid_role Presence.
+ */
+struct SmokeModifierData final : SharedModifierData {
+    int type WARN; // same Domain/Flow/Effec bits as FluidModifierType
+    SmokeModifierData() :
+            type(0) {}
+};
+
+/**
+ * DNA CollisionModifierData - mostly runtime BVH; Presence = modifier on object.
+ * Authored particle/cloth collision params live on Object.pd (PartDeflect).
+ */
+struct CollisionModifierData final : SharedModifierData {
+    CollisionModifierData() = default;
+};
+
+/** Subset of DNA CurveModifierData - deform-along-curve bind. */
+struct CurveModifierData final : SharedModifierData {
+    enum DefAxis {
+        Axis_PosX = 1,
+        Axis_PosY = 2,
+        Axis_PosZ = 3,
+        Axis_NegX = 4,
+        Axis_NegY = 5,
+        Axis_NegZ = 6
+    };
+
+    std::weak_ptr<Object> object;
+    char name[64]; // vertex group
+    short defaxis;
+    short flag;
+
+    CurveModifierData() :
+            defaxis(Axis_PosX), flag(0) {
+        name[0] = '\0';
+    }
 };
 
 /** Subset of DNA OceanModifierData - Water Caustics / ocean waves. */
@@ -1040,6 +1105,32 @@ struct MeshSeqCacheModifierData final : SharedModifierData {
             read_flag(0), velocity_scale(1.f) {
         object_path[0] = '\0';
     }
+};
+
+/**
+ * DNA PartDeflect (Object.pd) - Collision / Force Field authored settings.
+ * deflect!=0 => mesh collides with particles/cloth/softbody.
+ */
+struct PartDeflect final : ElemBase {
+    int flag WARN;
+    short deflect WARN;
+    short forcefield WARN;
+    short falloff WARN;
+    short shape WARN;
+    float f_strength WARN;
+    float pdef_damp WARN;
+    float pdef_rdamp WARN;
+    float pdef_perm WARN;
+    float pdef_frict WARN;
+    float pdef_rfrict WARN;
+    float pdef_stickness WARN;
+    float pdef_sbdamp WARN;
+    float pdef_sbift WARN;
+    float pdef_sboft WARN;
+    float pdef_cfrict WARN;
+
+    PartDeflect() :
+            flag(0), deflect(0), forcefield(0), falloff(0), shape(0), f_strength(0.f), pdef_damp(0.f), pdef_rdamp(0.f), pdef_perm(0.f), pdef_frict(0.f), pdef_rfrict(0.f), pdef_stickness(0.f), pdef_sbdamp(0.f), pdef_sbift(0.f), pdef_sboft(0.f), pdef_cfrict(0.f) {}
 };
 
 /** Subset of DNA SoftBody (Object.soft). */
@@ -1261,6 +1352,8 @@ struct ParticleSettings final : ElemBase {
      * particle_size * hair_length.
      */
     float normfac WARN;
+    float path_start WARN;
+    float path_end WARN;
     bool hasNormfac WARN;
     bool hasUserjit WARN;
     bool hasGridRes WARN;
@@ -1271,6 +1364,23 @@ struct ParticleSettings final : ElemBase {
     bool hasPhystype WARN;
     bool hasDrawAs WARN;
     bool hasDraw WARN;
+    bool hasPathStart WARN;
+    bool hasPathEnd WARN;
+    /** DNA eParticleType labels for Host (PART_EMITTER=0, PART_HAIR=2, …). */
+    enum PartType {
+        Type_Emitter = 0,
+        Type_Hair = 2,
+        Type_Fluid = 3,
+        Type_FluidFlip = 4,
+        Type_FluidSpray = 5,
+        Type_FluidBubble = 6,
+        Type_FluidFoam = 7,
+        Type_FluidTracer = 8,
+        Type_FluidSprayFoam = 9,
+        Type_FluidSprayBubble = 10,
+        Type_FluidFoamBubble = 11,
+        Type_FluidSprayFoamBubble = 12
+    };
     /** Blender 2.8 DNA name; newer files may use instance_collection. */
     std::shared_ptr<Collection> dup_group WARN;
     ListBase dupliweights WARN; // ParticleDupliWeight
@@ -1311,6 +1421,8 @@ struct ParticleSettings final : ElemBase {
             randlength(0.f),
             hair_step(5),
             normfac(1.f),
+            path_start(0.f),
+            path_end(1.f),
             hasNormfac(false),
             hasUserjit(false),
             hasGridRes(false),
@@ -1320,7 +1432,9 @@ struct ParticleSettings final : ElemBase {
             hasHairStep(false),
             hasPhystype(false),
             hasDrawAs(false),
-            hasDraw(false) {}
+            hasDraw(false),
+            hasPathStart(false),
+            hasPathEnd(false) {}
 };
 
 /** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
@@ -1440,6 +1554,7 @@ struct Object final : ElemBase {
 
     ListBase modifiers;
     ListBase particlesystem; // ParticleSystem
+    std::shared_ptr<PartDeflect> pd; // Collision / force field
     std::shared_ptr<SoftBody> soft;
     std::shared_ptr<RigidBodyOb> rigidbody_object;
     std::shared_ptr<RigidBodyCon> rigidbody_constraint;
