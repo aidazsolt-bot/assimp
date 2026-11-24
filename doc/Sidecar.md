@@ -258,6 +258,18 @@ typed NotSupported (separate Curve DNA).
 
 `BLEND_physics_blast`: ExplodeModifier inventory (`index`/`settings`); Geometry Nodes fracture is listed under scene `skipped[]` (unevaluated - no invent chunks).
 
+### BLEND `srcVert` (DNA totvert map for MDD / Mesh Cache)
+
+Per `aiMesh` (after BLEND convert, **before** JoinVertices / other remap post-steps):
+
+| Field | Meaning |
+|---|---|
+| Mesh sidecar buffer `srcVert` | `uint32[mNumVertices]`: `srcVert[iAssimp] = iDna` (`iDna` in `[0, totvert)`) |
+| JSON `BLEND_srcVert` | `buffer`/`count`/`totvert`/`componentType=unsignedInt` when map resolved |
+
+UV-splits: several `iAssimp` share the same `iDna`. Host: `pos[iAssimp] = MDD[frame][srcVert[iAssimp]]`.
+No invent; omit buffer if unresolved. Disable `aiProcess_JoinVertices` (and similar remaps) when consuming this map.
+
 ### BLEND `BLEND_mesh_cache` (0al — paths only)
 
 Mesh Cache / Mesh Sequence Cache inventory in the **Physics** bag (`BLEND_mesh_cache.nodes[]`).

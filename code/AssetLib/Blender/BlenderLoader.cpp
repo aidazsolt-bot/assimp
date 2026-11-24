@@ -5595,13 +5595,34 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     const float fps = (fpsDenom != 0.f) ? (in.r.frs_sec / fpsDenom) : in.r.frs_sec;
     const float metersPerUnit = (in.unit.scale_length > 0.f) ? in.unit.scale_length : 1.f;
 
-    // S1 mesh CustomData layers
+    // S1 mesh CustomData layers + DNA srcVert buffer (MDD / Mesh Cache bind).
     for (unsigned int mi = 0; mi < out->mNumMeshes; ++mi) {
-        if (mi >= conv.meshSidecarJson.size() || conv.meshSidecarJson[mi].empty()) {
+        const bool hasJson = mi < conv.meshSidecarJson.size() && !conv.meshSidecarJson[mi].empty();
+        const bool hasSrcVert = mi < conv.meshSrcVertDna.size() && !conv.meshSrcVertDna[mi].empty();
+        if (!hasJson && !hasSrcVert) {
             continue;
         }
         auto *sc = new aiMeshSidecar();
-        sc->mExtensionsJson = BlendDupJson(conv.meshSidecarJson[mi], sc->mExtensionsJsonLength);
+        if (hasJson) {
+            sc->mExtensionsJson = BlendDupJson(conv.meshSidecarJson[mi], sc->mExtensionsJsonLength);
+        }
+        if (hasSrcVert && out->mMeshes[mi] != nullptr &&
+                conv.meshSrcVertDna[mi].size() == static_cast<size_t>(out->mMeshes[mi]->mNumVertices)) {
+            const std::vector<int32_t> &sv = conv.meshSrcVertDna[mi];
+            sc->mNumBuffers = 1;
+            sc->mBuffers = new aiSidecarBuffer[1];
+            aiSidecarBuffer &buf = sc->mBuffers[0];
+            buf.mName.Set("srcVert");
+            buf.mNumElements = static_cast<unsigned>(sv.size());
+            buf.mNumComponents = 1;
+            buf.mComponentType = static_cast<unsigned>(aiSidecarComponentType_UnsignedInt);
+            buf.mByteLength = sv.size() * sizeof(uint32_t);
+            buf.mData = new uint8_t[buf.mByteLength];
+            uint32_t *dst = reinterpret_cast<uint32_t *>(buf.mData);
+            for (size_t i = 0; i < sv.size(); ++i) {
+                dst[i] = static_cast<uint32_t>(sv[i]);
+            }
+        }
         AttachMeshSidecar(out, mi, sc);
     }
 
@@ -6693,10 +6714,15 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
     temp->reserve(temp->size() + per_mat.size());
 
     std::map<size_t, size_t> mat_num_to_mesh_idx;
+    // Per sub-mesh: Assimp vertex order -> DNA totvert index (UV-split duplicates share iDna).
+    std::vector<std::vector<int32_t>> srcVertLocal;
+    srcVertLocal.resize(temp->size()); // preserve prior meshes' slots; new ones push below
     for (MyPair &it : per_mat) {
 
         mat_num_to_mesh_idx[it.first] = temp->size();
         temp->push_back(new aiMesh());
+        srcVertLocal.resize(temp->size());
+        srcVertLocal.back().reserve(per_mat_verts[it.first]);
 
         aiMesh *out = temp->back();
         out->mVertices = new aiVector3D[per_mat_verts[it.first]];
@@ -6759,6 +6785,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         // cannot be changed without breaking the entire
         // import process.
 
+        std::vector<int32_t> &srcVert = srcVertLocal[mat_num_to_mesh_idx[mf.mat_nr]];
         if (mf.v1 >= mesh->totvert) {
             ThrowException("Vertex index v1 out of range");
         }
@@ -6769,6 +6796,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->x = v->no[0];
         vn->y = v->no[1];
         vn->z = v->no[2];
+        srcVert.push_back(mf.v1);
         f.mIndices[0] = out->mNumVertices++;
         ++vo;
         ++vn;
@@ -6784,6 +6812,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->x = v->no[0];
         vn->y = v->no[1];
         vn->z = v->no[2];
+        srcVert.push_back(mf.v2);
         f.mIndices[1] = out->mNumVertices++;
         ++vo;
         ++vn;
@@ -6799,6 +6828,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->x = v->no[0];
         vn->y = v->no[1];
         vn->z = v->no[2];
+        srcVert.push_back(mf.v3);
         f.mIndices[2] = out->mNumVertices++;
         ++vo;
         ++vn;
@@ -6815,6 +6845,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
             vn->x = v->no[0];
             vn->y = v->no[1];
             vn->z = v->no[2];
+            srcVert.push_back(static_cast<int32_t>(mf.v4));
             f.mIndices[3] = out->mNumVertices++;
             ++vo;
             ++vn;
@@ -6865,6 +6896,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
             vn->x = v.no[0];
             vn->y = v.no[1];
             vn->z = v.no[2];
+            srcVertLocal[mat_num_to_mesh_idx[mf.mat_nr]].push_back(loop.v);
             f.mIndices[j] = out->mNumVertices++;
 
             ++vo;
@@ -7024,14 +7056,43 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         }
     }
 
-    // S1: stash CustomData layer inventory for mesh sidecars (attached after scene owns meshes).
+    // S1: stash CustomData layer inventory + DNA srcVert map for mesh sidecars.
     {
         const std::string layerJson = BuildBlendCustomDataLayersJson(mesh);
         if (conv_data.meshSidecarJson.size() < temp->size()) {
             conv_data.meshSidecarJson.resize(temp->size());
         }
+        if (conv_data.meshSrcVertDna.size() < temp->size()) {
+            conv_data.meshSrcVertDna.resize(temp->size());
+        }
         for (size_t mi = old; mi < temp->size(); ++mi) {
-            conv_data.meshSidecarJson[mi] = layerJson;
+            const aiMesh *am = temp[mi];
+            const std::vector<int32_t> &sv = srcVertLocal[mi];
+            std::ostringstream j;
+            // Merge BLEND_srcVert Presence into CustomData JSON object.
+            const std::string &base = layerJson;
+            if (base.size() >= 2 && base.back() == '}') {
+                j << base.substr(0, base.size() - 1);
+            } else {
+                j << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"";
+            }
+            if (!sv.empty() && am != nullptr && sv.size() == static_cast<size_t>(am->mNumVertices)) {
+                j << ",\"BLEND_srcVert\":{"
+                  << "\"buffer\":\"srcVert\""
+                  << ",\"count\":" << sv.size()
+                  << ",\"totvert\":" << mesh->totvert
+                  << ",\"componentType\":\"unsignedInt\""
+                  << ",\"positionsSpace\":\"meshLocal\""
+                  << '}';
+                conv_data.meshSrcVertDna[mi] = sv;
+            } else if (am != nullptr && am->mNumVertices > 0) {
+                // Honesty: expanded verts without a full DNA map (should not happen).
+                j << ",\"BLEND_srcVert\":{\"arraysResolved\":false}";
+                conv_data.skippedCategories.push_back(
+                        std::string("BLEND_srcVert_unresolved:") + (mesh->id.name + 2));
+            }
+            j << '}';
+            conv_data.meshSidecarJson[mi] = j.str();
         }
     }
 
