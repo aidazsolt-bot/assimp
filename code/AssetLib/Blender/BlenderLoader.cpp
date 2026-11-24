@@ -61,6 +61,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/scene.h>
 #include <assimp/sidecar.h>
 
+#include <assimp/DefaultIOSystem.h>
 #include <assimp/MemoryIOWrapper.h>
 #include <assimp/StreamReader.h>
 #include <assimp/StringComparison.h>
@@ -5536,6 +5537,10 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     std::vector<std::shared_ptr<Image>> ownedPackedImages;
     BlendEmitAllPackedImages(conv, ownedPackedImages);
 
+    // Presence: emit every packed Image ID block, not only those reached via materials.
+    std::vector<std::shared_ptr<Image>> ownedPackedImages;
+    BlendEmitAllPackedImages(conv, ownedPackedImages);
+
     if (conv.meshes->size()) {
         out->mMeshes = new aiMesh *[out->mNumMeshes = static_cast<unsigned int>(conv.meshes->size())];
         std::copy(conv.meshes->begin(), conv.meshes->end(), out->mMeshes);
@@ -7657,6 +7662,9 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 
     // No Modifier:*/ParticleSystem:* marker children in typed hierarchy (Host 0af):
     // bind stays in Physics sidecar emitter/emitterIndex/system only.
+
+    // Asset Browser fields on Object ID (Presence).
+    BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);
 
     // Asset Browser fields on Object ID (Presence).
     BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);
