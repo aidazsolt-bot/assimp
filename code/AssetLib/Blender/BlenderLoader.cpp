@@ -1508,6 +1508,22 @@ const Assimp::Blender::PackedFile *BlendImageGetPacked(const Assimp::Blender::Im
     return nullptr;
 }
 
+/** Blender relative file paths start with "//". Drop that prefix and map remaining '/' to the OS separator. */
+std::string BlendNormalizeRelativePath(const char *path) {
+    if (path == nullptr) {
+        return {};
+    }
+    std::string out(path);
+    if (out.size() >= 2 && out[0] == '/' && out[1] == '/') {
+        out.erase(0, 2);
+        const char sep = Assimp::DefaultIOSystem().getOsSeparator();
+        if (sep != '/') {
+            std::replace(out.begin(), out.end(), '/', sep);
+        }
+    }
+    return out;
+}
+
 /** Path for format hint / logging: Image.filepath|name, else ImagePackedFile.filepath, else ID name. */
 const char *BlendImageDisplayPath(const Assimp::Blender::Image *img) {
     using namespace Assimp::Blender;
@@ -1578,9 +1594,12 @@ bool BlendEnsureEmbeddedPackedTexture(const Assimp::Blender::Image *img,
     conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
     curTex->pcData = reinterpret_cast<aiTexel *>(ch);
     if (dispPath[0] != '\0') {
-        curTex->mFilename = aiString(dispPath);
+        const std::string filePath = BlendNormalizeRelativePath(dispPath);
+        if (!filePath.empty()) {
+            curTex->mFilename = aiString(filePath);
+        }
     }
-    ASSIMP_LOG_INFO("Reading embedded texture, original file was ", dispPath);
+    ASSIMP_LOG_INFO("Reading embedded texture, original file was ", curTex->mFilename.C_Str());
     if (outIndex) {
         *outIndex = texIndex;
     }
@@ -2832,7 +2851,7 @@ bool BlendEnsureEmbeddedImage(const Assimp::Blender::Image *img, Assimp::Blender
     if (dispPath == nullptr || dispPath[0] == '\0') {
         return false;
     }
-    outName = aiString(dispPath);
+    outName = aiString(BlendNormalizeRelativePath(dispPath));
     if (outEmbedIndex != nullptr) {
         *outEmbedIndex = -1;
     }
@@ -5537,10 +5556,6 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     std::vector<std::shared_ptr<Image>> ownedPackedImages;
     BlendEmitAllPackedImages(conv, ownedPackedImages);
 
-    // Presence: emit every packed Image ID block, not only those reached via materials.
-    std::vector<std::shared_ptr<Image>> ownedPackedImages;
-    BlendEmitAllPackedImages(conv, ownedPackedImages);
-
     if (conv.meshes->size()) {
         out->mMeshes = new aiMesh *[out->mNumMeshes = static_cast<unsigned int>(conv.meshes->size())];
         std::copy(conv.meshes->begin(), conv.meshes->end(), out->mMeshes);
@@ -7662,9 +7677,6 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 
     // No Modifier:*/ParticleSystem:* marker children in typed hierarchy (Host 0af):
     // bind stays in Physics sidecar emitter/emitterIndex/system only.
-
-    // Asset Browser fields on Object ID (Presence).
-    BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);
 
     // Asset Browser fields on Object ID (Presence).
     BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);
