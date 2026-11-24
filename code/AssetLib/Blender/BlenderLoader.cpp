@@ -4643,6 +4643,66 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             // No domain_type on legacy Smoke DNA - Host: smoke bag => gas solver.
             settings << ",\"source\":\"SmokeModifierData\",\"fluid_role\":\"" << role << '"';
         }
+        // Legacy Elbeem Fluidsim (Blender 2.x) - FluidsimSettings.type bits.
+        if (dat.type == ModifierData::eModifierType_Fluidsim &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "FluidsimModifierData") == 0) {
+            const auto *fs = static_cast<const FluidsimModifierData *>(cur);
+            settings << ",\"source\":\"FluidsimModifierData\"";
+            if (fs->fss) {
+                const FluidsimSettings &fss = *fs->fss;
+                const char *role = "unknown";
+                // Prefer specific roles when multiple bits (DNA can OR ENABLE).
+                if (fss.type & FluidsimSettings::Type_Domain) {
+                    role = "domain";
+                } else if (fss.type & FluidsimSettings::Type_Inflow) {
+                    role = "inflow";
+                } else if (fss.type & FluidsimSettings::Type_Outflow) {
+                    role = "outflow";
+                } else if (fss.type & FluidsimSettings::Type_Obstacle) {
+                    role = "obstacle";
+                } else if (fss.type & FluidsimSettings::Type_Fluid) {
+                    role = "flow"; // Elbeem fluid body
+                } else if (fss.type & FluidsimSettings::Type_Particle) {
+                    role = "particle";
+                } else if (fss.type & FluidsimSettings::Type_Control) {
+                    role = "control";
+                }
+                settings << ",\"fluid_role\":\"" << role << '"';
+                settings << ",\"fluidsim_type\":" << static_cast<int>(fss.type);
+                // Elbeem is liquid surface sim - domain_type only when Domain bit set.
+                if (fss.type & FluidsimSettings::Type_Domain) {
+                    settings << ",\"domain_type\":\"liquid\"";
+                }
+                settings << ",\"resolutionxyz\":" << fss.resolutionxyz
+                         << ",\"previewresxyz\":" << fss.previewresxyz
+                         << ",\"realsize\":" << fss.realsize
+                         << ",\"viscosityValue\":" << fss.viscosityValue
+                         << ",\"animStart\":" << fss.animStart
+                         << ",\"animEnd\":" << fss.animEnd
+                         << ",\"bakeStart\":" << fss.bakeStart
+                         << ",\"bakeEnd\":" << fss.bakeEnd
+                         << ",\"frameOffset\":" << fss.frameOffset
+                         << ",\"flag\":" << fss.flag
+                         << ",\"typeFlags\":" << fss.typeFlags;
+                if (fss.iniVelx != 0.f || fss.iniVely != 0.f || fss.iniVelz != 0.f) {
+                    settings << ",\"iniVel\":[" << fss.iniVelx << ',' << fss.iniVely << ','
+                             << fss.iniVelz << ']';
+                }
+                if (fss.surfdataPath[0] != '\0') {
+                    settings << ",\"cache\":{\"directory\":\"" << BlendJsonEscape(fss.surfdataPath)
+                             << "\",\"frame_start\":" << fss.bakeStart
+                             << ",\"frame_end\":" << fss.bakeEnd << '}';
+                    if (fss.surfdataPath[0] == '/' && fss.surfdataPath[1] == '/') {
+                        settings << ",\"cachePathBlendRelative\":true";
+                    }
+                }
+            } else {
+                conv.skippedCategories.push_back(
+                        std::string("BLEND_fluidsim_no_settings:") + (objName ? objName : "?") + "/" +
+                        dat.name);
+            }
+        }
         if (dat.type == ModifierData::eModifierType_Collision &&
                 cur->dna_type != nullptr &&
                 std::strcmp(cur->dna_type, "CollisionModifierData") == 0) {

@@ -236,11 +236,12 @@ Fluid / smoke nodes additionally bind the visual mesh:
 | `meshes` | `aiScene::mMeshes` indices on that node |
 | `materialIndex` / `materialName` | Primary (`meshes[0]`) material |
 | `materials[]` | Unique `{index,name}` for all meshes on the node |
-| `settings.fluid_role` | `domain` \| `flow` \| `inflow` \| `outflow` \| `obstacle` \| `collision` \| `guide` |
-| `settings.domain_type` | authored string `gas` \| `liquid` (omit if unread) |
-| `settings.cache` | directory + frame range when Domain DNA present |
+| `settings.fluid_role` | `domain` \| `flow` \| `inflow` \| `outflow` \| `obstacle` \| `collision` \| `guide` \| (`particle`/`control` Elbeem) |
+| `settings.domain_type` | authored string `gas` \| `liquid` (omit if unread); Elbeem Domain → `liquid` |
+| `settings.cache` | directory + frame range when Domain/Fluidsim `surfdataPath` present |
 | `settings.flow` | `type` + `flow_type` (`smoke`\|`fire`\|`smoke_fire`\|`liquid`) + density/fuel/temp/behavior |
 | `settings.effector` | FluidEffector DNA (surface_distance, guide_mode, …) when EFFEC |
+| legacy Fluidsim | `source:FluidsimModifierData` + `fluidsim_type` bits + bake/res/viscosity Presence |
 
 `BLEND_physics_collision`: Collision modifier bind and/or `Object.pd` (PartDeflect) friction/damping Presence — no Name-Score.
 

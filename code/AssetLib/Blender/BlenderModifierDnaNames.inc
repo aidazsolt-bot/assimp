@@ -26,7 +26,7 @@
     "ParticleInstanceModifierData",
     "ExplodeModifierData",
     "MultiresModifierData",
-    "FluidsimModifierData",
+    /* FluidsimModifierData: specialized (Elbeem FluidsimSettings). */
     /* SmokeModifierData: specialized (legacy type -> fluid_role). */
     "ShrinkwrapModifierData",
     "SimpleDeformModifierData",

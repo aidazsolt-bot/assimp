@@ -111,6 +111,16 @@ void Structure::Convert<SmokeModifierData>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<FluidsimSettings>(
+        FluidsimSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<FluidsimModifierData>(
+        FluidsimModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<CollisionModifierData>(
         CollisionModifierData &dest,
         const FileDatabase &db) const;
