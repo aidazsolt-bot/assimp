@@ -3716,6 +3716,112 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             if (p.hasPathEnd) {
                 partJson << ",\"path_end\":" << p.path_end;
             }
+            // C14: DNA HairKey paths when ParticleData.hair[] was written (no invent / no Depsgraph).
+            {
+                size_t strandWithKeys = 0;
+                size_t totalKeys = 0;
+                for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                    const size_t nk = ps->particles[pi].hair.size();
+                    if (nk == 0) {
+                        continue;
+                    }
+                    ++strandWithKeys;
+                    totalKeys += nk;
+                }
+                if (strandWithKeys > 0 && totalKeys > 0) {
+                    partJson << ",\"hairPaths\":{\"source\":\"ParticleData.hair\""
+                             << ",\"arraysResolved\":true"
+                             << ",\"positionsSpace\":\"emitterLocal\""
+                             << ",\"strandCount\":" << strandWithKeys
+                             << ",\"keyCount\":" << totalKeys
+                             << ",\"keyCounts\":[";
+                    bool firstKc = true;
+                    for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                        const size_t nk = ps->particles[pi].hair.size();
+                        if (nk == 0) {
+                            continue;
+                        }
+                        if (!firstKc) {
+                            partJson << ',';
+                        }
+                        firstKc = false;
+                        partJson << nk;
+                    }
+                    partJson << "],\"positions\":[";
+                    bool firstPos = true;
+                    bool anyTime = false;
+                    bool anyWorld = false;
+                    for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                        const ParticleData &pd = ps->particles[pi];
+                        for (size_t ki = 0; ki < pd.hair.size(); ++ki) {
+                            if (!firstPos) {
+                                partJson << ',';
+                            }
+                            firstPos = false;
+                            const HairKey &hk = pd.hair[ki];
+                            partJson << hk.co[0] << ',' << hk.co[1] << ',' << hk.co[2];
+                            anyTime = true;
+                            if (hk.hasWorldCo) {
+                                anyWorld = true;
+                            }
+                        }
+                    }
+                    partJson << ']';
+                    // times[] always parallel to positions when any HairKey was converted.
+                    if (anyTime) {
+                        partJson << ",\"times\":[";
+                        bool firstT = true;
+                        for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                            const ParticleData &pd = ps->particles[pi];
+                            for (size_t ki = 0; ki < pd.hair.size(); ++ki) {
+                                if (!firstT) {
+                                    partJson << ',';
+                                }
+                                firstT = false;
+                                partJson << pd.hair[ki].time;
+                            }
+                        }
+                        partJson << ']';
+                    }
+                    // world_co only when every emitted key has SDNA world_co (parallel array).
+                    if (anyWorld) {
+                        bool allWorld = true;
+                        for (size_t pi = 0; pi < ps->particles.size() && allWorld; ++pi) {
+                            const ParticleData &pd = ps->particles[pi];
+                            for (size_t ki = 0; ki < pd.hair.size(); ++ki) {
+                                if (!pd.hair[ki].hasWorldCo) {
+                                    allWorld = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (allWorld) {
+                            partJson << ",\"worldPositions\":[";
+                            bool firstW = true;
+                            for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                                const ParticleData &pd = ps->particles[pi];
+                                for (size_t ki = 0; ki < pd.hair.size(); ++ki) {
+                                    if (!firstW) {
+                                        partJson << ',';
+                                    }
+                                    firstW = false;
+                                    const HairKey &hk = pd.hair[ki];
+                                    partJson << hk.world_co[0] << ',' << hk.world_co[1] << ','
+                                             << hk.world_co[2];
+                                }
+                            }
+                            partJson << "],\"worldPositionsSpace\":\"world\"";
+                        }
+                    }
+                    partJson << '}';
+                } else if (p.type == ParticleSettings::Type_Hair) {
+                    // Honesty: hair typed but no HairKey DATA in file (runtime/pathcache only).
+                    partJson << ",\"hairPathsResolved\":false";
+                    conv.skippedCategories.push_back(
+                            std::string("BLEND_C14_hair_paths_unresolved:") +
+                            (objName ? objName : "?") + "/" + (psName ? psName : "?"));
+                }
+            }
             if (p.id.name[0] != '\0') {
                 partJson << ",\"settings_name\":\"" << BlendJsonEscape(p.id.name + 2) << '"';
             }

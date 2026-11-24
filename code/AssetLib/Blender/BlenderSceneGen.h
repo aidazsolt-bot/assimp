@@ -196,6 +196,11 @@ void Structure::Convert<ParticleKey>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<HairKey>(
+        HairKey &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<ParticleData>(
         ParticleData &dest,
         const FileDatabase &db) const;

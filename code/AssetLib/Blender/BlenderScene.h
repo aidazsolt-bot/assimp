@@ -1339,13 +1339,32 @@ struct ParticleKey final : ElemBase {
     }
 };
 
+/** DNA HairKey (ParticleData.hair[]) - C14 hair path vertices when written to the blend. */
+struct HairKey final : ElemBase {
+    float co[3] WARN;
+    float time WARN;
+    float weight WARN;
+    float world_co[3] WARN;
+    bool hasWorldCo WARN;
+
+    HairKey() :
+            time(0.f), weight(1.f), hasWorldCo(false) {
+        co[0] = co[1] = co[2] = 0.f;
+        world_co[0] = world_co[1] = world_co[2] = 0.f;
+    }
+};
+
 /** Subset of DNA ParticleData (per-particle state when written to the blend). */
 struct ParticleData final : ElemBase {
     ParticleKey state WARN;
     float size WARN;
+    /** Hair path keys (Presence: only when *hair DATA block resolves). */
+    vector<HairKey> hair WARN;
+    int totkey WARN;
+    bool hasTotkey WARN;
 
     ParticleData() :
-            size(0.f) {}
+            size(0.f), totkey(0), hasTotkey(false) {}
 };
 
 /** DNA ParticleDupliWeight (ParticleSettings.dupliweights / instance_weights). */
