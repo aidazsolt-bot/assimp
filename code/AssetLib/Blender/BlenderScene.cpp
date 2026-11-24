@@ -113,6 +113,7 @@ void Structure::Convert<Object>(
     ReadFieldPtr<ErrorPolicy_Igno>(dest.adt, "*adt", db);
     ReadField<ErrorPolicy_Igno>(dest.modifiers, "modifiers", db);
     ReadField<ErrorPolicy_Igno>(dest.particlesystem, "particlesystem", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.pd, "*pd", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.soft, "*soft", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_object, "*rigidbody_object", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_constraint, "*rigidbody_constraint", db);
@@ -542,14 +543,89 @@ void Structure::Convert<FluidFlowSettings>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure::Convert<FluidEffectorSettings>(
+        FluidEffectorSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.surface_distance, "surface_distance", db);
+    ReadField<ErrorPolicy_Igno>(dest.flags, "flags", db);
+    ReadField<ErrorPolicy_Igno>(dest.subframes, "subframes", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.vel_multi, "vel_multi", db);
+    ReadField<ErrorPolicy_Igno>(dest.guide_mode, "guide_mode", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure::Convert<FluidModifierData>(
         FluidModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.domain, "*domain", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.flow, "*flow", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.effector, "*effector", db);
     ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
     ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<SmokeModifierData>(
+        SmokeModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<CollisionModifierData>(
+        CollisionModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<CurveModifierData>(
+        CurveModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    {
+        std::shared_ptr<Object> curveOb;
+        ReadFieldPtr<ErrorPolicy_Warn>(curveOb, "*object", db);
+        dest.object = curveOb;
+    }
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadField<ErrorPolicy_Igno>(dest.defaxis, "defaxis", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<PartDeflect>(
+        PartDeflect &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.deflect, "deflect", db);
+    ReadField<ErrorPolicy_Igno>(dest.forcefield, "forcefield", db);
+    ReadField<ErrorPolicy_Igno>(dest.falloff, "falloff", db);
+    ReadField<ErrorPolicy_Igno>(dest.shape, "shape", db);
+    ReadField<ErrorPolicy_Igno>(dest.f_strength, "f_strength", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_damp, "pdef_damp", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_rdamp, "pdef_rdamp", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_perm, "pdef_perm", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_frict, "pdef_frict", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_rfrict, "pdef_rfrict", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_stickness, "pdef_stickness", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_sbdamp, "pdef_sbdamp", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_sbift, "pdef_sbift", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_sboft, "pdef_sboft", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_cfrict, "pdef_cfrict", db);
     db.reader->IncPtr(size);
 }
 
@@ -847,6 +923,14 @@ void Structure::Convert<ParticleSettings>(
     dest.hasNormfac = (Get("normfac") != nullptr);
     if (dest.hasNormfac) {
         ReadField<ErrorPolicy_Igno>(dest.normfac, "normfac", db);
+    }
+    dest.hasPathStart = (Get("path_start") != nullptr);
+    if (dest.hasPathStart) {
+        ReadField<ErrorPolicy_Igno>(dest.path_start, "path_start", db);
+    }
+    dest.hasPathEnd = (Get("path_end") != nullptr);
+    if (dest.hasPathEnd) {
+        ReadField<ErrorPolicy_Igno>(dest.path_end, "path_end", db);
     }
     if (Get("*instance_collection") != nullptr) {
         ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*instance_collection", db);
@@ -2091,12 +2175,13 @@ void DNA::RegisterConverters() {
     converters["SolidifyModifierData"] = DNA::FactoryPair(&Structure::Allocate<SolidifyModifierData>, &Structure::Convert<SolidifyModifierData>);
     converters["FluidDomainSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidDomainSettings>, &Structure::Convert<FluidDomainSettings>);
     converters["FluidFlowSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidFlowSettings>, &Structure::Convert<FluidFlowSettings>);
+    converters["FluidEffectorSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidEffectorSettings>, &Structure::Convert<FluidEffectorSettings>);
     converters["ClothModifierData"] = DNA::FactoryPair(&Structure::Allocate<ClothModifierData>, &Structure::Convert<ClothModifierData>);
     converters["ClothSimSettings"] = DNA::FactoryPair(&Structure::Allocate<ClothSimSettings>, &Structure::Convert<ClothSimSettings>);
     converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
     {
         // All blender.git *ModifierData DNA names except Subsurf/Mirror/Fluid/Cloth/
-        // MeshCache/MeshSeqCache (specialized).
+        // MeshCache/MeshSeqCache/Collision/Curve (specialized).
         static const char *const kGenericModifierDnaNames[] = {
 #include "BlenderModifierDnaNames.inc"
         };
@@ -2111,6 +2196,10 @@ void DNA::RegisterConverters() {
     converters["CacheFile"] = DNA::FactoryPair(&Structure::Allocate<CacheFile>, &Structure::Convert<CacheFile>);
     converters["MeshCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshCacheModifierData>, &Structure::Convert<MeshCacheModifierData>);
     converters["MeshSeqCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshSeqCacheModifierData>, &Structure::Convert<MeshSeqCacheModifierData>);
+    converters["CollisionModifierData"] = DNA::FactoryPair(&Structure::Allocate<CollisionModifierData>, &Structure::Convert<CollisionModifierData>);
+    converters["CurveModifierData"] = DNA::FactoryPair(&Structure::Allocate<CurveModifierData>, &Structure::Convert<CurveModifierData>);
+    converters["SmokeModifierData"] = DNA::FactoryPair(&Structure::Allocate<SmokeModifierData>, &Structure::Convert<SmokeModifierData>);
+    converters["PartDeflect"] = DNA::FactoryPair(&Structure::Allocate<PartDeflect>, &Structure::Convert<PartDeflect>);
     converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
     converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
     converters["RigidBodyCon"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyCon>, &Structure::Convert<RigidBodyCon>);

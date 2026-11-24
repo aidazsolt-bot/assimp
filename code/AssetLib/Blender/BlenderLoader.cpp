@@ -3952,6 +3952,33 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         BlendPushPhysicsInv(conv.physicsSoftNodes, objName, softJson.str());
     }
 
+    // Collision / Force Field authored on Object.pd (PartDeflect) - Presence only.
+    if (obj->pd && (obj->pd->deflect != 0 || obj->pd->forcefield != 0)) {
+        const PartDeflect &pd = *obj->pd;
+        std::ostringstream colJson;
+        colJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                << "\",\"type\":\"collision\",\"settings\":{"
+                << "\"source\":\"Object.pd\""
+                << ",\"deflect\":" << static_cast<int>(pd.deflect)
+                << ",\"forcefield\":" << static_cast<int>(pd.forcefield)
+                << ",\"flag\":" << pd.flag
+                << ",\"falloff\":" << static_cast<int>(pd.falloff)
+                << ",\"shape\":" << static_cast<int>(pd.shape)
+                << ",\"f_strength\":" << pd.f_strength
+                << ",\"pdef_damp\":" << pd.pdef_damp
+                << ",\"pdef_rdamp\":" << pd.pdef_rdamp
+                << ",\"pdef_perm\":" << pd.pdef_perm
+                << ",\"pdef_frict\":" << pd.pdef_frict
+                << ",\"pdef_rfrict\":" << pd.pdef_rfrict
+                << ",\"pdef_stickness\":" << pd.pdef_stickness
+                << ",\"pdef_sbdamp\":" << pd.pdef_sbdamp
+                << ",\"pdef_sbift\":" << pd.pdef_sbift
+                << ",\"pdef_sboft\":" << pd.pdef_sboft
+                << ",\"pdef_cfrict\":" << pd.pdef_cfrict
+                << "}}";
+        BlendPushPhysicsInv(conv.physicsCollisionNodes, objName, colJson.str());
+    }
+
     // Rigid Body DNA -> BLEND bag + KHR-shaped nodes for Host Bullet/PhysX.
     if (obj->rigidbody_object) {
         const RigidBodyOb &rb = *obj->rigidbody_object;
@@ -4121,6 +4148,41 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                      << ",\"seed\":" << ps->seed
                      << ",\"jitfac\":" << p.jitfac
                      << ",\"flag\":" << p.flag;
+            // Presence: DNA eParticleType -> Host label (hair / fluid secondary / emitter).
+            {
+                const char *partKind = nullptr;
+                switch (p.type) {
+                case ParticleSettings::Type_Emitter: partKind = "emitter"; break;
+                case ParticleSettings::Type_Hair: partKind = "hair"; break;
+                case ParticleSettings::Type_Fluid: partKind = "fluid"; break;
+                case ParticleSettings::Type_FluidFlip: partKind = "fluid_flip"; break;
+                case ParticleSettings::Type_FluidSpray: partKind = "fluid_spray"; break;
+                case ParticleSettings::Type_FluidBubble: partKind = "fluid_bubble"; break;
+                case ParticleSettings::Type_FluidFoam: partKind = "fluid_foam"; break;
+                case ParticleSettings::Type_FluidTracer: partKind = "fluid_tracer"; break;
+                case ParticleSettings::Type_FluidSprayFoam: partKind = "fluid_sprayfoam"; break;
+                case ParticleSettings::Type_FluidSprayBubble: partKind = "fluid_spraybubble"; break;
+                case ParticleSettings::Type_FluidFoamBubble: partKind = "fluid_foambubble"; break;
+                case ParticleSettings::Type_FluidSprayFoamBubble: partKind = "fluid_sprayfoambubble"; break;
+                default: break;
+                }
+                if (partKind != nullptr) {
+                    partJson << ",\"part_kind\":\"" << partKind << '"';
+                }
+            }
+            if (p.ren_as == ParticleSettings::Draw_Path) {
+                partJson << ",\"ren_as_kind\":\"path\"";
+            } else if (p.ren_as == ParticleSettings::Draw_Object) {
+                partJson << ",\"ren_as_kind\":\"object\"";
+            } else if (p.ren_as == ParticleSettings::Draw_Collection) {
+                partJson << ",\"ren_as_kind\":\"collection\"";
+            } else if (p.ren_as == ParticleSettings::Draw_Halo) {
+                partJson << ",\"ren_as_kind\":\"halo\"";
+            } else if (p.ren_as == ParticleSettings::Draw_Line) {
+                partJson << ",\"ren_as_kind\":\"line\"";
+            } else if (p.ren_as == ParticleSettings::Draw_None) {
+                partJson << ",\"ren_as_kind\":\"none\"";
+            }
             if (p.hasPhystype) {
                 partJson << ",\"phystype\":" << p.phystype;
             }
@@ -4152,6 +4214,12 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             if (p.hasNormfac) {
                 partJson << ",\"normfac\":" << p.normfac
                          << ",\"hair_length\":" << (p.normfac * 4.f);
+            }
+            if (p.hasPathStart) {
+                partJson << ",\"path_start\":" << p.path_start;
+            }
+            if (p.hasPathEnd) {
+                partJson << ",\"path_end\":" << p.path_end;
             }
             if (p.id.name[0] != '\0') {
                 partJson << ",\"settings_name\":\"" << BlendJsonEscape(p.id.name + 2) << '"';
@@ -4404,6 +4472,16 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             bagKey = "mesh_sequence_cache";
             wantMeshMatBind = true;
             break;
+        case ModifierData::eModifierType_Collision:
+            bag = &conv.physicsCollisionNodes;
+            bagKey = "collision";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_Curve:
+            bag = &conv.physicsCurveNodes;
+            bagKey = "curve";
+            wantMeshMatBind = true;
+            break;
         case ModifierData::eModifierType_Nodes: {
 
             // Blender 3+ often drives cloth/soft via Geometry Nodes - map by name heuristic.
@@ -4503,6 +4581,13 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 }
             } else if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_EFFEC) {
                 role = "obstacle";
+                if (fluid->effector) {
+                    if (fluid->effector->type == FluidEffectorSettings::Type_Guide) {
+                        role = "guide";
+                    } else if (fluid->effector->type == FluidEffectorSettings::Type_Collision) {
+                        role = "collision";
+                    }
+                }
             }
             settings << ",\"fluid_role\":\"" << role << "\"";
             if (fluid->domain) {
@@ -4517,11 +4602,72 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                          << ",\"type\":" << fluid->domain->cache_type << '}';
             }
             if (fluid->flow) {
-                settings << ",\"flow\":{\"type\":" << fluid->flow->type
-                         << ",\"behavior\":" << fluid->flow->behavior
+                const char *flowType = nullptr;
+                switch (fluid->flow->type) {
+                case FluidFlowSettings::Flow_Smoke: flowType = "smoke"; break;
+                case FluidFlowSettings::Flow_Fire: flowType = "fire"; break;
+                case FluidFlowSettings::Flow_SmokeFire: flowType = "smoke_fire"; break;
+                case FluidFlowSettings::Flow_Liquid: flowType = "liquid"; break;
+                default: break;
+                }
+                settings << ",\"flow\":{\"type\":" << fluid->flow->type;
+                if (flowType != nullptr) {
+                    settings << ",\"flow_type\":\"" << flowType << '"';
+                }
+                settings << ",\"behavior\":" << fluid->flow->behavior
                          << ",\"density\":" << fluid->flow->density
                          << ",\"fuel_amount\":" << fluid->flow->fuel_amount
                          << ",\"temperature\":" << fluid->flow->temperature << '}';
+            }
+            if (fluid->effector) {
+                settings << ",\"effector\":{\"type\":" << fluid->effector->type
+                         << ",\"surface_distance\":" << fluid->effector->surface_distance
+                         << ",\"flags\":" << fluid->effector->flags
+                         << ",\"subframes\":" << fluid->effector->subframes
+                         << ",\"vel_multi\":" << fluid->effector->vel_multi
+                         << ",\"guide_mode\":" << fluid->effector->guide_mode << '}';
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_Smoke &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "SmokeModifierData") == 0) {
+            const auto *smoke = static_cast<const SmokeModifierData *>(cur);
+            const char *role = "unknown";
+            if (smoke->type & FluidModifierData::MOD_FLUID_TYPE_DOMAIN) {
+                role = "domain";
+            } else if (smoke->type & FluidModifierData::MOD_FLUID_TYPE_FLOW) {
+                role = "flow";
+            } else if (smoke->type & FluidModifierData::MOD_FLUID_TYPE_EFFEC) {
+                role = "obstacle";
+            }
+            // No domain_type on legacy Smoke DNA - Host: smoke bag => gas solver.
+            settings << ",\"source\":\"SmokeModifierData\",\"fluid_role\":\"" << role << '"';
+        }
+        if (dat.type == ModifierData::eModifierType_Collision &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "CollisionModifierData") == 0) {
+            settings << ",\"source\":\"CollisionModifierData\"";
+            if (obj->pd) {
+                settings << ",\"deflect\":" << static_cast<int>(obj->pd->deflect)
+                         << ",\"pdef_cfrict\":" << obj->pd->pdef_cfrict
+                         << ",\"pdef_damp\":" << obj->pd->pdef_damp
+                         << ",\"pdef_frict\":" << obj->pd->pdef_frict;
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_Curve &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "CurveModifierData") == 0) {
+            const auto *cm = static_cast<const CurveModifierData *>(cur);
+            settings << ",\"source\":\"CurveModifierData\""
+                     << ",\"defaxis\":" << cm->defaxis
+                     << ",\"flag\":" << cm->flag;
+            if (cm->name[0] != '\0') {
+                settings << ",\"vgroup\":\"" << BlendJsonEscape(cm->name) << '"';
+            }
+            if (std::shared_ptr<Object> curveOb = cm->object.lock()) {
+                if (curveOb->id.name[0] != '\0') {
+                    settings << ",\"curveObject\":\"" << BlendJsonEscape(curveOb->id.name + 2) << '"';
+                }
             }
         }
 
@@ -5330,6 +5476,7 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
                          !conv.physicsJointNodes.empty() || !conv.physicsBlastNodes.empty() ||
                          !conv.physicsOceanNodes.empty() || !conv.physicsDynamicPaintNodes.empty() ||
                          !conv.meshCacheNodes.empty() ||
+                         !conv.physicsCollisionNodes.empty() || !conv.physicsCurveNodes.empty() ||
                          !conv.physicsSolidifyNodes.empty() ||
                          !conv.khrBodies.empty() || !conv.khrJoints.empty() ||
                          !conv.pointInstancers.empty();
@@ -5357,6 +5504,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_solidify", conv.physicsSolidifyNodes, nameToIndex);
         // 0al: Mesh Cache / Mesh Sequence Cache / MDD / Alembic - paths + bind only.
         BlendEmitPhysicsInvBag(pjson, "BLEND_mesh_cache", conv.meshCacheNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_collision", conv.physicsCollisionNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_curve", conv.physicsCurveNodes, nameToIndex);
         // C13 PointInstancer (particle collection/object) - full detail in Physics heap bag.
         if (!conv.pointInstancers.empty()) {
             bool anyUnresolvedArrays = false;

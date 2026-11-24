@@ -2,7 +2,7 @@
 /* Regen: python3 gen_blender_modifier_incs.py [--dna PATH] */
 /* SubsurfModifierData / MirrorModifierData / FluidModifierData keep specialized converters. */
     "LatticeModifierData",
-    "CurveModifierData",
+    /* CurveModifierData: specialized (curve object bind). */
     "BuildModifierData",
     "MaskModifierData",
     "ArrayModifierData",
@@ -18,7 +18,7 @@
     "HookModifierData",
     "SoftbodyModifierData",
     /* ClothModifierData: specialized converter (sim_parms). */
-    "CollisionModifierData",
+    /* CollisionModifierData: specialized (Presence + Object.pd). */
     "SurfaceModifierData",
     "BooleanModifierData",
     "MeshDeformModifierData",
@@ -27,7 +27,7 @@
     "ExplodeModifierData",
     "MultiresModifierData",
     "FluidsimModifierData",
-    "SmokeModifierData",
+    /* SmokeModifierData: specialized (legacy type -> fluid_role). */
     "ShrinkwrapModifierData",
     "SimpleDeformModifierData",
     "ShapeKeyModifierData",
