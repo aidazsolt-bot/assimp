@@ -537,6 +537,40 @@ void Structure::Convert<SmokeModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure::Convert<FluidsimSettings>(
+        FluidsimSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.resolutionxyz, "resolutionxyz", db);
+    ReadField<ErrorPolicy_Igno>(dest.previewresxyz, "previewresxyz", db);
+    ReadField<ErrorPolicy_Igno>(dest.realsize, "realsize", db);
+    ReadField<ErrorPolicy_Igno>(dest.viscosityValue, "viscosityValue", db);
+    ReadField<ErrorPolicy_Igno>(dest.animStart, "animStart", db);
+    ReadField<ErrorPolicy_Igno>(dest.animEnd, "animEnd", db);
+    ReadField<ErrorPolicy_Igno>(dest.bakeStart, "bakeStart", db);
+    ReadField<ErrorPolicy_Igno>(dest.bakeEnd, "bakeEnd", db);
+    ReadField<ErrorPolicy_Igno>(dest.frameOffset, "frameOffset", db);
+    ReadField<ErrorPolicy_Igno>(dest.iniVelx, "iniVelx", db);
+    ReadField<ErrorPolicy_Igno>(dest.iniVely, "iniVely", db);
+    ReadField<ErrorPolicy_Igno>(dest.iniVelz, "iniVelz", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.surfdataPath, "surfdataPath", db);
+    ReadField<ErrorPolicy_Igno>(dest.typeFlags, "typeFlags", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<FluidsimModifierData>(
+        FluidsimModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.fss, "*fss", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure::Convert<CollisionModifierData>(
         CollisionModifierData &dest,
         const FileDatabase &db) const {
@@ -2151,6 +2185,8 @@ void DNA::RegisterConverters() {
     converters["CollisionModifierData"] = DNA::FactoryPair(&Structure::Allocate<CollisionModifierData>, &Structure::Convert<CollisionModifierData>);
     converters["CurveModifierData"] = DNA::FactoryPair(&Structure::Allocate<CurveModifierData>, &Structure::Convert<CurveModifierData>);
     converters["SmokeModifierData"] = DNA::FactoryPair(&Structure::Allocate<SmokeModifierData>, &Structure::Convert<SmokeModifierData>);
+    converters["FluidsimSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidsimSettings>, &Structure::Convert<FluidsimSettings>);
+    converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);
     converters["PartDeflect"] = DNA::FactoryPair(&Structure::Allocate<PartDeflect>, &Structure::Convert<PartDeflect>);
     converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
     converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);

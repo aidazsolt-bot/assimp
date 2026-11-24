@@ -974,6 +974,49 @@ struct SmokeModifierData final : SharedModifierData {
 };
 
 /**
+ * Legacy Elbeem FluidsimSettings (Blender <=2.8 Fluidsim modifier).
+ * type bits: OB_FLUIDSIM_DOMAIN/FLUID/OBSTACLE/INFLOW/OUTFLOW/…
+ */
+struct FluidsimSettings final : ElemBase {
+    enum FluidsimType {
+        Type_Enable = 1,
+        Type_Domain = 1 << 1,
+        Type_Fluid = 1 << 2,
+        Type_Obstacle = 1 << 3,
+        Type_Inflow = 1 << 4,
+        Type_Outflow = 1 << 5,
+        Type_Particle = 1 << 6,
+        Type_Control = 1 << 7
+    };
+
+    short type WARN;
+    short resolutionxyz WARN;
+    short previewresxyz WARN;
+    float realsize WARN;
+    float viscosityValue WARN;
+    float animStart WARN;
+    float animEnd WARN;
+    int bakeStart WARN;
+    int bakeEnd WARN;
+    int frameOffset WARN;
+    float iniVelx WARN, iniVely WARN, iniVelz WARN;
+    char surfdataPath[1024] WARN;
+    short typeFlags WARN;
+    int flag WARN;
+
+    FluidsimSettings() :
+            type(0), resolutionxyz(0), previewresxyz(0), realsize(0.f), viscosityValue(0.f), animStart(0.f), animEnd(0.f), bakeStart(0), bakeEnd(0), frameOffset(0), iniVelx(0.f), iniVely(0.f), iniVelz(0.f), typeFlags(0), flag(0) {
+        surfdataPath[0] = '\0';
+    }
+};
+
+/** DEPRECATED DNA FluidsimModifierData - Elbeem; settings in *fss. */
+struct FluidsimModifierData final : SharedModifierData {
+    std::shared_ptr<FluidsimSettings> fss;
+    FluidsimModifierData() = default;
+};
+
+/**
  * DNA CollisionModifierData - mostly runtime BVH; Presence = modifier on object.
  * Authored particle/cloth collision params live on Object.pd (PartDeflect).
  */
