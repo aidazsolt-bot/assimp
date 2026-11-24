@@ -249,6 +249,13 @@ Fluid / smoke nodes additionally bind the visual mesh:
 
 `BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. No invent for dust/damage (no DNA types).
 
+**C14 hair paths:** when DNA `ParticleData.hair[]` / `HairKey` resolves, `settings.hairPaths` with
+`arraysResolved:true`, `strandCount`/`keyCount`/`keyCounts[]`, flattened `positions[]`
+(`positionsSpace=emitterLocal`), optional `times[]` and `worldPositions[]`. When
+`part_kind=hair` but no keys in file: `hairPathsResolved:false` + scene `skipped[]`
+`BLEND_C14_hair_paths_unresolved:…` (no invent; no Depsgraph). OB_CURVE mesh still
+typed NotSupported (separate Curve DNA).
+
 `BLEND_physics_blast`: ExplodeModifier inventory (`index`/`settings`); Geometry Nodes fracture is listed under scene `skipped[]` (unevaluated - no invent chunks).
 
 ### BLEND `BLEND_mesh_cache` (0al — paths only)

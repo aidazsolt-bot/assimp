@@ -873,11 +873,32 @@ void Structure::Convert<ParticleKey>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure::Convert<HairKey>(
+        HairKey &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.co, "co", db);
+    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
+    ReadField<ErrorPolicy_Igno>(dest.weight, "weight", db);
+    dest.hasWorldCo = (Get("world_co") != nullptr);
+    if (dest.hasWorldCo) {
+        ReadFieldArray<ErrorPolicy_Igno>(dest.world_co, "world_co", db);
+    }
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure::Convert<ParticleData>(
         ParticleData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.state, "state", db);
     ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
+    // C14: hair path keys when Blender wrote ParticleData.hair / totkey into the file.
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.hair, "*hair", db);
+    dest.hasTotkey = (Get("totkey") != nullptr);
+    if (dest.hasTotkey) {
+        ReadField<ErrorPolicy_Igno>(dest.totkey, "totkey", db);
+    }
     db.reader->IncPtr(size);
 }
 
@@ -2240,6 +2261,7 @@ void DNA::RegisterConverters() {
     converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
     converters["RigidBodyCon"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyCon>, &Structure::Convert<RigidBodyCon>);
     converters["ParticleKey"] = DNA::FactoryPair(&Structure::Allocate<ParticleKey>, &Structure::Convert<ParticleKey>);
+    converters["HairKey"] = DNA::FactoryPair(&Structure::Allocate<HairKey>, &Structure::Convert<HairKey>);
     converters["ParticleData"] = DNA::FactoryPair(&Structure::Allocate<ParticleData>, &Structure::Convert<ParticleData>);
     converters["ParticleDupliWeight"] = DNA::FactoryPair(&Structure::Allocate<ParticleDupliWeight>, &Structure::Convert<ParticleDupliWeight>);
     converters["ParticleSettings"] = DNA::FactoryPair(&Structure::Allocate<ParticleSettings>, &Structure::Convert<ParticleSettings>);
