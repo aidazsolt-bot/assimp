@@ -683,6 +683,8 @@ struct Mesh final : ElemBase {
     vector<MTexPoly> mtpoly;
     vector<MDeformVert> dvert;
     vector<MCol> mcol;
+    /** DNA Mesh.vertex_group_names (Blender 2.8+ moved from Object.defbase). */
+    ListBase vertex_group_names;
 
     vector<std::shared_ptr<Material>> mat FAIL;
 
@@ -1362,9 +1364,39 @@ struct ParticleData final : ElemBase {
     vector<HairKey> hair WARN;
     int totkey WARN;
     bool hasTotkey WARN;
+    /**
+     * DNA ParticleData.num - birth face/vert/edge index (tessellated faces for FACE emit).
+     * Presence only when SDNA field resolves; negative = unresolved / DMCACHE_*.
+     */
+    int num WARN;
+    int num_dmcache WARN;
+    float fuv[4] WARN;
+    float foffset WARN;
+    bool hasNum WARN;
+    bool hasNumDmcache WARN;
 
     ParticleData() :
-            size(0.f), totkey(0), hasTotkey(false) {}
+            size(0.f),
+            totkey(0),
+            hasTotkey(false),
+            num(0),
+            num_dmcache(0),
+            foffset(0.f),
+            hasNum(false),
+            hasNumDmcache(false) {
+        fuv[0] = fuv[1] = fuv[2] = fuv[3] = 0.f;
+    }
+};
+
+/** DNA bDeformGroup - vertex group name (Object.defbase / Mesh.vertex_group_names). */
+struct bDeformGroup final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<ElemBase> prev WARN;
+    char name[64] WARN;
+
+    bDeformGroup() {
+        name[0] = '\0';
+    }
 };
 
 /** DNA ParticleDupliWeight (ParticleSettings.dupliweights / instance_weights). */
@@ -1501,16 +1533,46 @@ struct ParticleSettings final : ElemBase {
 
 /** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
 struct ParticleSystem final : ElemBase {
+    /** DNA eParticleSystem_Vgroup indices into vgroup[] (PSYS_TOT_VG=13). */
+    enum VGroupSlot {
+        VG_Density = 0,
+        VG_Vel = 1,
+        VG_Length = 2,
+        VG_Clump = 3,
+        VG_Kink = 4,
+        VG_Rough1 = 5,
+        VG_Rough2 = 6,
+        VG_RoughE = 7,
+        VG_Size = 8,
+        VG_Tan = 9,
+        VG_Rot = 10,
+        VG_Effector = 11,
+        VG_Twist = 12,
+        VG_Tot = 13
+    };
+
     std::shared_ptr<ElemBase> next WARN;
     std::shared_ptr<ParticleSettings> part;
     vector<ParticleData> particles WARN;
     char name[64] WARN;
     int seed WARN;
     int totpart WARN;
+    /**
+     * DNA ParticleSystem.vgroup[PSYS_TOT_VG]: 0=disabled, 1-based index into
+     * Object.defbase / Mesh.vertex_group_names. Presence: emit names when >0.
+     */
+    short vgroup[VG_Tot] WARN;
+    /** DNA vg_neg bitmask - bit i set => invert vgroup[i] weights. */
+    short vg_neg WARN;
+    bool hasVgroup WARN;
+    bool hasVgNeg WARN;
 
     ParticleSystem() :
-            seed(0), totpart(0) {
+            seed(0), totpart(0), vg_neg(0), hasVgroup(false), hasVgNeg(false) {
         name[0] = '\0';
+        for (int i = 0; i < VG_Tot; ++i) {
+            vgroup[i] = 0;
+        }
     }
 };
 
@@ -1618,6 +1680,8 @@ struct Object final : ElemBase {
 
     ListBase modifiers;
     ListBase particlesystem; // ParticleSystem
+    /** DNA Object.defbase - vertex group names (legacy / versioning; Mesh may own names). */
+    ListBase defbase; // bDeformGroup
     std::shared_ptr<PartDeflect> pd; // Collision / force field
     std::shared_ptr<SoftBody> soft;
     std::shared_ptr<RigidBodyOb> rigidbody_object;
@@ -1918,9 +1982,19 @@ struct MTex final : ElemBase {
     // float colemitfac, colreflfac, coltransfac;
     // float densfac, scatterfac, reflfac;
 
-    // float timefac, lengthfac, clumpfac;
-    // float kinkfac, roughfac, padensfac;
-    // float lifefac, sizefac, ivelfac, pvelfac;
+    /** Particle texture influence factors (DNA MTex) - Presence when SDNA resolves. */
+    float timefac WARN;
+    float lengthfac WARN;
+    float padensfac WARN;
+    float lifefac WARN;
+    float sizefac WARN;
+    bool hasTimefac WARN;
+    bool hasLengthfac WARN;
+    bool hasPadensfac WARN;
+    bool hasLifefac WARN;
+    bool hasSizefac WARN;
+    // float kinkfac, roughfac;
+    // float ivelfac, pvelfac;
     // float shadowfac;
     // float zenupfac, zendownfac, blendfac;
 

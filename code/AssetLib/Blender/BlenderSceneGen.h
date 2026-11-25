@@ -221,6 +221,11 @@ void Structure::Convert<ParticleSystem>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<bDeformGroup>(
+        bDeformGroup &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<MFace>(
         MFace &dest,
         const FileDatabase &db) const;

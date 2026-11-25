@@ -113,6 +113,7 @@ void Structure::Convert<Object>(
     ReadFieldPtr<ErrorPolicy_Igno>(dest.adt, "*adt", db);
     ReadField<ErrorPolicy_Igno>(dest.modifiers, "modifiers", db);
     ReadField<ErrorPolicy_Igno>(dest.particlesystem, "particlesystem", db);
+    ReadField<ErrorPolicy_Igno>(dest.defbase, "defbase", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.pd, "*pd", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.soft, "*soft", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_object, "*rigidbody_object", db);
@@ -286,7 +287,7 @@ void Structure::Convert<FCurve>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Bone>(
+void Structure::Convert<Bone>(
         Bone &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -299,7 +300,7 @@ void Structure ::Convert<Bone>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bArmature>(
+void Structure::Convert<bArmature>(
         bArmature &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
@@ -309,7 +310,7 @@ void Structure ::Convert<bArmature>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ActionChannelBag>(
+void Structure::Convert<ActionChannelBag>(
         ActionChannelBag &dest,
         const FileDatabase &db) const {
     // DNA: FCurve **fcurve_array (count from block size / pointer width).
@@ -319,7 +320,7 @@ void Structure ::Convert<ActionChannelBag>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ActionStripKeyframeData>(
+void Structure::Convert<ActionStripKeyframeData>(
         ActionStripKeyframeData &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Igno>(dest.channelbag_array, "**channelbag_array", db);
@@ -469,6 +470,27 @@ void Structure::Convert<MTex>(
     ReadField<ErrorPolicy_Igno>(dest.emitfac, "emitfac", db);
     ReadField<ErrorPolicy_Igno>(dest.hardfac, "hardfac", db);
     ReadField<ErrorPolicy_Igno>(dest.norfac, "norfac", db);
+    // Particle MTex influence factors (PAMAP_* uses mapto bits; facs are separate).
+    dest.hasTimefac = (Get("timefac") != nullptr);
+    if (dest.hasTimefac) {
+        ReadField<ErrorPolicy_Igno>(dest.timefac, "timefac", db);
+    }
+    dest.hasLengthfac = (Get("lengthfac") != nullptr);
+    if (dest.hasLengthfac) {
+        ReadField<ErrorPolicy_Igno>(dest.lengthfac, "lengthfac", db);
+    }
+    dest.hasPadensfac = (Get("padensfac") != nullptr);
+    if (dest.hasPadensfac) {
+        ReadField<ErrorPolicy_Igno>(dest.padensfac, "padensfac", db);
+    }
+    dest.hasLifefac = (Get("lifefac") != nullptr);
+    if (dest.hasLifefac) {
+        ReadField<ErrorPolicy_Igno>(dest.lifefac, "lifefac", db);
+    }
+    dest.hasSizefac = (Get("sizefac") != nullptr);
+    if (dest.hasSizefac) {
+        ReadField<ErrorPolicy_Igno>(dest.sizefac, "sizefac", db);
+    }
 
     db.reader->IncPtr(size);
 }
@@ -899,6 +921,16 @@ void Structure::Convert<ParticleData>(
     if (dest.hasTotkey) {
         ReadField<ErrorPolicy_Igno>(dest.totkey, "totkey", db);
     }
+    dest.hasNum = (Get("num") != nullptr);
+    if (dest.hasNum) {
+        ReadField<ErrorPolicy_Igno>(dest.num, "num", db);
+    }
+    dest.hasNumDmcache = (Get("num_dmcache") != nullptr);
+    if (dest.hasNumDmcache) {
+        ReadField<ErrorPolicy_Igno>(dest.num_dmcache, "num_dmcache", db);
+    }
+    ReadFieldArray<ErrorPolicy_Igno>(dest.fuv, "fuv", db);
+    ReadField<ErrorPolicy_Igno>(dest.foffset, "foffset", db);
     db.reader->IncPtr(size);
 }
 
@@ -1017,6 +1049,25 @@ void Structure::Convert<ParticleSystem>(
     ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
     ReadField<ErrorPolicy_Igno>(dest.seed, "seed", db);
     ReadField<ErrorPolicy_Igno>(dest.totpart, "totpart", db);
+    dest.hasVgroup = (Get("vgroup") != nullptr);
+    if (dest.hasVgroup) {
+        ReadFieldArray<ErrorPolicy_Igno>(dest.vgroup, "vgroup", db);
+    }
+    dest.hasVgNeg = (Get("vg_neg") != nullptr);
+    if (dest.hasVgNeg) {
+        ReadField<ErrorPolicy_Igno>(dest.vg_neg, "vg_neg", db);
+    }
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<bDeformGroup>(
+        bDeformGroup &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.next, "*next", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.prev, "*prev", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
     db.reader->IncPtr(size);
 }
 
@@ -1699,6 +1750,7 @@ void Structure::Convert<Mesh>(
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mtpoly, "*mtpoly", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.dvert, "*dvert", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mcol, "*mcol", db);
+    ReadField<ErrorPolicy_Igno>(dest.vertex_group_names, "vertex_group_names", db);
     ReadFieldPtr<ErrorPolicy_Fail>(dest.mat, "**mat", db);
 
     // CustomData renames: vdata->vert_data, edata->edge_data, pdata->face_data, ldata->corner_data.
@@ -2266,6 +2318,7 @@ void DNA::RegisterConverters() {
     converters["ParticleDupliWeight"] = DNA::FactoryPair(&Structure::Allocate<ParticleDupliWeight>, &Structure::Convert<ParticleDupliWeight>);
     converters["ParticleSettings"] = DNA::FactoryPair(&Structure::Allocate<ParticleSettings>, &Structure::Convert<ParticleSettings>);
     converters["ParticleSystem"] = DNA::FactoryPair(&Structure::Allocate<ParticleSystem>, &Structure::Convert<ParticleSystem>);
+    converters["bDeformGroup"] = DNA::FactoryPair(&Structure::Allocate<bDeformGroup>, &Structure::Convert<bDeformGroup>);
     converters["MFace"] = DNA::FactoryPair(&Structure::Allocate<MFace>, &Structure::Convert<MFace>);
     converters["Lamp"] = DNA::FactoryPair(&Structure::Allocate<Lamp>, &Structure::Convert<Lamp>);
     converters["MDeformWeight"] = DNA::FactoryPair(&Structure::Allocate<MDeformWeight>, &Structure::Convert<MDeformWeight>);

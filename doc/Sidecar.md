@@ -249,6 +249,19 @@ Fluid / smoke nodes additionally bind the visual mesh:
 
 `BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. No invent for dust/damage (no DNA types).
 
+**0al4 PS density mask / texture influence:** when DNA resolves:
+
+| Key | Meaning |
+|---|---|
+| `settings.vertexGroups` | Named slots from `ParticleSystem.vgroup[]` → `Object.defbase` / `Mesh.vertex_group_names` (`density`, `length`, …); optional `*Neg` when `vg_neg` bit set |
+| `settings.faceMask` / `faceDensity` | Faces with density-VG avg weight > 0 from DNA `MDeformVert` (`faceMaskSource=vertex_group_density`) |
+| `settings.textures[].mapto` | Raw DNA `MTex.mapto` bits |
+| `settings.textures[].influences` | Particle PAMAP labels (`density`, `length`, …) from those bits |
+| `settings.textures[].densityFac` | DNA `padensfac` when present (and sibling `lengthFac` / `timeFac` / …) |
+| `hairPaths.birthFace[]` | Per-strand DNA `ParticleData.num` when resolved (tessellated face index) |
+
+Omit keys when DNA missing — no invent. Host filters palate/cavity strands from Presence (not filenames).
+
 **C14 hair paths:** when DNA `ParticleData.hair[]` / `HairKey` resolves, `settings.hairPaths` with
 `arraysResolved:true`, `strandCount`/`keyCount`/`keyCounts[]`, flattened `positions[]`
 (`positionsSpace=emitterLocal`), optional `times[]` and `worldPositions[]`. When
@@ -287,6 +300,10 @@ files (like textures / MTL).
 | `settings.objectPath` | Archive object path (MeshSeqCache) when authored |
 | `settings.cacheFile` / frame keys | CacheFile ID name + frame/offset Presence |
 | `settings.eval_frame` / `frame_start` / … | MeshCache timing Presence (no invent) |
+| `settings.restAvgNormal` | DNA mesh-local average face normal when geometry resolves (0ak eye/mouth shells) |
+| `settings.restAvgNormalSpace` | `meshLocal` when `restAvgNormal` present |
+
+Assimp still does **not** evaluate Alembic/MDD into vertex buffers (Host loads cache). `restAvgNormal` is DNA rest Presence only.
 
 Missing path → no `cachePath` + optional scene `skipped[]` `BLEND_mesh_cache_no_path:…`.
 

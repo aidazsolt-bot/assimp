@@ -3943,6 +3943,200 @@ static void BlendEmitKhrPhysics(std::ostringstream &pjson, Assimp::Blender::Conv
     }
 }
 
+/** DNA Particle MTex mapto bits (eParticleTextureInfluence) - not material MAP_*. */
+enum BlendParticleMapto : int {
+    BlendPamap_Time = 1 << 0,
+    BlendPamap_Life = 1 << 1,
+    BlendPamap_Dens = 1 << 2,
+    BlendPamap_Size = 1 << 3,
+    BlendPamap_IVel = 1 << 4,
+    BlendPamap_Kink = 1 << 5,
+    BlendPamap_Length = 1 << 6,
+    BlendPamap_Clump = 1 << 7,
+    BlendPamap_Rough = 1 << 9,
+};
+
+static const char *BlendParticleVgSlotName(int slot) {
+    using Assimp::Blender::ParticleSystem;
+    switch (slot) {
+    case ParticleSystem::VG_Density: return "density";
+    case ParticleSystem::VG_Vel: return "velocity";
+    case ParticleSystem::VG_Length: return "length";
+    case ParticleSystem::VG_Clump: return "clump";
+    case ParticleSystem::VG_Kink: return "kink";
+    case ParticleSystem::VG_Rough1: return "rough1";
+    case ParticleSystem::VG_Rough2: return "rough2";
+    case ParticleSystem::VG_RoughE: return "rough_end";
+    case ParticleSystem::VG_Size: return "size";
+    case ParticleSystem::VG_Tan: return "tangent";
+    case ParticleSystem::VG_Rot: return "rotation";
+    case ParticleSystem::VG_Effector: return "effector";
+    case ParticleSystem::VG_Twist: return "twist";
+    default: return nullptr;
+    }
+}
+
+/** Resolve deform-group names: Mesh.vertex_group_names preferred, else Object.defbase. */
+static void BlendCollectDeformGroupNames(const Assimp::Blender::Object *obj,
+        const Assimp::Blender::Mesh *mesh, std::vector<std::string> &out) {
+    out.clear();
+    auto walk = [&out](const Assimp::Blender::ListBase &lb) {
+        for (const Assimp::Blender::bDeformGroup *dg =
+                        static_cast<const Assimp::Blender::bDeformGroup *>(lb.first.get());
+                dg != nullptr;
+                dg = static_cast<const Assimp::Blender::bDeformGroup *>(dg->next.get())) {
+            out.emplace_back(dg->name[0] ? dg->name : "");
+        }
+    };
+    if (mesh != nullptr && mesh->vertex_group_names.first) {
+        walk(mesh->vertex_group_names);
+    }
+    if (out.empty() && obj != nullptr && obj->defbase.first) {
+        walk(obj->defbase);
+    }
+}
+
+static float BlendVertDeformWeight(const Assimp::Blender::Mesh &mesh, int vertIdx, int defNr) {
+    if (vertIdx < 0 || static_cast<size_t>(vertIdx) >= mesh.dvert.size() || defNr < 0) {
+        return 0.f;
+    }
+    const Assimp::Blender::MDeformVert &dv = mesh.dvert[static_cast<size_t>(vertIdx)];
+    for (size_t i = 0; i < dv.dw.size(); ++i) {
+        if (dv.dw[i].def_nr == defNr) {
+            return dv.dw[i].weight;
+        }
+    }
+    return 0.f;
+}
+
+/** Area-average poly/face density weight from DNA dvert (Presence; no invent). */
+static bool BlendFaceDensityFromVgroup(const Assimp::Blender::Mesh &mesh, int defNr, bool invert,
+        std::vector<int> &faceMask, std::vector<float> &faceDensity) {
+    faceMask.clear();
+    faceDensity.clear();
+    if (defNr < 0 || mesh.dvert.empty()) {
+        return false;
+    }
+    auto pushFace = [&](int faceIdx, const int *vids, int nvid) {
+        if (nvid <= 0) {
+            return;
+        }
+        float sum = 0.f;
+        for (int i = 0; i < nvid; ++i) {
+            float w = BlendVertDeformWeight(mesh, vids[i], defNr);
+            if (invert) {
+                w = 1.f - w;
+            }
+            sum += w;
+        }
+        const float avg = sum / static_cast<float>(nvid);
+        if (avg > 0.f) {
+            faceMask.push_back(faceIdx);
+            faceDensity.push_back(avg);
+        }
+    };
+    if (!mesh.mpoly.empty() && !mesh.mloop.empty()) {
+        for (size_t pi = 0; pi < mesh.mpoly.size(); ++pi) {
+            const Assimp::Blender::MPoly &p = mesh.mpoly[pi];
+            if (p.totloop < 3 || p.loopstart < 0) {
+                continue;
+            }
+            std::vector<int> vids;
+            vids.reserve(static_cast<size_t>(p.totloop));
+            for (int li = 0; li < p.totloop; ++li) {
+                const size_t lidx = static_cast<size_t>(p.loopstart + li);
+                if (lidx >= mesh.mloop.size()) {
+                    vids.clear();
+                    break;
+                }
+                vids.push_back(mesh.mloop[lidx].v);
+            }
+            if (!vids.empty()) {
+                pushFace(static_cast<int>(pi), vids.data(), static_cast<int>(vids.size()));
+            }
+        }
+    } else if (!mesh.mface.empty()) {
+        for (size_t fi = 0; fi < mesh.mface.size(); ++fi) {
+            const Assimp::Blender::MFace &f = mesh.mface[fi];
+            int vids[4] = { f.v1, f.v2, f.v3, f.v4 };
+            const int n = (f.v4 != 0) ? 4 : 3;
+            pushFace(static_cast<int>(fi), vids, n);
+        }
+    } else {
+        return false;
+    }
+    return !faceMask.empty();
+}
+
+/** DNA mesh-local average face normal (Presence for 0ak eye shells; no invent flip). */
+static bool BlendMeshRestAvgNormal(const Assimp::Blender::Mesh &mesh, float out[3]) {
+    out[0] = out[1] = out[2] = 0.f;
+    size_t count = 0;
+    auto accum = [&](float ax, float ay, float az, float bx, float by, float bz, float cx, float cy, float cz) {
+        const float abx = bx - ax, aby = by - ay, abz = bz - az;
+        const float acx = cx - ax, acy = cy - ay, acz = cz - az;
+        float nx = aby * acz - abz * acy;
+        float ny = abz * acx - abx * acz;
+        float nz = abx * acy - aby * acx;
+        const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+        if (len <= 1e-20f) {
+            return;
+        }
+        out[0] += nx / len;
+        out[1] += ny / len;
+        out[2] += nz / len;
+        ++count;
+    };
+    auto vert = [&](int i, float &x, float &y, float &z) -> bool {
+        if (i < 0 || static_cast<size_t>(i) >= mesh.mvert.size()) {
+            return false;
+        }
+        x = mesh.mvert[static_cast<size_t>(i)].co[0];
+        y = mesh.mvert[static_cast<size_t>(i)].co[1];
+        z = mesh.mvert[static_cast<size_t>(i)].co[2];
+        return true;
+    };
+    if (!mesh.mpoly.empty() && !mesh.mloop.empty()) {
+        for (const Assimp::Blender::MPoly &p : mesh.mpoly) {
+            if (p.totloop < 3 || p.loopstart < 0) {
+                continue;
+            }
+            float x0, y0, z0, x1, y1, z1, x2, y2, z2;
+            const size_t l0 = static_cast<size_t>(p.loopstart);
+            if (l0 + 2 >= mesh.mloop.size()) {
+                continue;
+            }
+            if (!vert(mesh.mloop[l0].v, x0, y0, z0) || !vert(mesh.mloop[l0 + 1].v, x1, y1, z1) ||
+                    !vert(mesh.mloop[l0 + 2].v, x2, y2, z2)) {
+                continue;
+            }
+            accum(x0, y0, z0, x1, y1, z1, x2, y2, z2);
+        }
+    } else {
+        for (const Assimp::Blender::MFace &f : mesh.mface) {
+            float x0, y0, z0, x1, y1, z1, x2, y2, z2;
+            if (!vert(f.v1, x0, y0, z0) || !vert(f.v2, x1, y1, z1) || !vert(f.v3, x2, y2, z2)) {
+                continue;
+            }
+            accum(x0, y0, z0, x1, y1, z1, x2, y2, z2);
+        }
+    }
+    if (count == 0) {
+        return false;
+    }
+    out[0] /= static_cast<float>(count);
+    out[1] /= static_cast<float>(count);
+    out[2] /= static_cast<float>(count);
+    const float len = std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+    if (len <= 1e-20f) {
+        return false;
+    }
+    out[0] /= len;
+    out[1] /= len;
+    out[2] /= len;
+    return true;
+}
+
 void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv,
         const aiNode *node) {
     using namespace Assimp::Blender;
@@ -4338,6 +4532,33 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                             partJson << "],\"worldPositionsSpace\":\"world\"";
                         }
                     }
+                    // 0al4: birth face index per strand (DNA ParticleData.num) when resolved.
+                    {
+                        bool anyBirth = false;
+                        for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                            if (!ps->particles[pi].hair.empty() && ps->particles[pi].hasNum &&
+                                    ps->particles[pi].num >= 0) {
+                                anyBirth = true;
+                                break;
+                            }
+                        }
+                        if (anyBirth) {
+                            partJson << ",\"birthFace\":[";
+                            bool firstB = true;
+                            for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                                const ParticleData &pd = ps->particles[pi];
+                                if (pd.hair.empty()) {
+                                    continue;
+                                }
+                                if (!firstB) {
+                                    partJson << ',';
+                                }
+                                firstB = false;
+                                partJson << (pd.hasNum ? pd.num : -1);
+                            }
+                            partJson << ']';
+                        }
+                    }
                     partJson << '}';
                 } else if (p.type == ParticleSettings::Type_Hair) {
                     // Honesty: hair typed but no HairKey DATA in file (runtime/pathcache only).
@@ -4350,13 +4571,81 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             if (p.id.name[0] != '\0') {
                 partJson << ",\"settings_name\":\"" << BlendJsonEscape(p.id.name + 2) << '"';
             }
+            // 0al4: PS vertex groups + density face mask from DNA dvert (no invent).
+            {
+                const Mesh *emesh = (obj->type == Object::Type_MESH && obj->data) ?
+                                            static_cast<const Mesh *>(obj->data.get()) :
+                                            nullptr;
+                std::vector<std::string> vgNames;
+                BlendCollectDeformGroupNames(obj, emesh, vgNames);
+                if (ps->hasVgroup) {
+                    bool vgFirst = true;
+                    for (int si = 0; si < ParticleSystem::VG_Tot; ++si) {
+                        const short idx1 = ps->vgroup[si];
+                        if (idx1 <= 0) {
+                            continue;
+                        }
+                        const int defNr = static_cast<int>(idx1) - 1;
+                        if (defNr < 0 || static_cast<size_t>(defNr) >= vgNames.size()) {
+                            continue;
+                        }
+                        if (vgNames[static_cast<size_t>(defNr)].empty()) {
+                            continue;
+                        }
+                        const char *slot = BlendParticleVgSlotName(si);
+                        if (slot == nullptr) {
+                            continue;
+                        }
+                        if (vgFirst) {
+                            partJson << ",\"vertexGroups\":{";
+                            vgFirst = false;
+                        } else {
+                            partJson << ',';
+                        }
+                        partJson << '"' << slot << "\":\""
+                                 << BlendJsonEscape(vgNames[static_cast<size_t>(defNr)]) << '"';
+                        if (ps->hasVgNeg && (ps->vg_neg & (1 << si)) != 0) {
+                            partJson << ",\"" << slot << "Neg\":true";
+                        }
+                    }
+                    if (!vgFirst) {
+                        partJson << '}';
+                    }
+                    // Density VG -> faceMask / faceDensity (Host skip cavity strands).
+                    if (emesh != nullptr && ps->vgroup[ParticleSystem::VG_Density] > 0) {
+                        const int defNr = static_cast<int>(ps->vgroup[ParticleSystem::VG_Density]) - 1;
+                        const bool invert = ps->hasVgNeg &&
+                                            (ps->vg_neg & (1 << ParticleSystem::VG_Density)) != 0;
+                        std::vector<int> faceMask;
+                        std::vector<float> faceDensity;
+                        if (BlendFaceDensityFromVgroup(*emesh, defNr, invert, faceMask, faceDensity)) {
+                            partJson << ",\"faceMask\":[";
+                            for (size_t i = 0; i < faceMask.size(); ++i) {
+                                if (i) {
+                                    partJson << ',';
+                                }
+                                partJson << faceMask[i];
+                            }
+                            partJson << "],\"faceDensity\":[";
+                            for (size_t i = 0; i < faceDensity.size(); ++i) {
+                                if (i) {
+                                    partJson << ',';
+                                }
+                                partJson << faceDensity[i];
+                            }
+                            partJson << "],\"faceMaskSource\":\"vertex_group_density\"";
+                        }
+                    }
+                }
+            }
             // Particle texture slots (Fur density maps) - Presence: only when Image resolves.
             bool texFirst = true;
             for (size_t ti = 0; ti < sizeof(p.mtex) / sizeof(p.mtex[0]); ++ti) {
                 if (!p.mtex[ti] || !p.mtex[ti]->tex || !p.mtex[ti]->tex->ima) {
                     continue;
                 }
-                const Image *img = p.mtex[ti]->tex->ima.get();
+                const MTex &mtx = *p.mtex[ti];
+                const Image *img = mtx.tex->ima.get();
                 aiString embedName;
                 int embedIndex = -1;
                 if (!BlendEnsureEmbeddedImage(img, conv, embedName, &embedIndex)) {
@@ -4374,6 +4663,54 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 }
                 if (embedIndex >= 0) {
                     partJson << ",\"embed\":\"*" << embedIndex << '"';
+                }
+                // 0al4: DNA mapto bits as particle influences (PAMAP_*), not material MAP_*.
+                {
+                    const int mapBits = static_cast<int>(mtx.mapto);
+                    partJson << ",\"mapto\":" << mapBits;
+                    bool infFirst = true;
+                    auto addInf = [&](int bit, const char *name) {
+                        if ((mapBits & bit) == 0) {
+                            return;
+                        }
+                        if (infFirst) {
+                            partJson << ",\"influences\":[";
+                            infFirst = false;
+                        } else {
+                            partJson << ',';
+                        }
+                        partJson << '"' << name << '"';
+                    };
+                    addInf(BlendPamap_Time, "time");
+                    addInf(BlendPamap_Life, "life");
+                    addInf(BlendPamap_Dens, "density");
+                    addInf(BlendPamap_Size, "size");
+                    addInf(BlendPamap_IVel, "ivel");
+                    addInf(BlendPamap_Kink, "kink");
+                    addInf(BlendPamap_Length, "length");
+                    addInf(BlendPamap_Clump, "clump");
+                    addInf(BlendPamap_Rough, "rough");
+                    if (!infFirst) {
+                        partJson << ']';
+                    }
+                }
+                if (mtx.hasPadensfac) {
+                    partJson << ",\"densityFac\":" << mtx.padensfac;
+                }
+                if (mtx.hasLengthfac) {
+                    partJson << ",\"lengthFac\":" << mtx.lengthfac;
+                }
+                if (mtx.hasTimefac) {
+                    partJson << ",\"timeFac\":" << mtx.timefac;
+                }
+                if (mtx.hasLifefac) {
+                    partJson << ",\"lifeFac\":" << mtx.lifefac;
+                }
+                if (mtx.hasSizefac) {
+                    partJson << ",\"sizeFac\":" << mtx.sizefac;
+                }
+                if (mtx.uvname[0] != '\0') {
+                    partJson << ",\"uv\":\"" << BlendJsonEscape(mtx.uvname) << '"';
                 }
                 partJson << '}';
             }
@@ -4991,6 +5328,28 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             }
             settings << ",\"read_flag\":" << static_cast<int>(ms->read_flag)
                      << ",\"velocity_scale\":" << ms->velocity_scale;
+            // 0ak: DNA rest avg normal (mesh-local). Assimp does not evaluate Alembic;
+            // Host uses ABC sample - this Presence documents DNA rest orientation.
+            if (obj->type == Object::Type_MESH && obj->data) {
+                const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
+                float avgN[3];
+                if (emesh != nullptr && BlendMeshRestAvgNormal(*emesh, avgN)) {
+                    settings << ",\"restAvgNormal\":[" << avgN[0] << ',' << avgN[1] << ',' << avgN[2]
+                             << "],\"restAvgNormalSpace\":\"meshLocal\"";
+                }
+            }
+        }
+        // 0ak also on MeshCache (MDD/PC2) when DNA rest resolves.
+        if (dat.type == ModifierData::eModifierType_MeshCache &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "MeshCacheModifierData") == 0 &&
+                obj->type == Object::Type_MESH && obj->data) {
+            const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
+            float avgN[3];
+            if (emesh != nullptr && BlendMeshRestAvgNormal(*emesh, avgN)) {
+                settings << ",\"restAvgNormal\":[" << avgN[0] << ',' << avgN[1] << ',' << avgN[2]
+                         << "],\"restAvgNormalSpace\":\"meshLocal\"";
+            }
         }
         settings << '}';
 
@@ -7578,7 +7937,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
             }
         } break;
 
-        case Object ::Type_ARMATURE: {
+        case Object::Type_ARMATURE: {
             CheckActualType(obj->data.get(), "bArmature");
             conv_data.armature_objects.push_back(obj);
         } break;
