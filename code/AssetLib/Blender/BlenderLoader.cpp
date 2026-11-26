@@ -5439,6 +5439,140 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                     partJson << ",\"use_close_tip\":true";
                 }
             }
+            // 0al5: Child-Distribution DNA factors (Host expands after parents; no invent).
+            if (p.hasChildtype) {
+                partJson << ",\"childtype\":" << static_cast<int>(p.childtype);
+                const char *childKind = nullptr;
+                switch (p.childtype) {
+                    case ParticleSettings::Child_None: childKind = "none"; break;
+                    case ParticleSettings::Child_Particles: childKind = "particles"; break;
+                    case ParticleSettings::Child_Faces: childKind = "faces"; break;
+                    default: break;
+                }
+                if (childKind != nullptr) {
+                    partJson << ",\"child_type\":\"" << childKind << '"';
+                }
+            }
+            if (p.hasChildFlag) {
+                partJson << ",\"child_flag\":" << p.child_flag;
+                if (p.child_flag & ParticleSettings::Child_UseClumpNoise) {
+                    partJson << ",\"use_clump_noise\":true";
+                }
+                if (p.child_flag & ParticleSettings::Child_UseClumpCurve) {
+                    partJson << ",\"use_clump_curve\":true";
+                }
+                if (p.child_flag & ParticleSettings::Child_UseRoughCurve) {
+                    partJson << ",\"use_rough_curve\":true";
+                }
+                if (p.child_flag & ParticleSettings::Child_UseTwistCurve) {
+                    partJson << ",\"use_twist_curve\":true";
+                }
+            }
+            // SDNA name honesty: emit only the count field that resolved.
+            if (p.hasChildNbr) {
+                partJson << ",\"child_nbr\":" << p.child_nbr;
+            }
+            if (p.hasRenChildNbr) {
+                partJson << ",\"ren_child_nbr\":" << p.ren_child_nbr;
+            }
+            if (p.hasChildPercent) {
+                partJson << ",\"child_percent\":" << p.child_percent;
+            }
+            if (p.hasChildRenderPercent) {
+                partJson << ",\"child_render_percent\":" << p.child_render_percent;
+            }
+            if (p.hasChildSeed) {
+                partJson << ",\"child_seed\":" << p.child_seed;
+            }
+            if (p.hasParents) {
+                partJson << ",\"parents\":" << p.parents;
+            }
+            if (p.hasChildsize) {
+                partJson << ",\"childsize\":" << p.childsize;
+            }
+            if (p.hasChildrandsize) {
+                partJson << ",\"childrandsize\":" << p.childrandsize;
+            }
+            if (p.hasChildrad) {
+                partJson << ",\"childrad\":" << p.childrad;
+            }
+            if (p.hasChildflat) {
+                partJson << ",\"childflat\":" << p.childflat;
+            }
+            if (p.hasClumpfac) {
+                partJson << ",\"clumpfac\":" << p.clumpfac;
+            }
+            if (p.hasClumppow) {
+                partJson << ",\"clumppow\":" << p.clumppow;
+            }
+            if (p.hasKink) {
+                partJson << ",\"kink\":" << static_cast<int>(p.kink);
+                const char *kinkKind = nullptr;
+                switch (p.kink) {
+                    case ParticleSettings::Kink_No: kinkKind = "none"; break;
+                    case ParticleSettings::Kink_Curl: kinkKind = "curl"; break;
+                    case ParticleSettings::Kink_Radial: kinkKind = "radial"; break;
+                    case ParticleSettings::Kink_Wave: kinkKind = "wave"; break;
+                    case ParticleSettings::Kink_Braid: kinkKind = "braid"; break;
+                    case ParticleSettings::Kink_Spiral: kinkKind = "spiral"; break;
+                    default: break;
+                }
+                if (kinkKind != nullptr) {
+                    partJson << ",\"kink_kind\":\"" << kinkKind << '"';
+                }
+            }
+            if (p.hasKinkAmp) {
+                partJson << ",\"kink_amp\":" << p.kink_amp;
+            }
+            if (p.hasKinkFreq) {
+                partJson << ",\"kink_freq\":" << p.kink_freq;
+            }
+            if (p.hasKinkShape) {
+                partJson << ",\"kink_shape\":" << p.kink_shape;
+            }
+            if (p.hasKinkFlat) {
+                partJson << ",\"kink_flat\":" << p.kink_flat;
+            }
+            if (p.hasKinkAmpClump) {
+                partJson << ",\"kink_amp_clump\":" << p.kink_amp_clump;
+            }
+            if (p.hasKinkExtraSteps) {
+                partJson << ",\"kink_extra_steps\":" << p.kink_extra_steps;
+            }
+            if (p.hasKinkAxisRandom) {
+                partJson << ",\"kink_axis_random\":" << p.kink_axis_random;
+            }
+            if (p.hasKinkAmpRandom) {
+                partJson << ",\"kink_amp_random\":" << p.kink_amp_random;
+            }
+            if (p.hasPartingFac) {
+                partJson << ",\"parting_fac\":" << p.parting_fac;
+            }
+            if (p.hasPartingMin) {
+                partJson << ",\"parting_min\":" << p.parting_min;
+            }
+            if (p.hasPartingMax) {
+                partJson << ",\"parting_max\":" << p.parting_max;
+            }
+            if (p.hasBranchThres) {
+                partJson << ",\"branch_thres\":" << p.branch_thres;
+            }
+            if (p.hasClength) {
+                partJson << ",\"clength\":" << p.clength;
+            }
+            if (p.hasClengthThres) {
+                partJson << ",\"clength_thres\":" << p.clength_thres;
+            }
+            // ParticleSettings.flag child bits - emit true only when bit set (no false invent).
+            if ((p.flag & ParticleSettings::Flag_ChildEffect) != 0) {
+                partJson << ",\"child_effect\":true";
+            }
+            if ((p.flag & ParticleSettings::Flag_ChildLongHair) != 0) {
+                partJson << ",\"child_long_hair\":true";
+            }
+            if ((p.flag & ParticleSettings::Flag_ChildGuide) != 0) {
+                partJson << ",\"child_guide\":true";
+            }
             // C14: DNA HairKey paths when ParticleData.hair[] was written (no invent / no Depsgraph).
             {
                 size_t strandWithKeys = 0;

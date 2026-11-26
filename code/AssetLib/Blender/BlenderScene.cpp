@@ -1157,6 +1157,123 @@ void Structure::Convert<ParticleSettings>(
     if (dest.hasShapeFlag) {
         ReadField<ErrorPolicy_Igno>(dest.shape_flag, "shape_flag", db);
     }
+    // 0al5 Child-Distribution - SDNA Presence only (old child_nbr vs new child_percent).
+    dest.hasChildtype = (Get("childtype") != nullptr);
+    if (dest.hasChildtype) {
+        ReadField<ErrorPolicy_Igno>(dest.childtype, "childtype", db);
+    }
+    dest.hasChildFlag = (Get("child_flag") != nullptr);
+    if (dest.hasChildFlag) {
+        ReadField<ErrorPolicy_Igno>(dest.child_flag, "child_flag", db);
+    }
+    dest.hasChildNbr = (Get("child_nbr") != nullptr);
+    if (dest.hasChildNbr) {
+        ReadField<ErrorPolicy_Igno>(dest.child_nbr, "child_nbr", db);
+    }
+    dest.hasRenChildNbr = (Get("ren_child_nbr") != nullptr);
+    if (dest.hasRenChildNbr) {
+        ReadField<ErrorPolicy_Igno>(dest.ren_child_nbr, "ren_child_nbr", db);
+    }
+    dest.hasChildPercent = (Get("child_percent") != nullptr);
+    if (dest.hasChildPercent) {
+        ReadField<ErrorPolicy_Igno>(dest.child_percent, "child_percent", db);
+    }
+    dest.hasChildRenderPercent = (Get("child_render_percent") != nullptr);
+    if (dest.hasChildRenderPercent) {
+        ReadField<ErrorPolicy_Igno>(dest.child_render_percent, "child_render_percent", db);
+    }
+    dest.hasChildSeed = (Get("child_seed") != nullptr);
+    if (dest.hasChildSeed) {
+        ReadField<ErrorPolicy_Igno>(dest.child_seed, "child_seed", db);
+    }
+    dest.hasParents = (Get("parents") != nullptr);
+    if (dest.hasParents) {
+        ReadField<ErrorPolicy_Igno>(dest.parents, "parents", db);
+    }
+    dest.hasChildsize = (Get("childsize") != nullptr);
+    if (dest.hasChildsize) {
+        ReadField<ErrorPolicy_Igno>(dest.childsize, "childsize", db);
+    }
+    dest.hasChildrandsize = (Get("childrandsize") != nullptr);
+    if (dest.hasChildrandsize) {
+        ReadField<ErrorPolicy_Igno>(dest.childrandsize, "childrandsize", db);
+    }
+    dest.hasChildrad = (Get("childrad") != nullptr);
+    if (dest.hasChildrad) {
+        ReadField<ErrorPolicy_Igno>(dest.childrad, "childrad", db);
+    }
+    dest.hasChildflat = (Get("childflat") != nullptr);
+    if (dest.hasChildflat) {
+        ReadField<ErrorPolicy_Igno>(dest.childflat, "childflat", db);
+    }
+    dest.hasClumpfac = (Get("clumpfac") != nullptr);
+    if (dest.hasClumpfac) {
+        ReadField<ErrorPolicy_Igno>(dest.clumpfac, "clumpfac", db);
+    }
+    dest.hasClumppow = (Get("clumppow") != nullptr);
+    if (dest.hasClumppow) {
+        ReadField<ErrorPolicy_Igno>(dest.clumppow, "clumppow", db);
+    }
+    dest.hasKink = (Get("kink") != nullptr);
+    if (dest.hasKink) {
+        ReadField<ErrorPolicy_Igno>(dest.kink, "kink", db);
+    }
+    dest.hasKinkAmp = (Get("kink_amp") != nullptr);
+    if (dest.hasKinkAmp) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_amp, "kink_amp", db);
+    }
+    dest.hasKinkFreq = (Get("kink_freq") != nullptr);
+    if (dest.hasKinkFreq) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_freq, "kink_freq", db);
+    }
+    dest.hasKinkShape = (Get("kink_shape") != nullptr);
+    if (dest.hasKinkShape) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_shape, "kink_shape", db);
+    }
+    dest.hasKinkFlat = (Get("kink_flat") != nullptr);
+    if (dest.hasKinkFlat) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_flat, "kink_flat", db);
+    }
+    dest.hasKinkAmpClump = (Get("kink_amp_clump") != nullptr);
+    if (dest.hasKinkAmpClump) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_amp_clump, "kink_amp_clump", db);
+    }
+    dest.hasKinkExtraSteps = (Get("kink_extra_steps") != nullptr);
+    if (dest.hasKinkExtraSteps) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_extra_steps, "kink_extra_steps", db);
+    }
+    dest.hasKinkAxisRandom = (Get("kink_axis_random") != nullptr);
+    if (dest.hasKinkAxisRandom) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_axis_random, "kink_axis_random", db);
+    }
+    dest.hasKinkAmpRandom = (Get("kink_amp_random") != nullptr);
+    if (dest.hasKinkAmpRandom) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_amp_random, "kink_amp_random", db);
+    }
+    dest.hasPartingFac = (Get("parting_fac") != nullptr);
+    if (dest.hasPartingFac) {
+        ReadField<ErrorPolicy_Igno>(dest.parting_fac, "parting_fac", db);
+    }
+    dest.hasPartingMin = (Get("parting_min") != nullptr);
+    if (dest.hasPartingMin) {
+        ReadField<ErrorPolicy_Igno>(dest.parting_min, "parting_min", db);
+    }
+    dest.hasPartingMax = (Get("parting_max") != nullptr);
+    if (dest.hasPartingMax) {
+        ReadField<ErrorPolicy_Igno>(dest.parting_max, "parting_max", db);
+    }
+    dest.hasBranchThres = (Get("branch_thres") != nullptr);
+    if (dest.hasBranchThres) {
+        ReadField<ErrorPolicy_Igno>(dest.branch_thres, "branch_thres", db);
+    }
+    dest.hasClength = (Get("clength") != nullptr);
+    if (dest.hasClength) {
+        ReadField<ErrorPolicy_Igno>(dest.clength, "clength", db);
+    }
+    dest.hasClengthThres = (Get("clength_thres") != nullptr);
+    if (dest.hasClengthThres) {
+        ReadField<ErrorPolicy_Igno>(dest.clength_thres, "clength_thres", db);
+    }
     if (Get("*instance_collection") != nullptr) {
         ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*instance_collection", db);
     } else {

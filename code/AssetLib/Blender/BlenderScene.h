@@ -1541,6 +1541,40 @@ struct ParticleSettings final : ElemBase {
     float rad_tip WARN;
     float rad_scale WARN;
     short shape_flag WARN;
+    /**
+     * 0al5 Child-Distribution (DNA_particle_types.h). Presence only when SDNA
+     * resolves - Host expands children after parents; no invent.
+     * Old DNA: child_nbr / ren_child_nbr; newer: child_percent / child_render_percent.
+     */
+    short childtype WARN;
+    int child_flag WARN;
+    int child_nbr WARN;
+    int ren_child_nbr WARN;
+    int child_percent WARN;
+    int child_render_percent WARN;
+    int child_seed WARN;
+    float parents WARN;
+    float childsize WARN;
+    float childrandsize WARN;
+    float childrad WARN;
+    float childflat WARN;
+    float clumpfac WARN;
+    float clumppow WARN;
+    short kink WARN;
+    float kink_amp WARN;
+    float kink_freq WARN;
+    float kink_shape WARN;
+    float kink_flat WARN;
+    float kink_amp_clump WARN;
+    int kink_extra_steps WARN;
+    float kink_axis_random WARN;
+    float kink_amp_random WARN;
+    float parting_fac WARN;
+    float parting_min WARN;
+    float parting_max WARN;
+    float branch_thres WARN;
+    float clength WARN;
+    float clength_thres WARN;
     bool hasNormfac WARN;
     bool hasUserjit WARN;
     bool hasGridRes WARN;
@@ -1558,9 +1592,66 @@ struct ParticleSettings final : ElemBase {
     bool hasRadTip WARN;
     bool hasRadScale WARN;
     bool hasShapeFlag WARN;
+    bool hasChildtype WARN;
+    bool hasChildFlag WARN;
+    bool hasChildNbr WARN;
+    bool hasRenChildNbr WARN;
+    bool hasChildPercent WARN;
+    bool hasChildRenderPercent WARN;
+    bool hasChildSeed WARN;
+    bool hasParents WARN;
+    bool hasChildsize WARN;
+    bool hasChildrandsize WARN;
+    bool hasChildrad WARN;
+    bool hasChildflat WARN;
+    bool hasClumpfac WARN;
+    bool hasClumppow WARN;
+    bool hasKink WARN;
+    bool hasKinkAmp WARN;
+    bool hasKinkFreq WARN;
+    bool hasKinkShape WARN;
+    bool hasKinkFlat WARN;
+    bool hasKinkAmpClump WARN;
+    bool hasKinkExtraSteps WARN;
+    bool hasKinkAxisRandom WARN;
+    bool hasKinkAmpRandom WARN;
+    bool hasPartingFac WARN;
+    bool hasPartingMin WARN;
+    bool hasPartingMax WARN;
+    bool hasBranchThres WARN;
+    bool hasClength WARN;
+    bool hasClengthThres WARN;
     /** DNA eParticleShapeFlag. */
     enum ShapeFlag {
         Shape_CloseTip = 1 << 0 // PART_SHAPE_CLOSE_TIP
+    };
+    /** DNA eParticleChildType (childtype). */
+    enum ChildType {
+        Child_None = 0,
+        Child_Particles = 1, // PART_CHILD_PARTICLES
+        Child_Faces = 2 // PART_CHILD_FACES
+    };
+    /** DNA eParticleKink. */
+    enum KinkType {
+        Kink_No = 0,
+        Kink_Curl = 1,
+        Kink_Radial = 2,
+        Kink_Wave = 3,
+        Kink_Braid = 4,
+        Kink_Spiral = 5
+    };
+    /** DNA ParticleSettings.flag child-related bits. */
+    enum ChildFlagBits {
+        Flag_ChildEffect = 1 << 27, // PART_CHILD_EFFECT
+        Flag_ChildLongHair = 1 << 28, // PART_CHILD_LONG_HAIR
+        Flag_ChildGuide = 1 << 30 // PART_CHILD_GUIDE
+    };
+    /** DNA eParticleChildFlag (child_flag). */
+    enum ChildFlag {
+        Child_UseClumpNoise = 1 << 0,
+        Child_UseClumpCurve = 1 << 1,
+        Child_UseRoughCurve = 1 << 2,
+        Child_UseTwistCurve = 1 << 3
     };
     /** DNA eParticleType labels for Host (PART_EMITTER=0, PART_HAIR=2, …). */
     enum PartType {
@@ -1632,6 +1723,35 @@ struct ParticleSettings final : ElemBase {
             rad_tip(0.f),
             rad_scale(0.01f),
             shape_flag(0),
+            childtype(0),
+            child_flag(0),
+            child_nbr(0),
+            ren_child_nbr(0),
+            child_percent(0),
+            child_render_percent(0),
+            child_seed(0),
+            parents(0.f),
+            childsize(1.f),
+            childrandsize(0.f),
+            childrad(0.2f),
+            childflat(0.f),
+            clumpfac(0.f),
+            clumppow(0.f),
+            kink(0),
+            kink_amp(0.f),
+            kink_freq(0.f),
+            kink_shape(0.f),
+            kink_flat(0.f),
+            kink_amp_clump(0.f),
+            kink_extra_steps(0),
+            kink_axis_random(0.f),
+            kink_amp_random(0.f),
+            parting_fac(0.f),
+            parting_min(0.f),
+            parting_max(0.f),
+            branch_thres(0.f),
+            clength(1.f),
+            clength_thres(0.f),
             hasNormfac(false),
             hasUserjit(false),
             hasGridRes(false),
@@ -1648,7 +1768,36 @@ struct ParticleSettings final : ElemBase {
             hasRadRoot(false),
             hasRadTip(false),
             hasRadScale(false),
-            hasShapeFlag(false) {}
+            hasShapeFlag(false),
+            hasChildtype(false),
+            hasChildFlag(false),
+            hasChildNbr(false),
+            hasRenChildNbr(false),
+            hasChildPercent(false),
+            hasChildRenderPercent(false),
+            hasChildSeed(false),
+            hasParents(false),
+            hasChildsize(false),
+            hasChildrandsize(false),
+            hasChildrad(false),
+            hasChildflat(false),
+            hasClumpfac(false),
+            hasClumppow(false),
+            hasKink(false),
+            hasKinkAmp(false),
+            hasKinkFreq(false),
+            hasKinkShape(false),
+            hasKinkFlat(false),
+            hasKinkAmpClump(false),
+            hasKinkExtraSteps(false),
+            hasKinkAxisRandom(false),
+            hasKinkAmpRandom(false),
+            hasPartingFac(false),
+            hasPartingMin(false),
+            hasPartingMax(false),
+            hasBranchThres(false),
+            hasClength(false),
+            hasClengthThres(false) {}
 };
 
 /** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
