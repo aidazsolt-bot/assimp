@@ -3671,6 +3671,26 @@ static void BlendCollectClothBrushPresence(Assimp::Blender::ConversionData &conv
         default: return nullptr;
         }
     };
+    auto boundaryDeformKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::BoundaryDeform_Bend: return "bend";
+        case Brush::BoundaryDeform_Expand: return "expand";
+        case Brush::BoundaryDeform_Inflate: return "inflate";
+        case Brush::BoundaryDeform_Grab: return "grab";
+        case Brush::BoundaryDeform_Twist: return "twist";
+        case Brush::BoundaryDeform_Smooth: return "smooth";
+        default: return nullptr;
+        }
+    };
+    auto boundaryFalloffKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::BoundaryFalloff_Constant: return "constant";
+        case Brush::BoundaryFalloff_Radius: return "radius";
+        case Brush::BoundaryFalloff_Loop: return "loop";
+        case Brush::BoundaryFalloff_LoopInvert: return "loop_invert";
+        default: return nullptr;
+        }
+    };
 
     for (const FileBlockHead &bl : conv.db.entries) {
         if (bl.dna_index != it->second) {
@@ -3695,7 +3715,7 @@ static void BlendCollectClothBrushPresence(Assimp::Blender::ConversionData &conv
             continue;
         }
         const int tool = static_cast<unsigned char>(brush->sculpt_tool);
-        // DNA: SCULPT_TOOL_CLOTH=26, SCULPT_TOOL_BOUNDARY=30 (cloth filter / boundary cloth).
+        // DNA eBrushSculptType: SCULPT_BRUSH_TYPE_CLOTH=26, BOUNDARY=30.
         const bool isClothTool = (tool == Brush::Sculpt_Cloth);
         const bool isBoundaryCloth = (tool == Brush::Sculpt_Boundary);
         if (!isClothTool && !isBoundaryCloth) {
@@ -3713,38 +3733,66 @@ static void BlendCollectClothBrushPresence(Assimp::Blender::ConversionData &conv
             cj << ",\"size\":" << brush->size;
         }
         cj << ",\"alpha\":" << brush->alpha;
-        cj << ",\"cloth_deform_type\":" << brush->cloth_deform_type;
-        if (const char *dk = deformKind(brush->cloth_deform_type)) {
-            cj << ",\"cloth_deform_kind\":\"" << dk << '"';
+        if (brush->hasFlag2) {
+            cj << ",\"flag2\":" << brush->flag2
+               << ",\"cloth_pin_simulation_boundary\":"
+               << ((brush->flag2 & Brush::Flag2_ClothPinSimulationBoundary) ? "true" : "false")
+               << ",\"cloth_use_collision\":"
+               << ((brush->flag2 & Brush::Flag2_ClothUseCollision) ? "true" : "false");
         }
-        cj << ",\"cloth_force_falloff_type\":" << brush->cloth_force_falloff_type;
-        if (const char *fk = falloffKind(brush->cloth_force_falloff_type)) {
-            cj << ",\"cloth_force_falloff_kind\":\"" << fk << '"';
+        if (brush->hasBoundaryDeform) {
+            cj << ",\"boundary_deform_type\":" << brush->boundary_deform_type;
+            if (const char *bk = boundaryDeformKind(brush->boundary_deform_type)) {
+                cj << ",\"boundary_deform_kind\":\"" << bk << '"';
+            }
+            cj << ",\"boundary_falloff_type\":" << brush->boundary_falloff_type;
+            if (const char *bf = boundaryFalloffKind(brush->boundary_falloff_type)) {
+                cj << ",\"boundary_falloff_kind\":\"" << bf << '"';
+            }
+            cj << ",\"boundary_offset\":" << brush->boundary_offset;
         }
-        cj << ",\"cloth_simulation_area_type\":" << brush->cloth_simulation_area_type;
-        if (const char *ak = areaKind(brush->cloth_simulation_area_type)) {
-            cj << ",\"cloth_simulation_area_kind\":\"" << ak << '"';
+        if (brush->hasClothParms) {
+            cj << ",\"cloth_deform_type\":" << brush->cloth_deform_type;
+            if (const char *dk = deformKind(brush->cloth_deform_type)) {
+                cj << ",\"cloth_deform_kind\":\"" << dk << '"';
+            }
+            cj << ",\"cloth_force_falloff_type\":" << brush->cloth_force_falloff_type;
+            if (const char *fk = falloffKind(brush->cloth_force_falloff_type)) {
+                cj << ",\"cloth_force_falloff_kind\":\"" << fk << '"';
+            }
+            cj << ",\"cloth_simulation_area_type\":" << brush->cloth_simulation_area_type;
+            if (const char *ak = areaKind(brush->cloth_simulation_area_type)) {
+                cj << ",\"cloth_simulation_area_kind\":\"" << ak << '"';
+            }
+            cj << ",\"cloth_mass\":" << brush->cloth_mass
+               << ",\"cloth_damping\":" << brush->cloth_damping
+               << ",\"cloth_sim_limit\":" << brush->cloth_sim_limit
+               << ",\"cloth_sim_falloff\":" << brush->cloth_sim_falloff
+               << ",\"cloth_constraint_softbody_strength\":" << brush->cloth_constraint_softbody_strength;
         }
-        if (brush->hasClothMass) {
-            cj << ",\"cloth_mass\":" << brush->cloth_mass;
-        }
-        cj << ",\"cloth_damping\":" << brush->cloth_damping
-           << ",\"cloth_sim_limit\":" << brush->cloth_sim_limit
-           << ",\"cloth_sim_falloff\":" << brush->cloth_sim_falloff
-           << ",\"cloth_constraint_softbody_strength\":" << brush->cloth_constraint_softbody_strength
-           << "}}";
+        cj << "}}";
         BlendPushPhysicsInv(conv.physicsClothNodes, bname, cj.str());
     }
 
-    // Scene sculpt gravity Presence (Newtonian-like for cloth sculpt step).
-    if (scene && scene->toolsettings && scene->toolsettings->sculpt &&
-            scene->toolsettings->sculpt->hasGravityFactor) {
+    // Scene sculpt gravity Presence (DNA_scene_types.h Sculpt).
+    if (scene && scene->toolsettings && scene->toolsettings->sculpt) {
         const Sculpt &sc = *scene->toolsettings->sculpt;
+        if (!sc.hasGravityFactor && !sc.gravity_object) {
+            return;
+        }
         std::ostringstream gj;
         gj << "{\"name\":\"Sculpt\",\"type\":\"cloth\",\"settings\":{"
-           << "\"source\":\"Sculpt\""
-           << ",\"gravity_factor\":" << sc.gravity_factor
-           << "}}";
+           << "\"source\":\"Sculpt\"";
+        if (sc.hasGravityFactor) {
+            gj << ",\"gravity_factor\":" << sc.gravity_factor;
+        }
+        if (sc.gravity_object) {
+            const char *gon = sc.gravity_object->id.name[2] != '\0' ?
+                                      sc.gravity_object->id.name + 2 :
+                                      sc.gravity_object->id.name;
+            gj << ",\"gravity_object\":\"" << BlendJsonEscape(gon) << '"';
+        }
+        gj << "}}";
         BlendPushPhysicsInv(conv.physicsClothNodes, "Sculpt", gj.str());
     }
 }

@@ -2167,23 +2167,57 @@ void Structure::Convert<Brush>(
         Brush &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
-    dest.hasSculptTool = (Get("sculpt_tool") != nullptr);
-    if (dest.hasSculptTool) {
+    // Blender 3.x: sculpt_tool; current DNA: sculpt_brush_type (same eBrushSculptType values).
+    dest.hasSculptTool = false;
+    if (Get("sculpt_brush_type") != nullptr) {
+        dest.hasSculptTool = true;
+        ReadField<ErrorPolicy_Igno>(dest.sculpt_tool, "sculpt_brush_type", db);
+    } else if (Get("sculpt_tool") != nullptr) {
+        dest.hasSculptTool = true;
         ReadField<ErrorPolicy_Igno>(dest.sculpt_tool, "sculpt_tool", db);
     }
     ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
     ReadField<ErrorPolicy_Igno>(dest.alpha, "alpha", db);
-    ReadField<ErrorPolicy_Igno>(dest.cloth_deform_type, "cloth_deform_type", db);
-    ReadField<ErrorPolicy_Igno>(dest.cloth_force_falloff_type, "cloth_force_falloff_type", db);
-    ReadField<ErrorPolicy_Igno>(dest.cloth_simulation_area_type, "cloth_simulation_area_type", db);
-    dest.hasClothMass = (Get("cloth_mass") != nullptr);
-    if (dest.hasClothMass) {
-        ReadField<ErrorPolicy_Igno>(dest.cloth_mass, "cloth_mass", db);
+    dest.hasFlag2 = (Get("flag2") != nullptr);
+    if (dest.hasFlag2) {
+        ReadField<ErrorPolicy_Igno>(dest.flag2, "flag2", db);
     }
-    ReadField<ErrorPolicy_Igno>(dest.cloth_damping, "cloth_damping", db);
-    ReadField<ErrorPolicy_Igno>(dest.cloth_sim_limit, "cloth_sim_limit", db);
-    ReadField<ErrorPolicy_Igno>(dest.cloth_sim_falloff, "cloth_sim_falloff", db);
-    ReadField<ErrorPolicy_Igno>(dest.cloth_constraint_softbody_strength, "cloth_constraint_softbody_strength", db);
+    dest.hasBoundaryDeform = (Get("boundary_deform_type") != nullptr);
+    if (dest.hasBoundaryDeform) {
+        ReadField<ErrorPolicy_Igno>(dest.boundary_deform_type, "boundary_deform_type", db);
+        if (Get("boundary_falloff_type") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.boundary_falloff_type, "boundary_falloff_type", db);
+        }
+        if (Get("boundary_offset") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.boundary_offset, "boundary_offset", db);
+        }
+    }
+    // Cloth block from DNA_brush_types.h - omit keys when SDNA field absent (old brushes).
+    dest.hasClothParms = (Get("cloth_deform_type") != nullptr);
+    if (dest.hasClothParms) {
+        ReadField<ErrorPolicy_Igno>(dest.cloth_deform_type, "cloth_deform_type", db);
+        if (Get("cloth_force_falloff_type") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_force_falloff_type, "cloth_force_falloff_type", db);
+        }
+        if (Get("cloth_simulation_area_type") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_simulation_area_type, "cloth_simulation_area_type", db);
+        }
+        if (Get("cloth_mass") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_mass, "cloth_mass", db);
+        }
+        if (Get("cloth_damping") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_damping, "cloth_damping", db);
+        }
+        if (Get("cloth_sim_limit") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_sim_limit, "cloth_sim_limit", db);
+        }
+        if (Get("cloth_sim_falloff") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_sim_falloff, "cloth_sim_falloff", db);
+        }
+        if (Get("cloth_constraint_softbody_strength") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_constraint_softbody_strength, "cloth_constraint_softbody_strength", db);
+        }
+    }
     db.reader->IncPtr(size);
 }
 
@@ -2196,6 +2230,7 @@ void Structure::Convert<Sculpt>(
     if (dest.hasGravityFactor) {
         ReadField<ErrorPolicy_Igno>(dest.gravity_factor, "gravity_factor", db);
     }
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.gravity_object, "*gravity_object", db);
     db.reader->IncPtr(size);
 }
 

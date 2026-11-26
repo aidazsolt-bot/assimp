@@ -1842,14 +1842,19 @@ struct UnitSettings final : ElemBase {
 };
 
 /**
- * DNA Brush - sculpt cloth brush Presence (cloth_brushes_demo).
- * sculpt_tool SCULPT_TOOL_CLOTH=26 (Blender 3.0 DNA_brush_enums.h).
+ * DNA Brush subset for sculpt cloth Presence.
+ * Field list + enums from blender.git makesdna:
+ *   DNA_brush_types.h (struct Brush cloth_* / flag2 / boundary_*)
+ *   DNA_brush_enums.h (eBrushSculptType / eBrushCloth* / eBrushFlags2 / eBrushBoundaryDeformType)
+ * Blender 3.x DNA name `sculpt_tool`; newer files `sculpt_brush_type` (same offset class).
  */
 struct Brush final : ElemBase {
+    /** DNA eBrushSculptType / SCULPT_BRUSH_TYPE_*. */
     enum SculptTool {
-        Sculpt_Cloth = 26,
-        Sculpt_Boundary = 30
+        Sculpt_Cloth = 26, // SCULPT_BRUSH_TYPE_CLOTH
+        Sculpt_Boundary = 30 // SCULPT_BRUSH_TYPE_BOUNDARY
     };
+    /** DNA eBrushClothDeformType. */
     enum ClothDeform {
         ClothDeform_Drag = 0,
         ClothDeform_Push = 1,
@@ -1860,20 +1865,47 @@ struct Brush final : ElemBase {
         ClothDeform_Expand = 6,
         ClothDeform_SnakeHook = 7
     };
+    /** DNA eBrushClothForceFalloffType. */
     enum ClothForceFalloff {
         ClothFalloff_Radial = 0,
         ClothFalloff_Plane = 1
     };
+    /** DNA eBrushClothSimulationAreaType. */
     enum ClothSimArea {
         ClothArea_Local = 0,
         ClothArea_Global = 1,
         ClothArea_Dynamic = 2
     };
+    /** DNA eBrushBoundaryDeformType. */
+    enum BoundaryDeform {
+        BoundaryDeform_Bend = 0,
+        BoundaryDeform_Expand = 1,
+        BoundaryDeform_Inflate = 2,
+        BoundaryDeform_Grab = 3,
+        BoundaryDeform_Twist = 4,
+        BoundaryDeform_Smooth = 5
+    };
+    /** DNA eBrushBoundaryFalloffType. */
+    enum BoundaryFalloff {
+        BoundaryFalloff_Constant = 0,
+        BoundaryFalloff_Radius = 1,
+        BoundaryFalloff_Loop = 2,
+        BoundaryFalloff_LoopInvert = 3
+    };
+    /** DNA eBrushFlags2 cloth bits. */
+    enum Flag2 {
+        Flag2_ClothPinSimulationBoundary = 1 << 4, // BRUSH_CLOTH_PIN_SIMULATION_BOUNDARY
+        Flag2_ClothUseCollision = 1 << 6 // BRUSH_CLOTH_USE_COLLISION
+    };
 
     ID id WARN;
-    char sculpt_tool WARN;
+    char sculpt_tool WARN; // sculpt_tool (3.x) or sculpt_brush_type (newer) via Convert
     int size WARN;
     float alpha WARN;
+    int flag2 WARN;
+    int boundary_deform_type WARN;
+    int boundary_falloff_type WARN;
+    float boundary_offset WARN;
     int cloth_deform_type WARN;
     int cloth_force_falloff_type WARN;
     int cloth_simulation_area_type WARN;
@@ -1883,12 +1915,18 @@ struct Brush final : ElemBase {
     float cloth_sim_falloff WARN;
     float cloth_constraint_softbody_strength WARN;
     bool hasSculptTool WARN;
-    bool hasClothMass WARN;
+    bool hasFlag2 WARN;
+    bool hasClothParms WARN;
+    bool hasBoundaryDeform WARN;
 
     Brush() :
             sculpt_tool(0),
             size(0),
             alpha(0.f),
+            flag2(0),
+            boundary_deform_type(0),
+            boundary_falloff_type(0),
+            boundary_offset(0.f),
             cloth_deform_type(0),
             cloth_force_falloff_type(0),
             cloth_simulation_area_type(0),
@@ -1898,12 +1936,15 @@ struct Brush final : ElemBase {
             cloth_sim_falloff(0.f),
             cloth_constraint_softbody_strength(0.f),
             hasSculptTool(false),
-            hasClothMass(false) {}
+            hasFlag2(false),
+            hasClothParms(false),
+            hasBoundaryDeform(false) {}
 };
 
-/** DNA Sculpt (ToolSettings.sculpt) - gravity Presence for cloth sculpt. */
+/** DNA Sculpt (ToolSettings.sculpt) - gravity Presence; see DNA_scene_types.h. */
 struct Sculpt final : ElemBase {
     float gravity_factor WARN;
+    std::shared_ptr<Object> gravity_object WARN;
     bool hasGravityFactor WARN;
 
     Sculpt() :
