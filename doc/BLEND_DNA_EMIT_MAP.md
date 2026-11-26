@@ -46,6 +46,8 @@ All keys below are **sidecar JSON only** (`settings` / PI node).
 | `lifetime` / `sta` / `end` | `lifetime` / `frame_start` / `frame_end` | |
 | `randlife` / `randlength` / `hair_step` | same | Presence |
 | `normfac` / RNA `hair_length` | `normfac` / `hair_length` | `hair_length = normfac * 4` when `normfac` present |
+| `rad_root` / `rad_tip` / `rad_scale` | same | Hair thickness Presence; Cycles `r=rad_scale*0.5`, root/tip=`r*rad_*`. Not `size`. |
+| `shape` / `shape_flag` | same | Hair shape + `PART_SHAPE_CLOSE_TIP` → optional `use_close_tip` |
 | `ParticleSystem.seed` | `seed` | |
 | instance collection/object | `collection` / `instanceObject` | |
 | Instance TRS arrays | `positions` / `orients` / `scales` / `protoIndices` + `arraysResolved` | only when DNA particles present or Arris bake |

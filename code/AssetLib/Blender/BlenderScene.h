@@ -1531,6 +1531,16 @@ struct ParticleSettings final : ElemBase {
     float normfac WARN;
     float path_start WARN;
     float path_end WARN;
+    /**
+     * Hair thickness (DNA_particle_types.h). RNA root_radius/tip_radius/
+     * radius_scale/shape/use_close_tip. Cycles: r=rad_scale*0.5,
+     * root=r*rad_root, tip=r*rad_tip - not ParticleSettings.size.
+     */
+    float shape WARN;
+    float rad_root WARN;
+    float rad_tip WARN;
+    float rad_scale WARN;
+    short shape_flag WARN;
     bool hasNormfac WARN;
     bool hasUserjit WARN;
     bool hasGridRes WARN;
@@ -1543,6 +1553,15 @@ struct ParticleSettings final : ElemBase {
     bool hasDraw WARN;
     bool hasPathStart WARN;
     bool hasPathEnd WARN;
+    bool hasShape WARN;
+    bool hasRadRoot WARN;
+    bool hasRadTip WARN;
+    bool hasRadScale WARN;
+    bool hasShapeFlag WARN;
+    /** DNA eParticleShapeFlag. */
+    enum ShapeFlag {
+        Shape_CloseTip = 1 << 0 // PART_SHAPE_CLOSE_TIP
+    };
     /** DNA eParticleType labels for Host (PART_EMITTER=0, PART_HAIR=2, …). */
     enum PartType {
         Type_Emitter = 0,
@@ -1608,6 +1627,11 @@ struct ParticleSettings final : ElemBase {
             normfac(1.f),
             path_start(0.f),
             path_end(1.f),
+            shape(0.f),
+            rad_root(1.f),
+            rad_tip(0.f),
+            rad_scale(0.01f),
+            shape_flag(0),
             hasNormfac(false),
             hasUserjit(false),
             hasGridRes(false),
@@ -1619,7 +1643,12 @@ struct ParticleSettings final : ElemBase {
             hasDrawAs(false),
             hasDraw(false),
             hasPathStart(false),
-            hasPathEnd(false) {}
+            hasPathEnd(false),
+            hasShape(false),
+            hasRadRoot(false),
+            hasRadTip(false),
+            hasRadScale(false),
+            hasShapeFlag(false) {}
 };
 
 /** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */

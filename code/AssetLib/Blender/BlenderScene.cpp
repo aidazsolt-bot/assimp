@@ -1132,6 +1132,27 @@ void Structure::Convert<ParticleSettings>(
     if (dest.hasPathEnd) {
         ReadField<ErrorPolicy_Igno>(dest.path_end, "path_end", db);
     }
+    // Hair thickness Presence (DNA_particle_types.h) - omit keys when SDNA absent.
+    dest.hasShape = (Get("shape") != nullptr);
+    if (dest.hasShape) {
+        ReadField<ErrorPolicy_Igno>(dest.shape, "shape", db);
+    }
+    dest.hasRadRoot = (Get("rad_root") != nullptr);
+    if (dest.hasRadRoot) {
+        ReadField<ErrorPolicy_Igno>(dest.rad_root, "rad_root", db);
+    }
+    dest.hasRadTip = (Get("rad_tip") != nullptr);
+    if (dest.hasRadTip) {
+        ReadField<ErrorPolicy_Igno>(dest.rad_tip, "rad_tip", db);
+    }
+    dest.hasRadScale = (Get("rad_scale") != nullptr);
+    if (dest.hasRadScale) {
+        ReadField<ErrorPolicy_Igno>(dest.rad_scale, "rad_scale", db);
+    }
+    dest.hasShapeFlag = (Get("shape_flag") != nullptr);
+    if (dest.hasShapeFlag) {
+        ReadField<ErrorPolicy_Igno>(dest.shape_flag, "shape_flag", db);
+    }
     if (Get("*instance_collection") != nullptr) {
         ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*instance_collection", db);
     } else {

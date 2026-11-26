@@ -4810,6 +4810,25 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             if (p.hasPathEnd) {
                 partJson << ",\"path_end\":" << p.path_end;
             }
+            // Hair thickness DNA (Cycles: r=rad_scale*0.5, root/tip=r*rad_*). Not size.
+            if (p.hasShape) {
+                partJson << ",\"shape\":" << p.shape;
+            }
+            if (p.hasRadRoot) {
+                partJson << ",\"rad_root\":" << p.rad_root;
+            }
+            if (p.hasRadTip) {
+                partJson << ",\"rad_tip\":" << p.rad_tip;
+            }
+            if (p.hasRadScale) {
+                partJson << ",\"rad_scale\":" << p.rad_scale;
+            }
+            if (p.hasShapeFlag) {
+                partJson << ",\"shape_flag\":" << static_cast<int>(p.shape_flag);
+                if (p.shape_flag & ParticleSettings::Shape_CloseTip) {
+                    partJson << ",\"use_close_tip\":true";
+                }
+            }
             // C14: DNA HairKey paths when ParticleData.hair[] was written (no invent / no Depsgraph).
             {
                 size_t strandWithKeys = 0;

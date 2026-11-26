@@ -249,7 +249,7 @@ Fluid / smoke nodes additionally bind the visual mesh:
 
 `BLEND_modifier_curve`: CurveModifier DNA — `curveObject`, `defaxis`, optional `vgroup`.
 
-`BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. When `phystype` SDNA present: numeric `phystype` + `phys_kind` (`newtonian`/`keyed`/`boids`/`fluid`/`no`). No invent for dust/damage (no DNA types).
+`BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. When `phystype` SDNA present: numeric `phystype` + `phys_kind` (`newtonian`/`keyed`/`boids`/`fluid`/`no`). Hair thickness Presence when SDNA present: `rad_root`/`rad_tip`/`rad_scale`/`shape`/`shape_flag` (+ `use_close_tip` when `PART_SHAPE_CLOSE_TIP`); Cycles uses these, not `size`. No invent for dust/damage (no DNA types).
 
 **Emitter / Force Presence (2026-11-26):** classic DNA as above. Geometry Nodes particle modifier (`NodesModifierData`): read `settings.properties` IDProperty inputs + `node_group.inputs` labels — emit `inputs{label:value}`, and when resolved: `totpart` (socket `Count`/`Amount`/`Number` only — never from `Lifetime`), `emissionDensity` (`Emission Density`), `lifetime` (`Lifetime`), `attractionStrength` + `forcefield_kind:"attraction"` (`Attraction Strength`), `gravity[]` + `phys_kind:"newtonian"` (`Gravity`). Omit keys when DNA/input missing. Host Force-Step from these keys (no Name-Score).
 
