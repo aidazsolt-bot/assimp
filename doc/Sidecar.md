@@ -339,13 +339,16 @@ deprecated `Image.packedfile`. Assimp reads both and emits `aiTexture` (`*N`) +
 matched by material name (e.g. splash House of Chores). Grease Pencil strokes are
 out of scope.
 
-**Map inventory (2026-11-22 / typed leftover 2026-11-26):** Linked `ShaderNodeTexImage`
-maps that resolve a DNA socket usage (Principled/Bump/Displacement/NormalMap/Mix Fac)
-are emitted as typed `$tex.file` + `$tex.blend.usage` / `$tex.blend.socket` /
-`$tex.blend.node` (and `$tex.uvwsrc` when UV resolves). Fully typed entries are
-**removed** from Sidecar `maps.inventory[]`. Unlinked Previz nodes stay inventory-only
-(no typed invent). Particle Fur (0al4): typed `ParticleSettings` mat +
-`$tex.blend.particleInfluence`; Sidecar `textures[]` removed.
+**Map inventory (2026-11-22 / typed leftover 2026-11-26):** `maps.inventory[]` holds
+only what is **not** fully typed. Fully typed = `$tex.file` + `$tex.blend.usage`
+(plus socket/node when DNA yields them; `$tex.uvwsrc` when UV resolves) - those
+entries are **removed** from inventory. Stay in inventory: linked-but-not-yet-typed,
+unlinked / Previz / Image-ID-only (`linked:false`), and teilresolved (embed/path
+yes, slot/uvwsrc/usage no) with honest `hasEmbed` / `usageResolved:false` - never
+silent-drop. If nothing leftover, omit the key (no empty array). Do not
+retro-link unlinked Previz into Body. Particle Fur (0al4): typed
+`ParticleSettings` mat + `$tex.blend.particleInfluence`; Sidecar `textures[]`
+removed.
 
 ### BLEND World Env / Skymap (Arris)
 

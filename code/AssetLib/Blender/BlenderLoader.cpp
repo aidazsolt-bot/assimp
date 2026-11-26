@@ -2867,7 +2867,7 @@ bool BlendEnsureEmbeddedImage(const Assimp::Blender::Image *img, Assimp::Blender
 }
 
 void BlendAttachNodeImage(aiMaterial *mout, const BlendTexMap &map, aiTextureType type,
-        Assimp::Blender::ConversionData &conv_data, unsigned matIndex) {
+        Assimp::Blender::ConversionData &conv_data, unsigned matIndex, const char *usage = nullptr) {
     using namespace Assimp::Blender;
     if (mout == nullptr || map.img == nullptr) {
         return;
@@ -2880,6 +2880,11 @@ void BlendAttachNodeImage(aiMaterial *mout, const BlendTexMap &map, aiTextureTyp
     mout->AddProperty(&name, AI_MATKEY_TEXTURE(type, slot));
     const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
     BlendEmitUvWsrc(mout, type, slot, uvIndex);
+    // Fully typed = $tex.file + usage meta (inventory decommission only then).
+    if (usage != nullptr && usage[0] != '\0') {
+        aiString u(usage);
+        mout->AddProperty(&u, "$tex.blend.usage", type, slot);
+    }
 }
 
 /** Inventory: every ShaderNodeTexImage (incl. nested groups), linked or not. */
@@ -3196,9 +3201,33 @@ bool BlendMatHasTextureFile(const aiMaterial *mout, aiTextureType type, const ai
     return false;
 }
 
+/** Fully typed = same $tex.file slot also has $tex.blend.usage (no invent). */
+bool BlendMatHasFullyTypedFile(const aiMaterial *mout, const aiString &file) {
+    if (mout == nullptr || file.length == 0) {
+        return false;
+    }
+    for (int ti = 1; ti <= static_cast<int>(aiTextureType_UNKNOWN); ++ti) {
+        const auto type = static_cast<aiTextureType>(ti);
+        const unsigned n = mout->GetTextureCount(type);
+        for (unsigned i = 0; i < n; ++i) {
+            aiString path;
+            if (mout->Get(AI_MATKEY_TEXTURE(type, i), path) != AI_SUCCESS ||
+                    std::strcmp(path.C_Str(), file.C_Str()) != 0) {
+                continue;
+            }
+            aiString usage;
+            if (mout->Get("$tex.blend.usage", type, i, usage) == AI_SUCCESS && usage.length > 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /**
- * 0al4-class: linked maps.inventory TexImages -> typed $tex.file + usage meta.
- * Fully typed entries are marked entry.typed and omitted from Sidecar inventory.
+ * Linked maps.inventory TexImages -> typed $tex.file + usage meta.
+ * typed=true only when $tex.file AND $tex.blend.usage Present (fully typed).
+ * Unlinked / usage-unresolved stay in inventory (honest leftover).
  */
 void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
         std::vector<BlendMapInventoryEntry> &inventory, Assimp::Blender::ConversionData &conv_data,
@@ -3207,25 +3236,11 @@ void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
     if (mout == nullptr) {
         return;
     }
-    auto markPrimary = [&](const Image *img) {
-        if (img == nullptr) {
-            return;
-        }
-        for (BlendMapInventoryEntry &e : inventory) {
-            if (e.img == img) {
-                e.typed = true;
-            }
-        }
-    };
-    markPrimary(flat.mapBaseColor.img);
-    markPrimary(flat.mapNormal.img);
-    markPrimary(flat.mapRoughness.img);
-    markPrimary(flat.mapMetallic.img);
-    markPrimary(flat.mapEmission.img);
+    (void)flat;
 
     for (BlendMapInventoryEntry &e : inventory) {
-        // Primary flatten maps already typed - decommission only (no reclassify).
-        if (e.typed || e.img == nullptr || e.node == nullptr || !e.linked) {
+        // Unlinked Previz stay inventory-only (no usage invent).
+        if (e.img == nullptr || e.node == nullptr || !e.linked) {
             continue;
         }
         // Resolve UV once for this TexImage node.
@@ -3286,26 +3301,57 @@ void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
         }
 
         if (hits.empty()) {
+            // Linked but usage unresolved - keep inventory (teilresolved / honest).
             continue;
         }
         aiString embedName;
         if (!BlendEnsureEmbeddedImage(e.img, conv_data, embedName)) {
+            // No file/embed Presence - keep inventory, do not invent typed slot.
             continue;
         }
-        bool anyEmitted = e.typed;
         for (const BlendTexUsageHit &h : hits) {
+            if (h.usage == nullptr || h.usage[0] == '\0') {
+                continue;
+            }
+            // Already fully typed for this file - skip duplicate slot.
+            if (BlendMatHasFullyTypedFile(mout, embedName) &&
+                    BlendMatHasTextureFile(mout, h.type, embedName)) {
+                continue;
+            }
             if (BlendMatHasTextureFile(mout, h.type, embedName)) {
-                anyEmitted = true;
+                // File present without usage (legacy flatten) - attach usage on existing slot.
+                const unsigned n = mout->GetTextureCount(h.type);
+                for (unsigned si = 0; si < n; ++si) {
+                    aiString path;
+                    if (mout->Get(AI_MATKEY_TEXTURE(h.type, si), path) != AI_SUCCESS ||
+                            std::strcmp(path.C_Str(), embedName.C_Str()) != 0) {
+                        continue;
+                    }
+                    aiString existing;
+                    if (mout->Get("$tex.blend.usage", h.type, si, existing) == AI_SUCCESS &&
+                            existing.length > 0) {
+                        break;
+                    }
+                    aiString usage(h.usage);
+                    mout->AddProperty(&usage, "$tex.blend.usage", h.type, si);
+                    if (h.socket[0] != '\0') {
+                        aiString sock(h.socket);
+                        mout->AddProperty(&sock, "$tex.blend.socket", h.type, si);
+                    }
+                    if (e.node->name[0] != '\0') {
+                        aiString nname(e.node->name);
+                        mout->AddProperty(&nname, "$tex.blend.node", h.type, si);
+                    }
+                    break;
+                }
                 continue;
             }
             const unsigned slot = conv_data.next_texture[h.type]++;
             mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(h.type, slot));
             const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
             BlendEmitUvWsrc(mout, h.type, slot, uvIndex);
-            if (h.usage != nullptr && h.usage[0] != '\0') {
-                aiString usage(h.usage);
-                mout->AddProperty(&usage, "$tex.blend.usage", h.type, slot);
-            }
+            aiString usage(h.usage);
+            mout->AddProperty(&usage, "$tex.blend.usage", h.type, slot);
             if (h.socket[0] != '\0') {
                 aiString sock(h.socket);
                 mout->AddProperty(&sock, "$tex.blend.socket", h.type, slot);
@@ -3314,18 +3360,28 @@ void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
                 aiString nname(e.node->name);
                 mout->AddProperty(&nname, "$tex.blend.node", h.type, slot);
             }
-            // Mirror primary BASE onto DIFFUSE when that is the usage (Looks compat).
+            // Mirror BASE onto DIFFUSE (Looks compat) with same usage meta.
             if (h.type == aiTextureType_BASE_COLOR &&
                     !BlendMatHasTextureFile(mout, aiTextureType_DIFFUSE, embedName)) {
                 const unsigned dslot = conv_data.next_texture[aiTextureType_DIFFUSE]++;
                 mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(aiTextureType_DIFFUSE, dslot));
                 BlendEmitUvWsrc(mout, aiTextureType_DIFFUSE, dslot, uvIndex);
+                mout->AddProperty(&usage, "$tex.blend.usage", aiTextureType_DIFFUSE, dslot);
             }
-            anyEmitted = true;
         }
-        if (anyEmitted) {
-            e.typed = true;
+    }
+    // Reconcile: fully typed only when $tex.file + $tex.blend.usage Present.
+    for (BlendMapInventoryEntry &e : inventory) {
+        if (e.img == nullptr) {
+            e.typed = false;
+            continue;
         }
+        aiString embedName;
+        if (!BlendEnsureEmbeddedImage(e.img, conv_data, embedName)) {
+            e.typed = false;
+            continue;
+        }
+        e.typed = BlendMatHasFullyTypedFile(mout, embedName);
     }
 }
 
@@ -3695,14 +3751,14 @@ void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
         aiColor3D emit(flat.emissionColor[0] * s, flat.emissionColor[1] * s, flat.emissionColor[2] * s);
         mout->AddProperty(&emit, 1, AI_MATKEY_COLOR_EMISSIVE);
     }
-    BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_BASE_COLOR, conv_data, matIndex);
+    BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_BASE_COLOR, conv_data, matIndex, "baseColor");
     if (flat.mapBaseColor) {
-        BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_DIFFUSE, conv_data, matIndex);
+        BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_DIFFUSE, conv_data, matIndex, "baseColor");
     }
-    BlendAttachNodeImage(mout, flat.mapRoughness, aiTextureType_DIFFUSE_ROUGHNESS, conv_data, matIndex);
-    BlendAttachNodeImage(mout, flat.mapMetallic, aiTextureType_METALNESS, conv_data, matIndex);
-    BlendAttachNodeImage(mout, flat.mapNormal, aiTextureType_NORMALS, conv_data, matIndex);
-    BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data, matIndex);
+    BlendAttachNodeImage(mout, flat.mapRoughness, aiTextureType_DIFFUSE_ROUGHNESS, conv_data, matIndex, "roughness");
+    BlendAttachNodeImage(mout, flat.mapMetallic, aiTextureType_METALNESS, conv_data, matIndex, "metallic");
+    BlendAttachNodeImage(mout, flat.mapNormal, aiTextureType_NORMALS, conv_data, matIndex, "normal");
+    BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data, matIndex, "emission");
 }
 
 static std::string BlendMapJson(const BlendTexMap &map) {
@@ -3799,7 +3855,7 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
         }
         mjson << '}';
     }
-    // Only leftover / unresolved maps - fully typed entries decommissioned (0al4-class).
+    // Leftover only: unlinked / usage-unresolved / no file+usage. Omit key if empty.
     bool anyInv = false;
     for (const BlendMapInventoryEntry &e : inventory) {
         if (e.img != nullptr && !e.typed) {
@@ -3816,9 +3872,7 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
             }
             aiString embedName;
             int embedIndex = -1;
-            if (!BlendEnsureEmbeddedImage(e.img, conv_data, embedName, &embedIndex)) {
-                continue;
-            }
+            const bool hasFile = BlendEnsureEmbeddedImage(e.img, conv_data, embedName, &embedIndex);
             if (!ifirst) {
                 mjson << ',';
             }
@@ -3831,8 +3885,12 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
                 mjson << ",\"node\":\"" << BlendJsonEscape(e.node->name) << '"';
             }
             mjson << ",\"linked\":" << (e.linked ? "true" : "false");
-            if (embedIndex >= 0) {
+            mjson << ",\"hasEmbed\":" << ((hasFile && embedIndex >= 0) ? "true" : "false");
+            mjson << ",\"usageResolved\":false";
+            if (hasFile && embedIndex >= 0) {
                 mjson << ",\"embed\":\"*" << embedIndex << '"';
+            } else if (hasFile && embedName.length > 0) {
+                mjson << ",\"path\":\"" << BlendJsonEscape(embedName.C_Str()) << '"';
             }
             mjson << '}';
         }
@@ -7846,8 +7904,8 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
             BlendTexMap gpMap;
             if (mat->gp_style->ima) {
                 gpMap.img = mat->gp_style->ima.get();
-                BlendAttachNodeImage(mout, gpMap, aiTextureType_BASE_COLOR, conv_data, matIndex);
-                BlendAttachNodeImage(mout, gpMap, aiTextureType_DIFFUSE, conv_data, matIndex);
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_BASE_COLOR, conv_data, matIndex, "baseColor");
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_DIFFUSE, conv_data, matIndex, "baseColor");
             }
             if (mat->gp_style->sima) {
                 gpMap.img = mat->gp_style->sima.get();
