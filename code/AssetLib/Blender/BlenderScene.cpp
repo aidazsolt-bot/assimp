@@ -2163,6 +2163,53 @@ void Structure::Convert<MPoly>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure::Convert<Brush>(
+        Brush &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
+    dest.hasSculptTool = (Get("sculpt_tool") != nullptr);
+    if (dest.hasSculptTool) {
+        ReadField<ErrorPolicy_Igno>(dest.sculpt_tool, "sculpt_tool", db);
+    }
+    ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
+    ReadField<ErrorPolicy_Igno>(dest.alpha, "alpha", db);
+    ReadField<ErrorPolicy_Igno>(dest.cloth_deform_type, "cloth_deform_type", db);
+    ReadField<ErrorPolicy_Igno>(dest.cloth_force_falloff_type, "cloth_force_falloff_type", db);
+    ReadField<ErrorPolicy_Igno>(dest.cloth_simulation_area_type, "cloth_simulation_area_type", db);
+    dest.hasClothMass = (Get("cloth_mass") != nullptr);
+    if (dest.hasClothMass) {
+        ReadField<ErrorPolicy_Igno>(dest.cloth_mass, "cloth_mass", db);
+    }
+    ReadField<ErrorPolicy_Igno>(dest.cloth_damping, "cloth_damping", db);
+    ReadField<ErrorPolicy_Igno>(dest.cloth_sim_limit, "cloth_sim_limit", db);
+    ReadField<ErrorPolicy_Igno>(dest.cloth_sim_falloff, "cloth_sim_falloff", db);
+    ReadField<ErrorPolicy_Igno>(dest.cloth_constraint_softbody_strength, "cloth_constraint_softbody_strength", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<Sculpt>(
+        Sculpt &dest,
+        const FileDatabase &db) const {
+    dest.hasGravityFactor = (Get("gravity_factor") != nullptr);
+    if (dest.hasGravityFactor) {
+        ReadField<ErrorPolicy_Igno>(dest.gravity_factor, "gravity_factor", db);
+    }
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ToolSettings>(
+        ToolSettings &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.sculpt, "*sculpt", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure::Convert<Scene>(
         Scene &dest,
         const FileDatabase &db) const {
@@ -2172,6 +2219,7 @@ void Structure::Convert<Scene>(
     ReadFieldPtr<ErrorPolicy_Warn>(dest.world, "*world", db);
     ReadFieldPtr<ErrorPolicy_Warn>(dest.basact, "*basact", db);
     ReadFieldPtr<ErrorPolicy_Warn>(dest.master_collection, "*master_collection", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.toolsettings, "*toolsettings", db);
     ReadField<ErrorPolicy_Igno>(dest.base, "base", db);
     ReadField<ErrorPolicy_Warn>(dest.r, "r", db);
     ReadField<ErrorPolicy_Warn>(dest.unit, "unit", db);
@@ -2481,6 +2529,9 @@ void DNA::RegisterConverters() {
     converters["ID"] = DNA::FactoryPair(&Structure::Allocate<ID>, &Structure::Convert<ID>);
     converters["MCol"] = DNA::FactoryPair(&Structure::Allocate<MCol>, &Structure::Convert<MCol>);
     converters["MPoly"] = DNA::FactoryPair(&Structure::Allocate<MPoly>, &Structure::Convert<MPoly>);
+    converters["Brush"] = DNA::FactoryPair(&Structure::Allocate<Brush>, &Structure::Convert<Brush>);
+    converters["Sculpt"] = DNA::FactoryPair(&Structure::Allocate<Sculpt>, &Structure::Convert<Sculpt>);
+    converters["ToolSettings"] = DNA::FactoryPair(&Structure::Allocate<ToolSettings>, &Structure::Convert<ToolSettings>);
     converters["Scene"] = DNA::FactoryPair(&Structure::Allocate<Scene>, &Structure::Convert<Scene>);
     converters["Library"] = DNA::FactoryPair(&Structure::Allocate<Library>, &Structure::Convert<Library>);
     converters["Tex"] = DNA::FactoryPair(&Structure::Allocate<Tex>, &Structure::Convert<Tex>);

@@ -446,6 +446,21 @@ void Structure::Convert<MPoly>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<Brush>(
+        Brush &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Sculpt>(
+        Sculpt &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<ToolSettings>(
+        ToolSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<Scene>(
         Scene &dest,
         const FileDatabase &db) const;

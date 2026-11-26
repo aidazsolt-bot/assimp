@@ -1841,6 +1841,80 @@ struct UnitSettings final : ElemBase {
             scale_length(1.f) {}
 };
 
+/**
+ * DNA Brush - sculpt cloth brush Presence (cloth_brushes_demo).
+ * sculpt_tool SCULPT_TOOL_CLOTH=26 (Blender 3.0 DNA_brush_enums.h).
+ */
+struct Brush final : ElemBase {
+    enum SculptTool {
+        Sculpt_Cloth = 26,
+        Sculpt_Boundary = 30
+    };
+    enum ClothDeform {
+        ClothDeform_Drag = 0,
+        ClothDeform_Push = 1,
+        ClothDeform_Grab = 2,
+        ClothDeform_PinchPoint = 3,
+        ClothDeform_PinchPerpendicular = 4,
+        ClothDeform_Inflate = 5,
+        ClothDeform_Expand = 6,
+        ClothDeform_SnakeHook = 7
+    };
+    enum ClothForceFalloff {
+        ClothFalloff_Radial = 0,
+        ClothFalloff_Plane = 1
+    };
+    enum ClothSimArea {
+        ClothArea_Local = 0,
+        ClothArea_Global = 1,
+        ClothArea_Dynamic = 2
+    };
+
+    ID id WARN;
+    char sculpt_tool WARN;
+    int size WARN;
+    float alpha WARN;
+    int cloth_deform_type WARN;
+    int cloth_force_falloff_type WARN;
+    int cloth_simulation_area_type WARN;
+    float cloth_mass WARN;
+    float cloth_damping WARN;
+    float cloth_sim_limit WARN;
+    float cloth_sim_falloff WARN;
+    float cloth_constraint_softbody_strength WARN;
+    bool hasSculptTool WARN;
+    bool hasClothMass WARN;
+
+    Brush() :
+            sculpt_tool(0),
+            size(0),
+            alpha(0.f),
+            cloth_deform_type(0),
+            cloth_force_falloff_type(0),
+            cloth_simulation_area_type(0),
+            cloth_mass(0.f),
+            cloth_damping(0.f),
+            cloth_sim_limit(0.f),
+            cloth_sim_falloff(0.f),
+            cloth_constraint_softbody_strength(0.f),
+            hasSculptTool(false),
+            hasClothMass(false) {}
+};
+
+/** DNA Sculpt (ToolSettings.sculpt) - gravity Presence for cloth sculpt. */
+struct Sculpt final : ElemBase {
+    float gravity_factor WARN;
+    bool hasGravityFactor WARN;
+
+    Sculpt() :
+            gravity_factor(0.f), hasGravityFactor(false) {}
+};
+
+/** DNA ToolSettings - sculpt pointer. */
+struct ToolSettings final : ElemBase {
+    std::shared_ptr<Sculpt> sculpt WARN;
+};
+
 // -------------------------------------------------------------------------------
 struct Scene final : ElemBase {
     ID id FAIL;
@@ -1849,6 +1923,7 @@ struct Scene final : ElemBase {
     std::shared_ptr<World> world WARN;
     std::shared_ptr<Base> basact WARN;
     std::shared_ptr<Collection> master_collection WARN;
+    std::shared_ptr<ToolSettings> toolsettings WARN;
 
     ListBase base;
 

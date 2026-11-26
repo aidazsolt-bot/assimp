@@ -243,6 +243,8 @@ Fluid / smoke nodes additionally bind the visual mesh:
 | `settings.effector` | FluidEffector DNA (surface_distance, guide_mode, …) when EFFEC |
 | legacy Fluidsim | `source:FluidsimModifierData` + `fluidsim_type` bits + bake/res/viscosity Presence |
 
+`BLEND_physics_cloth` (sculpt brushes): when DNA `Brush.sculpt_tool` is Cloth (`26`) or Boundary-with-cloth fields (`30`), emit inventory nodes `source:Brush` with `sculpt_tool_kind`, `cloth_deform_kind`/`cloth_force_falloff_kind`/`cloth_simulation_area_kind` (when enum known), `cloth_mass`/`cloth_damping`/`cloth_sim_*`. Optional `source:Sculpt` node with `gravity_factor` from `ToolSettings.sculpt`. Classic `ClothModifierData` sim_parms unchanged. Probe: `cloth_brushes_demo.blend`.
+
 `BLEND_physics_collision`: Collision modifier bind and/or `Object.pd` (PartDeflect) friction/damping Presence — no Name-Score. When `forcefield!=0`: numeric `forcefield` + `forcefield_kind` (`force`/`wind`/`vortex`/… from `ePFieldType`) + `f_strength`.
 
 `BLEND_modifier_curve`: CurveModifier DNA — `curveObject`, `defaxis`, optional `vgroup`.

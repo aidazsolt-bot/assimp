@@ -3629,6 +3629,127 @@ static void BlendPushPhysicsInv(std::vector<Assimp::Blender::ConversionData::Phy
     bag.push_back(std::move(entry));
 }
 
+/** Collect sculpt Cloth brushes (Brush.sculpt_tool) into BLEND_physics_cloth Presence. */
+static void BlendCollectClothBrushPresence(Assimp::Blender::ConversionData &conv,
+        const Assimp::Blender::Scene *scene) {
+    using namespace Assimp::Blender;
+    const auto it = conv.db.dna.indices.find("Brush");
+    if (it == conv.db.dna.indices.end()) {
+        return;
+    }
+    const Structure &ss = conv.db.dna.structures[it->second];
+    DNA::FactoryPair builders = conv.db.dna.GetBlobToStructureConverter(ss, conv.db);
+    if (!builders.first || !builders.second) {
+        return;
+    }
+
+    auto deformKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::ClothDeform_Drag: return "drag";
+        case Brush::ClothDeform_Push: return "push";
+        case Brush::ClothDeform_Grab: return "grab";
+        case Brush::ClothDeform_PinchPoint: return "pinch_point";
+        case Brush::ClothDeform_PinchPerpendicular: return "pinch_perpendicular";
+        case Brush::ClothDeform_Inflate: return "inflate";
+        case Brush::ClothDeform_Expand: return "expand";
+        case Brush::ClothDeform_SnakeHook: return "snake_hook";
+        default: return nullptr;
+        }
+    };
+    auto falloffKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::ClothFalloff_Radial: return "radial";
+        case Brush::ClothFalloff_Plane: return "plane";
+        default: return nullptr;
+        }
+    };
+    auto areaKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::ClothArea_Local: return "local";
+        case Brush::ClothArea_Global: return "global";
+        case Brush::ClothArea_Dynamic: return "dynamic";
+        default: return nullptr;
+        }
+    };
+
+    for (const FileBlockHead &bl : conv.db.entries) {
+        if (bl.dna_index != it->second) {
+            continue;
+        }
+        std::shared_ptr<Brush> brush;
+        conv.db.cache(brush).get(ss, brush, bl.address, 0);
+        if (!brush) {
+            const auto pold = conv.db.reader->GetCurrentPos();
+            const Pointer prevScope = conv.db.active_id_scope;
+            conv.db.reader->SetCurrentPos(bl.start);
+            conv.db.active_id_scope = bl.address;
+            std::shared_ptr<ElemBase> base = (ss.*builders.first)();
+            brush = std::static_pointer_cast<Brush>(base);
+            conv.db.cache(brush).set(ss, brush, bl.address, 0);
+            (ss.*builders.second)(base, conv.db);
+            base->dna_type = ss.name.c_str();
+            conv.db.active_id_scope = prevScope;
+            conv.db.reader->SetCurrentPos(pold);
+        }
+        if (!brush || !brush->hasSculptTool) {
+            continue;
+        }
+        const int tool = static_cast<unsigned char>(brush->sculpt_tool);
+        // DNA: SCULPT_TOOL_CLOTH=26, SCULPT_TOOL_BOUNDARY=30 (cloth filter / boundary cloth).
+        const bool isClothTool = (tool == Brush::Sculpt_Cloth);
+        const bool isBoundaryCloth = (tool == Brush::Sculpt_Boundary);
+        if (!isClothTool && !isBoundaryCloth) {
+            continue;
+        }
+
+        const char *bname = brush->id.name[2] != '\0' ? brush->id.name + 2 : brush->id.name;
+        std::ostringstream cj;
+        cj << "{\"name\":\"" << BlendJsonEscape(bname)
+           << "\",\"type\":\"cloth\",\"settings\":{"
+           << "\"source\":\"Brush\""
+           << ",\"sculpt_tool\":" << tool
+           << ",\"sculpt_tool_kind\":\"" << (isClothTool ? "cloth" : "boundary") << '"';
+        if (brush->size != 0) {
+            cj << ",\"size\":" << brush->size;
+        }
+        cj << ",\"alpha\":" << brush->alpha;
+        cj << ",\"cloth_deform_type\":" << brush->cloth_deform_type;
+        if (const char *dk = deformKind(brush->cloth_deform_type)) {
+            cj << ",\"cloth_deform_kind\":\"" << dk << '"';
+        }
+        cj << ",\"cloth_force_falloff_type\":" << brush->cloth_force_falloff_type;
+        if (const char *fk = falloffKind(brush->cloth_force_falloff_type)) {
+            cj << ",\"cloth_force_falloff_kind\":\"" << fk << '"';
+        }
+        cj << ",\"cloth_simulation_area_type\":" << brush->cloth_simulation_area_type;
+        if (const char *ak = areaKind(brush->cloth_simulation_area_type)) {
+            cj << ",\"cloth_simulation_area_kind\":\"" << ak << '"';
+        }
+        if (brush->hasClothMass) {
+            cj << ",\"cloth_mass\":" << brush->cloth_mass;
+        }
+        cj << ",\"cloth_damping\":" << brush->cloth_damping
+           << ",\"cloth_sim_limit\":" << brush->cloth_sim_limit
+           << ",\"cloth_sim_falloff\":" << brush->cloth_sim_falloff
+           << ",\"cloth_constraint_softbody_strength\":" << brush->cloth_constraint_softbody_strength
+           << "}}";
+        BlendPushPhysicsInv(conv.physicsClothNodes, bname, cj.str());
+    }
+
+    // Scene sculpt gravity Presence (Newtonian-like for cloth sculpt step).
+    if (scene && scene->toolsettings && scene->toolsettings->sculpt &&
+            scene->toolsettings->sculpt->hasGravityFactor) {
+        const Sculpt &sc = *scene->toolsettings->sculpt;
+        std::ostringstream gj;
+        gj << "{\"name\":\"Sculpt\",\"type\":\"cloth\",\"settings\":{"
+           << "\"source\":\"Sculpt\""
+           << ",\"gravity_factor\":" << sc.gravity_factor
+           << "}}";
+        BlendPushPhysicsInv(conv.physicsClothNodes, "Sculpt", gj.str());
+    }
+}
+
+
 // Pre-order DFS indices - same order as Host flattenSceneNodes / skinNodes.
 static void BlendBuildHierarchyIndexMap(const aiNode *node, std::unordered_map<std::string, int> &out, int &next) {
     if (node == nullptr) {
@@ -6248,6 +6369,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         // Water Caustics has PlaneAction -> channels; this branch then does not fire.
         conv.skippedCategories.push_back("BLEND_action_nla_animation_sidecar");
     }
+    // Sculpt cloth brushes (cloth_brushes_demo) - Brush DNA inventory into BLEND_physics_cloth.
+    BlendCollectClothBrushPresence(conv, &in);
     const bool hasPhys = !conv.physicsSoftNodes.empty() || !conv.physicsClothNodes.empty() ||
                          !conv.physicsFluidNodes.empty() || !conv.physicsSmokeNodes.empty() ||
                          !conv.physicsRigidNodes.empty() || !conv.physicsParticleNodes.empty() ||
