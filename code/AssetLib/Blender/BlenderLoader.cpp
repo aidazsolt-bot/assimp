@@ -478,6 +478,14 @@ bool BlendNodeIsBump(const Assimp::Blender::bNode &n) {
     return n.type == kSH_NODE_BUMP;
 }
 
+bool BlendNodeIsDisplacement(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeDisplacement") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeVectorDisplacement") == 0;
+    }
+    return false;
+}
+
 bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0') {
         return std::strcmp(n.idname, "ShaderNodeGroup") == 0 ||
@@ -2879,7 +2887,118 @@ struct BlendMapInventoryEntry {
     const Assimp::Blender::Image *img{ nullptr };
     const Assimp::Blender::bNode *node{ nullptr };
     bool linked{ false };
+    /** Set when emitted as typed $tex.* (+ usage meta) - drop from Sidecar inventory. */
+    bool typed{ false };
 };
+
+struct BlendTexUsageHit {
+    aiTextureType type{ aiTextureType_UNKNOWN };
+    const char *usage{ "unknown" }; // key=value meta ($tex.blend.usage)
+    char socket[64]{};
+};
+
+/** Map Principled/BSDF/Bump/Displacement/Mix socket name -> typed type + usage label. */
+bool BlendClassifySocketUsage(const char *sockName, const Assimp::Blender::bNode &toNode,
+        BlendTexUsageHit &out) {
+    using namespace Assimp::Blender;
+    if (sockName == nullptr || sockName[0] == '\0') {
+        return false;
+    }
+    out.socket[0] = '\0';
+    std::strncpy(out.socket, sockName, sizeof(out.socket) - 1);
+    out.socket[sizeof(out.socket) - 1] = '\0';
+
+    // Fac into Mix = mask Influence (caller must not walk through Mix Color).
+    // Fac into ColorRamp selects the ramp - not a terminal usage (keep walking).
+    if (std::strcmp(sockName, "Fac") == 0 || std::strcmp(sockName, "Factor") == 0) {
+        if (BlendNodeIsColorRamp(toNode)) {
+            return false;
+        }
+        out.type = aiTextureType_UNKNOWN;
+        out.usage = "mixFac";
+        return true;
+    }
+    // Mix Color1/Color2/A/B are pass-through operands - not a terminal usage.
+    if (BlendNodeIsMixColor(toNode) &&
+            (std::strcmp(sockName, "Color1") == 0 || std::strcmp(sockName, "Color2") == 0 ||
+                    std::strcmp(sockName, "Color") == 0 || std::strcmp(sockName, "A") == 0 ||
+                    std::strcmp(sockName, "B") == 0 || std::strcmp(sockName, "Result") == 0)) {
+        return false;
+    }
+    if (BlendNodeIsBump(toNode) || BlendNodeIsDisplacement(toNode)) {
+        if (std::strcmp(sockName, "Height") == 0 || std::strcmp(sockName, "height") == 0) {
+            out.type = aiTextureType_HEIGHT;
+            out.usage = "height";
+            return true;
+        }
+        if (std::strcmp(sockName, "Displacement") == 0) {
+            out.type = aiTextureType_DISPLACEMENT;
+            out.usage = "displacement";
+            return true;
+        }
+    }
+    if (BlendNodeIsNormalMap(toNode)) {
+        if (std::strcmp(sockName, "Color") == 0 || std::strcmp(sockName, "color") == 0) {
+            out.type = aiTextureType_NORMALS;
+            out.usage = "normal";
+            return true;
+        }
+    }
+    if (std::strcmp(sockName, "Base Color") == 0 || std::strcmp(sockName, "BaseColor") == 0) {
+        out.type = aiTextureType_BASE_COLOR;
+        out.usage = "baseColor";
+        return true;
+    }
+    // Color on Principled/Diffuse/Emission/Glass = base (not Mix - handled above).
+    if (std::strcmp(sockName, "Color") == 0 && BlendNodeIsFlattenable(toNode)) {
+        out.type = aiTextureType_BASE_COLOR;
+        out.usage = "baseColor";
+        return true;
+    }
+    if (std::strcmp(sockName, "Normal") == 0) {
+        out.type = aiTextureType_NORMALS;
+        out.usage = "normal";
+        return true;
+    }
+    if (std::strcmp(sockName, "Roughness") == 0) {
+        out.type = aiTextureType_DIFFUSE_ROUGHNESS;
+        out.usage = "roughness";
+        return true;
+    }
+    if (std::strcmp(sockName, "Metallic") == 0 || std::strcmp(sockName, "Metalness") == 0) {
+        out.type = aiTextureType_METALNESS;
+        out.usage = "metallic";
+        return true;
+    }
+    if (std::strcmp(sockName, "Emission Color") == 0 || std::strcmp(sockName, "Emission") == 0) {
+        out.type = aiTextureType_EMISSIVE;
+        out.usage = "emission";
+        return true;
+    }
+    if (std::strcmp(sockName, "Alpha") == 0) {
+        out.type = aiTextureType_OPACITY;
+        out.usage = "opacity";
+        return true;
+    }
+    if (std::strcmp(sockName, "Specular") == 0 || std::strcmp(sockName, "Specular IOR Level") == 0 ||
+            std::strcmp(sockName, "Specular Tint") == 0) {
+        out.type = aiTextureType_SPECULAR;
+        out.usage = "specular";
+        return true;
+    }
+    if (std::strcmp(sockName, "Height") == 0 || std::strcmp(sockName, "height") == 0) {
+        out.type = aiTextureType_HEIGHT;
+        out.usage = "height";
+        return true;
+    }
+    if (BlendNodeIsOutput(toNode) &&
+            (std::strcmp(sockName, "Displacement") == 0 || std::strcmp(sockName, "displacement") == 0)) {
+        out.type = aiTextureType_DISPLACEMENT;
+        out.usage = "displacement";
+        return true;
+    }
+    return false;
+}
 
 void BlendCollectTexImageInventory(const BlendNodeGraph &g, const BlendNodeGraph &rootLinks,
         std::vector<BlendMapInventoryEntry> &out, int depth = 0) {
@@ -2920,6 +3039,292 @@ void BlendCollectTexImageInventory(const BlendNodeGraph &g, const BlendNodeGraph
                 const BlendNodeGraph sub = BlendBuildGraph(*gt);
                 BlendCollectTexImageInventory(sub, rootLinks, out, depth + 1);
             }
+        }
+    }
+}
+
+/**
+ * Walk outbound DNA links from a TexImage (through Mix/Ramp/Reroute/NormalMap/Bump/
+ * Group Output) and collect usage hits. Presence only - no filename invent.
+ */
+void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::bNode *texNode,
+        std::vector<BlendTexUsageHit> &out, int depth = 0,
+        const BlendNodeGraph *hostGraph = nullptr, const Assimp::Blender::bNode *hostGroup = nullptr) {
+    using namespace Assimp::Blender;
+    if (texNode == nullptr || depth > 20) {
+        return;
+    }
+    auto sockLabel = [](const bNodeSocket *s) -> const char * {
+        if (s == nullptr) {
+            return "";
+        }
+        return s->identifier[0] != '\0' ? s->identifier : s->name;
+    };
+    auto already = [&](const BlendTexUsageHit &h) -> bool {
+        for (const BlendTexUsageHit &e : out) {
+            if (e.type == h.type && std::strcmp(e.usage, h.usage) == 0 &&
+                    std::strcmp(e.socket, h.socket) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (const bNodeLink *l : g.links) {
+        if (l == nullptr || BlendCastNode(l->fromnode.get()) != texNode) {
+            continue;
+        }
+        const bNode *to = BlendCastNode(l->tonode.get());
+        const bNodeSocket *ts = BlendCastSocket(l->tosock.get());
+        if (to == nullptr) {
+            continue;
+        }
+        const char *toSock = sockLabel(ts);
+        BlendTexUsageHit hit;
+        const bool classified = BlendClassifySocketUsage(toSock, *to, hit);
+        if (classified) {
+            if (!already(hit)) {
+                out.push_back(hit);
+            }
+            // Mix.Fac: Color comes from Color1/Color2 - do not attribute Mix Color to this map.
+            // ColorRamp.Fac: Fac selects ramp color - keep walking through the ramp.
+            if (std::strcmp(hit.usage, "mixFac") == 0 && BlendNodeIsMixColor(*to)) {
+                continue;
+            }
+        }
+        if (BlendNodeIsGroupOutput(*to)) {
+            // Cross into host ShaderNodeGroup outputs.
+            if (hostGraph != nullptr && hostGroup != nullptr) {
+                for (const bNodeLink *hl : hostGraph->links) {
+                    if (hl == nullptr || BlendCastNode(hl->fromnode.get()) != hostGroup) {
+                        continue;
+                    }
+                    const bNodeSocket *hos = BlendCastSocket(hl->fromsock.get());
+                    if (hos == nullptr || ts == nullptr) {
+                        continue;
+                    }
+                    const bool nameHit =
+                            (hos->identifier[0] && ts->identifier[0] &&
+                                    std::strcmp(hos->identifier, ts->identifier) == 0) ||
+                            BlendSockNameIs(*hos, ts->name) || BlendSockNameIs(*ts, hos->name);
+                    if (!nameHit) {
+                        continue;
+                    }
+                    const bNode *hnt = BlendCastNode(hl->tonode.get());
+                    if (hnt == nullptr) {
+                        continue;
+                    }
+                    const bNodeSocket *hts = BlendCastSocket(hl->tosock.get());
+                    BlendTexUsageHit hh;
+                    if (BlendClassifySocketUsage(sockLabel(hts), *hnt, hh) && !already(hh)) {
+                        out.push_back(hh);
+                    }
+                    if (!BlendNodeIsTexWalkBarrier(*hnt) || BlendNodeIsNormalMap(*hnt) ||
+                            BlendNodeIsBump(*hnt) || BlendNodeIsDisplacement(*hnt)) {
+                        BlendCollectTexImageUsages(*hostGraph, hnt, out, depth + 1, nullptr, nullptr);
+                    }
+                }
+            }
+            continue;
+        }
+        if (BlendNodeIsGroup(*to)) {
+            const bNodeTree *gt = BlendNodeGroupTree(*to);
+            if (gt == nullptr || ts == nullptr) {
+                continue;
+            }
+            const BlendNodeGraph sub = BlendBuildGraph(*gt);
+            // Enter only via Group Input outputs that match the fed group input socket.
+            for (const bNode *gin : sub.nodes) {
+                if (gin == nullptr || !BlendNodeIsGroupInput(*gin)) {
+                    continue;
+                }
+                for (const bNodeLink *il : sub.links) {
+                    if (il == nullptr || BlendCastNode(il->fromnode.get()) != gin) {
+                        continue;
+                    }
+                    const bNodeSocket *fos = BlendCastSocket(il->fromsock.get());
+                    if (fos == nullptr) {
+                        continue;
+                    }
+                    const bool nameHit =
+                            (fos->identifier[0] && ts->identifier[0] &&
+                                    std::strcmp(fos->identifier, ts->identifier) == 0) ||
+                            BlendSockNameIs(*fos, ts->name) || BlendSockNameIs(*ts, fos->name) ||
+                            (ts->identifier[0] && BlendSockNameIs(*fos, ts->identifier));
+                    if (!nameHit) {
+                        continue;
+                    }
+                    const bNode *inner = BlendCastNode(il->tonode.get());
+                    if (inner == nullptr) {
+                        continue;
+                    }
+                    BlendTexUsageHit ih;
+                    const bNodeSocket *its = BlendCastSocket(il->tosock.get());
+                    if (BlendClassifySocketUsage(sockLabel(its), *inner, ih) && !already(ih)) {
+                        out.push_back(ih);
+                        if (std::strcmp(ih.usage, "mixFac") == 0) {
+                            continue;
+                        }
+                    }
+                    if (!BlendNodeIsTexWalkBarrier(*inner) || BlendNodeIsNormalMap(*inner) ||
+                            BlendNodeIsBump(*inner) || BlendNodeIsDisplacement(*inner)) {
+                        BlendCollectTexImageUsages(sub, inner, out, depth + 1, &g, to);
+                    }
+                }
+            }
+            continue;
+        }
+        if (BlendNodeIsTexWalkBarrier(*to)) {
+            continue;
+        }
+        // Continue through filters / mix / ramp / reroute / normal / bump.
+        BlendCollectTexImageUsages(g, to, out, depth + 1, hostGraph, hostGroup);
+    }
+}
+
+bool BlendMatHasTextureFile(const aiMaterial *mout, aiTextureType type, const aiString &file) {
+    if (mout == nullptr || file.length == 0) {
+        return false;
+    }
+    const unsigned n = mout->GetTextureCount(type);
+    for (unsigned i = 0; i < n; ++i) {
+        aiString path;
+        if (mout->Get(AI_MATKEY_TEXTURE(type, i), path) == AI_SUCCESS &&
+                std::strcmp(path.C_Str(), file.C_Str()) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * 0al4-class: linked maps.inventory TexImages -> typed $tex.file + usage meta.
+ * Fully typed entries are marked entry.typed and omitted from Sidecar inventory.
+ */
+void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
+        std::vector<BlendMapInventoryEntry> &inventory, Assimp::Blender::ConversionData &conv_data,
+        unsigned matIndex, const BlendNodeGraph &rootG) {
+    using namespace Assimp::Blender;
+    if (mout == nullptr) {
+        return;
+    }
+    auto markPrimary = [&](const Image *img) {
+        if (img == nullptr) {
+            return;
+        }
+        for (BlendMapInventoryEntry &e : inventory) {
+            if (e.img == img) {
+                e.typed = true;
+            }
+        }
+    };
+    markPrimary(flat.mapBaseColor.img);
+    markPrimary(flat.mapNormal.img);
+    markPrimary(flat.mapRoughness.img);
+    markPrimary(flat.mapMetallic.img);
+    markPrimary(flat.mapEmission.img);
+
+    for (BlendMapInventoryEntry &e : inventory) {
+        // Primary flatten maps already typed - decommission only (no reclassify).
+        if (e.typed || e.img == nullptr || e.node == nullptr || !e.linked) {
+            continue;
+        }
+        // Resolve UV once for this TexImage node.
+        BlendTexMap map;
+        BlendFillTexMap(rootG, e.node, map);
+        if (!map.img) {
+            map.img = e.img;
+        }
+        // Usages: search from node in root; if node lives in a nested group, walk each group.
+        std::vector<BlendTexUsageHit> hits;
+        BlendCollectTexImageUsages(rootG, e.node, hits);
+        if (hits.empty()) {
+            for (const bNode *gn : rootG.nodes) {
+                if (gn == nullptr || !BlendNodeIsGroup(*gn)) {
+                    continue;
+                }
+                const bNodeTree *gt = BlendNodeGroupTree(*gn);
+                if (gt == nullptr) {
+                    continue;
+                }
+                const BlendNodeGraph sub = BlendBuildGraph(*gt);
+                bool inSub = false;
+                for (const bNode *sn : sub.nodes) {
+                    if (sn == e.node) {
+                        inSub = true;
+                        break;
+                    }
+                }
+                if (!inSub) {
+                    // deeper nesting: one more level
+                    for (const bNode *sn : sub.nodes) {
+                        if (sn == nullptr || !BlendNodeIsGroup(*sn)) {
+                            continue;
+                        }
+                        const bNodeTree *gt2 = BlendNodeGroupTree(*sn);
+                        if (gt2 == nullptr) {
+                            continue;
+                        }
+                        const BlendNodeGraph sub2 = BlendBuildGraph(*gt2);
+                        for (const bNode *sn2 : sub2.nodes) {
+                            if (sn2 == e.node) {
+                                BlendCollectTexImageUsages(sub2, e.node, hits, 0, &sub, sn);
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                BlendCollectTexImageUsages(sub, e.node, hits, 0, &rootG, gn);
+            }
+        }
+        // UV for nested nodes: BlendFillTexMap on root may miss; try again with empty uv ok.
+        if (map.uvname[0] == '\0') {
+            BlendFillTexMap(rootG, e.node, map);
+            if (!map.img) {
+                map.img = e.img;
+            }
+        }
+
+        if (hits.empty()) {
+            continue;
+        }
+        aiString embedName;
+        if (!BlendEnsureEmbeddedImage(e.img, conv_data, embedName)) {
+            continue;
+        }
+        bool anyEmitted = e.typed;
+        for (const BlendTexUsageHit &h : hits) {
+            if (BlendMatHasTextureFile(mout, h.type, embedName)) {
+                anyEmitted = true;
+                continue;
+            }
+            const unsigned slot = conv_data.next_texture[h.type]++;
+            mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(h.type, slot));
+            const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
+            BlendEmitUvWsrc(mout, h.type, slot, uvIndex);
+            if (h.usage != nullptr && h.usage[0] != '\0') {
+                aiString usage(h.usage);
+                mout->AddProperty(&usage, "$tex.blend.usage", h.type, slot);
+            }
+            if (h.socket[0] != '\0') {
+                aiString sock(h.socket);
+                mout->AddProperty(&sock, "$tex.blend.socket", h.type, slot);
+            }
+            if (e.node->name[0] != '\0') {
+                aiString nname(e.node->name);
+                mout->AddProperty(&nname, "$tex.blend.node", h.type, slot);
+            }
+            // Mirror primary BASE onto DIFFUSE when that is the usage (Looks compat).
+            if (h.type == aiTextureType_BASE_COLOR &&
+                    !BlendMatHasTextureFile(mout, aiTextureType_DIFFUSE, embedName)) {
+                const unsigned dslot = conv_data.next_texture[aiTextureType_DIFFUSE]++;
+                mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(aiTextureType_DIFFUSE, dslot));
+                BlendEmitUvWsrc(mout, aiTextureType_DIFFUSE, dslot, uvIndex);
+            }
+            anyEmitted = true;
+        }
+        if (anyEmitted) {
+            e.typed = true;
         }
     }
 }
@@ -3394,11 +3799,19 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
         }
         mjson << '}';
     }
-    if (!inventory.empty()) {
+    // Only leftover / unresolved maps - fully typed entries decommissioned (0al4-class).
+    bool anyInv = false;
+    for (const BlendMapInventoryEntry &e : inventory) {
+        if (e.img != nullptr && !e.typed) {
+            anyInv = true;
+            break;
+        }
+    }
+    if (anyInv) {
         mjson << ",\"maps\":{\"inventory\":[";
         bool ifirst = true;
         for (const BlendMapInventoryEntry &e : inventory) {
-            if (e.img == nullptr) {
+            if (e.img == nullptr || e.typed) {
                 continue;
             }
             aiString embedName;
@@ -7447,6 +7860,9 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
         if (mat->nodetree) {
             const BlendNodeGraph rootG = BlendBuildGraph(*mat->nodetree);
             BlendCollectTexImageInventory(rootG, rootG, inventory);
+            // Linked inventory maps -> typed $tex.* + usage meta; drop when fully typed.
+            BlendEmitInventoryTypedMaps(mout, flat, inventory, conv_data,
+                    static_cast<unsigned>(matRawIndex), rootG);
         }
         conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat, conv_data, inventory));
         if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityDefault ||

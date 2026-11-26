@@ -1,4 +1,4 @@
-# Generic mesh / material / animation sidecar API
+#Generic mesh / material / animation sidecar API
 
 ABI-safe side channels for importer data that do **not** fit the public
 `aiMesh` / `aiMaterial` / `aiAnimation` / `aiScene` layout (avoids the ABI break class of
@@ -48,9 +48,9 @@ Lifetime = scene. **Not** preserved by `aiCopyScene` / SceneCombiner.
 ## Consumer example
 
 ```cpp
+#include <assimp/postprocess.h>
 #include <assimp/sidecar.h>
 #include <assimp/Importer.hpp>
-#include <assimp/postprocess.h>
 
 Assimp::Importer importer;
 const aiScene *scene = importer.ReadFile("model.gltf", aiProcess_ValidateDataStructure);
@@ -188,7 +188,8 @@ Scene-level bag for `KHR_implicit_shapes` + `KHR_physics_rigid_bodies` (see `AI_
 - JSON is built generically by scanning the glTF document:
   - copy root `KHR_implicit_shapes` / `KHR_physics_rigid_bodies` when present
   - walk every `nodes[i]`; if it has `extensions.KHR_physics_rigid_bodies`, append
-    `{index,name,KHR_physics_rigid_bodies}` to `nodes[]`
+    `{
+    index, name, KHR_physics_rigid_bodies}` to `nodes[]`
   - `nodeNames[]` lists those names in the same order (fallback `node_<index>` if unnamed)
 - `index` is the glTF `nodes[]` array index (not DFS order under Assimp's synthetic ROOT).
 - Host walks `nodeNames` / `nodes` - do not hardcode author-specific body names in Assimp.
@@ -205,9 +206,9 @@ JSON bag:
 
 ```json
 "KHR_physics_collider_meshes": {
-  "meshes": [
-    { "index": 37, "name": "proxy-spiral", "positions": [x,y,z,...], "indices": [i0,i1,i2,...] }
-  ]
+    "meshes" : [
+        { "index" : 37, "name" : "proxy-spiral", "positions" : [ x, y, z, ... ], "indices" : [ i0, i1, i2, ... ] }
+    ]
 }
 ```
 
@@ -235,7 +236,8 @@ Fluid / smoke nodes additionally bind the visual mesh:
 |---|---|
 | `meshes` | `aiScene::mMeshes` indices on that node |
 | `materialIndex` / `materialName` | Primary (`meshes[0]`) material |
-| `materials[]` | Unique `{index,name}` for all meshes on the node |
+| `materials[]` | Unique `{
+    index, name}` for all meshes on the node |
 | `settings.fluid_role` | `domain` \| `flow` \| `inflow` \| `outflow` \| `obstacle` \| `collision` \| `guide` \| (`particle`/`control` Elbeem) |
 | `settings.domain_type` | authored string `gas` \| `liquid` (omit if unread); Elbeem Domain → `liquid` |
 | `settings.cache` | directory + frame range when Domain/Fluidsim `surfdataPath` present |
@@ -251,7 +253,9 @@ Fluid / smoke nodes additionally bind the visual mesh:
 
 `BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. When `phystype` SDNA present: numeric `phystype` + `phys_kind` (`newtonian`/`keyed`/`boids`/`fluid`/`no`). Hair thickness Presence when SDNA present: `rad_root`/`rad_tip`/`rad_scale`/`shape`/`shape_flag` (+ `use_close_tip` when `PART_SHAPE_CLOSE_TIP`); Cycles uses these, not `size`. No invent for dust/damage (no DNA types).
 
-**Emitter / Force Presence (2026-11-26):** classic DNA as above. Geometry Nodes particle modifier (`NodesModifierData`): read `settings.properties` IDProperty inputs + `node_group.inputs` labels — emit `inputs{label:value}`, and when resolved: `totpart` (socket `Count`/`Amount`/`Number` only — never from `Lifetime`), `emissionDensity` (`Emission Density`), `lifetime` (`Lifetime`), `attractionStrength` + `forcefield_kind:"attraction"` (`Attraction Strength`), `gravity[]` + `phys_kind:"newtonian"` (`Gravity`). Omit keys when DNA/input missing. Host Force-Step from these keys (no Name-Score).
+**Emitter / Force Presence (2026-11-26):** classic DNA as above. Geometry Nodes particle modifier (`NodesModifierData`): read `settings.properties` IDProperty inputs + `node_group.inputs` labels — emit `inputs{
+label:
+    value}`, and when resolved: `totpart` (socket `Count`/`Amount`/`Number` only — never from `Lifetime`), `emissionDensity` (`Emission Density`), `lifetime` (`Lifetime`), `attractionStrength` + `forcefield_kind:"attraction"` (`Attraction Strength`), `gravity[]` + `phys_kind:"newtonian"` (`Gravity`). Omit keys when DNA/input missing. Host Force-Step from these keys (no Name-Score).
 
 **0al4 PS density mask / texture influence:** when DNA resolves:
 
@@ -339,12 +343,13 @@ deprecated `Image.packedfile`. Assimp reads both and emits `aiTexture` (`*N`) +
 matched by material name (e.g. splash House of Chores). Grease Pencil strokes are
 out of scope.
 
-**Map inventory (2026-11-22):** `aiMaterialSidecar` may include `maps.inventory[]`
-(`image` / `node` / `linked` / `embed`) for every `ShaderNodeTexImage` in the
-material nodetree (incl. nested groups) - unlinked Previz nodes are inventory-only
-(no typed BASE invent). Particle Fur slots (0al4): typed `aiMaterial` from
-`ParticleSettings.mtex[]` (`$tex.file` + `$tex.blend.particleInfluence` meta);
-Physics Presence `settings.typedMaterial` bind — Sidecar `textures[]` removed.
+**Map inventory (2026-11-22 / typed leftover 2026-11-26):** Linked `ShaderNodeTexImage`
+maps that resolve a DNA socket usage (Principled/Bump/Displacement/NormalMap/Mix Fac)
+are emitted as typed `$tex.file` + `$tex.blend.usage` / `$tex.blend.socket` /
+`$tex.blend.node` (and `$tex.uvwsrc` when UV resolves). Fully typed entries are
+**removed** from Sidecar `maps.inventory[]`. Unlinked Previz nodes stay inventory-only
+(no typed invent). Particle Fur (0al4): typed `ParticleSettings` mat +
+`$tex.blend.particleInfluence`; Sidecar `textures[]` removed.
 
 ### BLEND World Env / Skymap (Arris)
 
@@ -372,41 +377,41 @@ JSON on a dedicated `aiAnimation` named `BLEND_drivers` (`mNumChannels == 0`) +
 
 ```json
 "BLEND_drivers": {
-  "owners": [
-    {
-      "idCode": "OB",
-      "idName": "caruncle",
-      "drivers": [
+    "owners" : [
         {
-          "rnaPath": "modifiers[\"Mesh Cache\"].eval_frame",
-          "arrayIndex": 0,
-          "type": 1,
-          "typeName": "PYTHON",
-          "flag": 25,
-          "expression": "var+4",
-          "variables": [
-            {
-              "name": "var",
-              "type": 0,
-              "typeName": "SINGLE_PROP",
-              "targets": [
+            "idCode" : "OB",
+            "idName" : "caruncle",
+            "drivers" : [
                 {
-                  "idCode": "OB",
-                  "idName": "shading mask ctrl",
-                  "idtype": 16975,
-                  "rnaPath": "[\"cacheFrame\"]",
-                  "transformChannel": 0,
-                  "transformChannelName": "LOC_X"
+                    "rnaPath" : "modifiers[\"Mesh Cache\"].eval_frame",
+                    "arrayIndex" : 0,
+                    "type" : 1,
+                    "typeName" : "PYTHON",
+                    "flag" : 25,
+                    "expression" : "var+4",
+                    "variables" : [
+                        {
+                            "name" : "var",
+                            "type" : 0,
+                            "typeName" : "SINGLE_PROP",
+                            "targets" : [
+                                {
+                                    "idCode" : "OB",
+                                    "idName" : "shading mask ctrl",
+                                    "idtype" : 16975,
+                                    "rnaPath" : "[\"cacheFrame\"]",
+                                    "transformChannel" : 0,
+                                    "transformChannelName" : "LOC_X"
+                                }
+                            ]
+                        }
+                    ],
+                    "keyInputBuffer" : "drv0_times",
+                    "keyOutputBuffer" : "drv0_values"
                 }
-              ]
-            }
-          ],
-          "keyInputBuffer": "drv0_times",
-          "keyOutputBuffer": "drv0_values"
+            ]
         }
-      ]
-    }
-  ]
+    ]
 }
 ```
 
@@ -465,16 +470,16 @@ JSON shape (schemaVersion 1):
 
 ```json
 {
-  "schemaVersion": 1,
-  "source": {
-    "format": "usda",
-    "upAxis": "Y|Z|X",
-    "metersPerUnit": 1.0,
-    "timeCodesPerSecond": 24.0,
-    "framesPerSecond": 24.0,
-    "startTimeCode": 1.0,
-    "endTimeCode": 100.0
-  }
+    "schemaVersion" : 1,
+            "source" : {
+                "format" : "usda",
+                "upAxis" : "Y|Z|X",
+                "metersPerUnit" : 1.0,
+                "timeCodesPerSecond" : 24.0,
+                "framesPerSecond" : 24.0,
+                "startTimeCode" : 1.0,
+                "endTimeCode" : 100.0
+            }
 }
 ```
 
