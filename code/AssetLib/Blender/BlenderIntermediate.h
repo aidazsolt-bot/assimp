@@ -393,6 +393,12 @@ struct ConversionData {
 
     /** Compact BLEND_scene.worldEnv JSON object (Presence - omit when empty). */
     std::string worldEnvJson;
+
+    /**
+     * 0al4: ParticleSettings with resolved MTex Images - typed materials emitted
+     * after BuildMaterials (Presence typedMaterial = settings DNA name).
+     */
+    std::vector<const ParticleSettings *> pendingParticleMtex;
 };
 #if defined(_MSC_VER) && _MSC_VER < 1900
 #pragma warning(default : 4351)

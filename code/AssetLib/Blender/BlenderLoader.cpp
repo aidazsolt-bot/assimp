@@ -3797,7 +3797,6 @@ static void BlendCollectClothBrushPresence(Assimp::Blender::ConversionData &conv
     }
 }
 
-
 // Pre-order DFS indices - same order as Host flattenSceneNodes / skinNodes.
 static void BlendBuildHierarchyIndexMap(const aiNode *node, std::unordered_map<std::string, int> &out, int &next) {
     if (node == nullptr) {
@@ -4125,6 +4124,131 @@ enum BlendParticleMapto : int {
     BlendPamap_Rough = 1 << 9,
 };
 
+/** Build comma-separated PAMAP labels from DNA mapto bits (key=value meta; no JSON). */
+static std::string BlendParticleInfluenceLabels(int mapBits) {
+    std::string out;
+    auto add = [&](int bit, const char *name) {
+        if ((mapBits & bit) == 0) {
+            return;
+        }
+        if (!out.empty()) {
+            out += ',';
+        }
+        out += name;
+    };
+    add(BlendPamap_Time, "time");
+    add(BlendPamap_Life, "life");
+    add(BlendPamap_Dens, "density");
+    add(BlendPamap_Size, "size");
+    add(BlendPamap_IVel, "ivel");
+    add(BlendPamap_Kink, "kink");
+    add(BlendPamap_Length, "length");
+    add(BlendPamap_Clump, "clump");
+    add(BlendPamap_Rough, "rough");
+    return out;
+}
+
+/**
+ * 0al4: DNA ParticleSettings.mtex[] -> typed aiMaterial ($tex.file + key=value meta).
+ * Sidecar textures[] decommissioned - Host binds via typedMaterial / meta.
+ */
+static void BlendEmitParticleTypedMTexMaterials(Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    for (const ParticleSettings *part : conv.pendingParticleMtex) {
+        if (part == nullptr || part->id.name[2] == '\0') {
+            continue;
+        }
+        const std::string settingsName = part->id.name + 2;
+        // Dedupe by material name (shared ParticleSettings across systems).
+        bool already = false;
+        for (const aiMaterial *existing : conv.materials.get()) {
+            if (existing == nullptr) {
+                continue;
+            }
+            aiString en;
+            if (existing->Get(AI_MATKEY_NAME, en) == AI_SUCCESS &&
+                    std::strcmp(en.C_Str(), settingsName.c_str()) == 0) {
+                already = true;
+                break;
+            }
+        }
+        if (already) {
+            continue;
+        }
+
+        for (size_t i = 0; i < sizeof(conv.next_texture) / sizeof(conv.next_texture[0]); ++i) {
+            conv.next_texture[i] = 0;
+        }
+
+        aiMaterial *mout = new aiMaterial();
+        aiString matName(settingsName);
+        mout->AddProperty(&matName, AI_MATKEY_NAME);
+        {
+            // Presence marker: this mat carries Particle MTex maps (not Looks BASE/NORMAL).
+            const int isPs = 1;
+            mout->AddProperty(&isPs, 1, "$mat.blend.particleSettings", 0, 0);
+            aiString psName(settingsName);
+            mout->AddProperty(&psName, "$mat.blend.particleSettingsName", 0, 0);
+        }
+
+        const aiTextureType texType = aiTextureType_UNKNOWN;
+        unsigned emitted = 0;
+        for (size_t ti = 0; ti < sizeof(part->mtex) / sizeof(part->mtex[0]); ++ti) {
+            if (!part->mtex[ti] || !part->mtex[ti]->tex || !part->mtex[ti]->tex->ima) {
+                continue;
+            }
+            const MTex &mtx = *part->mtex[ti];
+            const Image *img = mtx.tex->ima.get();
+            aiString embedName;
+            if (!BlendEnsureEmbeddedImage(img, conv, embedName)) {
+                continue;
+            }
+            const unsigned slot = conv.next_texture[texType]++;
+            mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(texType, slot));
+
+            const int mapBits = static_cast<int>(mtx.mapto);
+            mout->AddProperty(&mapBits, 1, "$tex.blend.mapto", texType, slot);
+            {
+                const int dnaSlot = static_cast<int>(ti);
+                mout->AddProperty(&dnaSlot, 1, "$tex.blend.mtexSlot", texType, slot);
+            }
+            const std::string influences = BlendParticleInfluenceLabels(mapBits);
+            if (!influences.empty()) {
+                aiString inf(influences);
+                mout->AddProperty(&inf, "$tex.blend.particleInfluence", texType, slot);
+            }
+            if (mtx.hasPadensfac) {
+                mout->AddProperty(&mtx.padensfac, 1, "$tex.blend.densityFac", texType, slot);
+            }
+            if (mtx.hasLengthfac) {
+                mout->AddProperty(&mtx.lengthfac, 1, "$tex.blend.lengthFac", texType, slot);
+            }
+            if (mtx.hasTimefac) {
+                mout->AddProperty(&mtx.timefac, 1, "$tex.blend.timeFac", texType, slot);
+            }
+            if (mtx.hasLifefac) {
+                mout->AddProperty(&mtx.lifefac, 1, "$tex.blend.lifeFac", texType, slot);
+            }
+            if (mtx.hasSizefac) {
+                mout->AddProperty(&mtx.sizefac, 1, "$tex.blend.sizeFac", texType, slot);
+            }
+            // UVWSRC only when DNA uvname resolves on an emitter mesh - never invent 0.
+            if (mtx.uvname[0] != '\0') {
+                const int uvIndex = BlendFindUvIndex(conv, 0u, mtx.uvname);
+                BlendEmitUvWsrc(mout, texType, slot, uvIndex);
+            }
+            ++emitted;
+        }
+        if (emitted == 0) {
+            delete mout;
+            continue;
+        }
+        conv.materials->push_back(mout);
+        conv.materialSidecarJson.emplace_back();
+    }
+    conv.pendingParticleMtex.clear();
+}
+
 static const char *BlendParticleVgSlotName(int slot) {
     using Assimp::Blender::ParticleSystem;
     switch (slot) {
@@ -4309,10 +4433,10 @@ static bool BlendMeshRestAvgNormal(const Assimp::Blender::Mesh &mesh, float out[
 /** Map NodesModifier Input_* IDProperty values to group-socket labels (Presence). */
 static void BlendAppendNodesModifierParticlePresence(std::ostringstream &settings,
         const Assimp::Blender::NodesModifierData &nmd) {
-    using Assimp::Blender::ElemBase;
-    using Assimp::Blender::IDProperty;
     using Assimp::Blender::bNodeSocket;
     using Assimp::Blender::bNodeTree;
+    using Assimp::Blender::ElemBase;
+    using Assimp::Blender::IDProperty;
 
     const IDProperty *root = nmd.settings.properties.get();
     if (root == nullptr) {
@@ -5032,84 +5156,35 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                     }
                 }
             }
-            // Particle texture slots (Fur density maps) - Presence: only when Image resolves.
-            bool texFirst = true;
-            for (size_t ti = 0; ti < sizeof(p.mtex) / sizeof(p.mtex[0]); ++ti) {
-                if (!p.mtex[ti] || !p.mtex[ti]->tex || !p.mtex[ti]->tex->ima) {
-                    continue;
+            // 0al4: Particle MTex maps -> typed material (after BuildMaterials).
+            // Sidecar textures[] decommissioned - Presence typedMaterial = settings DNA name.
+            if (p.id.name[2] != '\0') {
+                bool anyMtex = false;
+                for (size_t ti = 0; ti < sizeof(p.mtex) / sizeof(p.mtex[0]); ++ti) {
+                    if (!p.mtex[ti] || !p.mtex[ti]->tex || !p.mtex[ti]->tex->ima) {
+                        continue;
+                    }
+                    aiString embedName;
+                    if (!BlendEnsureEmbeddedImage(p.mtex[ti]->tex->ima.get(), conv, embedName)) {
+                        continue;
+                    }
+                    anyMtex = true;
+                    break;
                 }
-                const MTex &mtx = *p.mtex[ti];
-                const Image *img = mtx.tex->ima.get();
-                aiString embedName;
-                int embedIndex = -1;
-                if (!BlendEnsureEmbeddedImage(img, conv, embedName, &embedIndex)) {
-                    continue;
-                }
-                if (texFirst) {
-                    partJson << ",\"textures\":[";
-                    texFirst = false;
-                } else {
-                    partJson << ',';
-                }
-                partJson << "{\"slot\":" << ti;
-                if (img->name[0] != '\0') {
-                    partJson << ",\"image\":\"" << BlendJsonEscape(img->name + 2) << '"';
-                }
-                if (embedIndex >= 0) {
-                    partJson << ",\"embed\":\"*" << embedIndex << '"';
-                }
-                // 0al4: DNA mapto bits as particle influences (PAMAP_*), not material MAP_*.
-                {
-                    const int mapBits = static_cast<int>(mtx.mapto);
-                    partJson << ",\"mapto\":" << mapBits;
-                    bool infFirst = true;
-                    auto addInf = [&](int bit, const char *name) {
-                        if ((mapBits & bit) == 0) {
-                            return;
+                if (anyMtex) {
+                    const std::string settingsName = p.id.name + 2;
+                    partJson << ",\"typedMaterial\":\"" << BlendJsonEscape(settingsName) << '"';
+                    bool queued = false;
+                    for (const ParticleSettings *queuedPart : conv.pendingParticleMtex) {
+                        if (queuedPart == &p) {
+                            queued = true;
+                            break;
                         }
-                        if (infFirst) {
-                            partJson << ",\"influences\":[";
-                            infFirst = false;
-                        } else {
-                            partJson << ',';
-                        }
-                        partJson << '"' << name << '"';
-                    };
-                    addInf(BlendPamap_Time, "time");
-                    addInf(BlendPamap_Life, "life");
-                    addInf(BlendPamap_Dens, "density");
-                    addInf(BlendPamap_Size, "size");
-                    addInf(BlendPamap_IVel, "ivel");
-                    addInf(BlendPamap_Kink, "kink");
-                    addInf(BlendPamap_Length, "length");
-                    addInf(BlendPamap_Clump, "clump");
-                    addInf(BlendPamap_Rough, "rough");
-                    if (!infFirst) {
-                        partJson << ']';
+                    }
+                    if (!queued) {
+                        conv.pendingParticleMtex.push_back(&p);
                     }
                 }
-                if (mtx.hasPadensfac) {
-                    partJson << ",\"densityFac\":" << mtx.padensfac;
-                }
-                if (mtx.hasLengthfac) {
-                    partJson << ",\"lengthFac\":" << mtx.lengthfac;
-                }
-                if (mtx.hasTimefac) {
-                    partJson << ",\"timeFac\":" << mtx.timefac;
-                }
-                if (mtx.hasLifefac) {
-                    partJson << ",\"lifeFac\":" << mtx.lifefac;
-                }
-                if (mtx.hasSizefac) {
-                    partJson << ",\"sizeFac\":" << mtx.sizefac;
-                }
-                if (mtx.uvname[0] != '\0') {
-                    partJson << ",\"uv\":\"" << BlendJsonEscape(mtx.uvname) << '"';
-                }
-                partJson << '}';
-            }
-            if (!texFirst) {
-                partJson << ']';
             }
         } else {
             partJson << "\"source\":\"ParticleSystem\"";
@@ -6309,6 +6384,8 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     }
 
     BuildMaterials(conv);
+    // 0al4: ParticleSettings.mtex[] -> typed $tex.file + meta (after mesh mats exist for UV resolve).
+    BlendEmitParticleTypedMTexMaterials(conv);
     BlendEmitWorldEnv(in, conv);
 
     // Presence: emit every packed Image ID block, not only those reached via materials.

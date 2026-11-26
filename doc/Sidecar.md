@@ -259,10 +259,19 @@ Fluid / smoke nodes additionally bind the visual mesh:
 |---|---|
 | `settings.vertexGroups` | Named slots from `ParticleSystem.vgroup[]` → `Object.defbase` / `Mesh.vertex_group_names` (`density`, `length`, …); optional `*Neg` when `vg_neg` bit set |
 | `settings.faceMask` / `faceDensity` | Faces with density-VG avg weight > 0 from DNA `MDeformVert` (`faceMaskSource=vertex_group_density`) |
-| `settings.textures[].mapto` | Raw DNA `MTex.mapto` bits |
-| `settings.textures[].influences` | Particle PAMAP labels (`density`, `length`, …) from those bits |
-| `settings.textures[].densityFac` | DNA `padensfac` when present (and sibling `lengthFac` / `timeFac` / …) |
+| `settings.typedMaterial` | DNA `ParticleSettings` ID name — Host finds typed `aiMaterial` with that `?mat.name` carrying Particle MTex maps |
 | `hairPaths.birthFace[]` | Per-strand DNA `ParticleData.num` when resolved (tessellated face index) |
+
+**Typed Particle MTex (0al4 — Sidecar `textures[]` decommissioned):** when Image resolves, Assimp emits an `aiMaterial` named after `ParticleSettings` with `$mat.blend.particleSettings=1` and per-slot (`aiTextureType_UNKNOWN`):
+
+| Typed key | Meaning |
+|---|---|
+| `$tex.file` | Embed `*N` or filepath (same as material maps) |
+| `$tex.blend.mapto` | Raw DNA `MTex.mapto` bits (PAMAP_*, not material MAP_*) |
+| `$tex.blend.mtexSlot` | DNA `mtex[]` index |
+| `$tex.blend.particleInfluence` | Comma-separated PAMAP labels (`density`, `length`, `clump`, …) — key=value only, no JSON |
+| `$tex.blend.densityFac` / `lengthFac` / … | DNA fac Presence when SDNA resolves |
+| `$tex.uvwsrc` | Only when DNA `uvname` resolves on a mesh UV set — never invent 0 |
 
 Omit keys when DNA missing — no invent. Host filters palate/cavity strands from Presence (not filenames).
 
@@ -333,8 +342,9 @@ out of scope.
 **Map inventory (2026-11-22):** `aiMaterialSidecar` may include `maps.inventory[]`
 (`image` / `node` / `linked` / `embed`) for every `ShaderNodeTexImage` in the
 material nodetree (incl. nested groups) - unlinked Previz nodes are inventory-only
-(no typed BASE invent). Particle Fur slots: Physics `BLEND_physics_particles`
-`settings.textures[]` from `ParticleSettings.mtex[]` when Image resolves.
+(no typed BASE invent). Particle Fur slots (0al4): typed `aiMaterial` from
+`ParticleSettings.mtex[]` (`$tex.file` + `$tex.blend.particleInfluence` meta);
+Physics Presence `settings.typedMaterial` bind — Sidecar `textures[]` removed.
 
 ### BLEND World Env / Skymap (Arris)
 
