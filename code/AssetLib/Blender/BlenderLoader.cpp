@@ -4124,6 +4124,11 @@ enum BlendParticleMapto : int {
     BlendPamap_Rough = 1 << 9,
 };
 
+/** DNA eMTex_TexCo - TEXCO_UV bit (makesdna DNA_material_types.h). */
+enum BlendMTexTexCo : int {
+    BlendTexco_UV = 1 << 4,
+};
+
 /** Build comma-separated PAMAP labels from DNA mapto bits (key=value meta; no JSON). */
 static std::string BlendParticleInfluenceLabels(int mapBits) {
     std::string out;
@@ -4232,10 +4237,20 @@ static void BlendEmitParticleTypedMTexMaterials(Assimp::Blender::ConversionData 
             if (mtx.hasSizefac) {
                 mout->AddProperty(&mtx.sizefac, 1, "$tex.blend.sizeFac", texType, slot);
             }
-            // UVWSRC only when DNA uvname resolves on an emitter mesh - never invent 0.
-            if (mtx.uvname[0] != '\0') {
-                const int uvIndex = BlendFindUvIndex(conv, 0u, mtx.uvname);
-                BlendEmitUvWsrc(mout, texType, slot, uvIndex);
+            // UVWSRC when DNA TEXCO_UV (named uvname or default/render UV after active_rnd).
+            // BlendFindUvIndex returns -1 if unresolved - never invent UV0 when missing.
+            {
+                bool resolveUv = false;
+                if (mtx.hasTexco) {
+                    resolveUv = (mtx.texco & BlendTexco_UV) != 0;
+                } else if (mtx.uvname[0] != '\0') {
+                    // Older DNA without texco: named UV still means UV mapping.
+                    resolveUv = true;
+                }
+                if (resolveUv) {
+                    const int uvIndex = BlendFindUvIndex(conv, 0u, mtx.uvname);
+                    BlendEmitUvWsrc(mout, texType, slot, uvIndex);
+                }
             }
             ++emitted;
         }

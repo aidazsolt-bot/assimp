@@ -436,6 +436,10 @@ void Structure::Convert<MTex>(
         const FileDatabase &db) const {
 
     int temp_short = 0;
+    dest.hasTexco = (Get("texco") != nullptr);
+    if (dest.hasTexco) {
+        ReadField<ErrorPolicy_Igno>(dest.texco, "texco", db);
+    }
     ReadField<ErrorPolicy_Igno>(temp_short, "mapto", db);
     dest.mapto = static_cast<Assimp::Blender::MTex::MapType>(temp_short);
     int temp = 0;

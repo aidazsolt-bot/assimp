@@ -271,7 +271,7 @@ Fluid / smoke nodes additionally bind the visual mesh:
 | `$tex.blend.mtexSlot` | DNA `mtex[]` index |
 | `$tex.blend.particleInfluence` | Comma-separated PAMAP labels (`density`, `length`, `clump`, …) — key=value only, no JSON |
 | `$tex.blend.densityFac` / `lengthFac` / … | DNA fac Presence when SDNA resolves |
-| `$tex.uvwsrc` | Only when DNA `uvname` resolves on a mesh UV set — never invent 0 |
+| `$tex.uvwsrc` | When DNA `texco` has `TEXCO_UV` (or named `uvname` without texco): resolved UV index (`uvname` or default/render after `active_rnd` promote) — never invent 0 if unresolved |
 
 Omit keys when DNA missing — no invent. Host filters palate/cavity strands from Presence (not filenames).
 

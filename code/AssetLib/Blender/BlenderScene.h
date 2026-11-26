@@ -2189,7 +2189,10 @@ struct MTex final : ElemBase {
         MapType_WARP = 8192
     };
 
-    // short texco, maptoneg;
+    /** DNA eMTex_TexCo bits (TEXCO_UV=1<<4, …) - Presence when SDNA has texco. */
+    short texco WARN;
+    bool hasTexco WARN;
+
     MapType mapto;
 
     BlendType blendtype;
