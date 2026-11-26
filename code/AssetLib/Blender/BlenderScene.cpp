@@ -882,6 +882,119 @@ void Structure::Convert<ClothModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure::Convert<IDPropertyData>(
+        IDPropertyData &dest,
+        const FileDatabase &db) const {
+    dest.pointer.val = 0;
+    dest.val = 0;
+    dest.val2 = 0;
+    // void *pointer - raw file address (string / array / ID payload).
+    try {
+        const Field &fp = (*this)["*pointer"];
+        const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+        db.reader->IncPtr(fp.offset);
+        Convert(dest.pointer, db);
+        db.reader->SetCurrentPos(old);
+    } catch (const Error &) {
+        dest.pointer.val = 0;
+    }
+    ReadField<ErrorPolicy_Igno>(dest.group, "group", db);
+    ReadField<ErrorPolicy_Igno>(dest.val, "val", db);
+    ReadField<ErrorPolicy_Igno>(dest.val2, "val2", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<IDProperty>(
+        IDProperty &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.next, "*next", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadField<ErrorPolicy_Igno>(dest.len, "len", db);
+    ReadField<ErrorPolicy_Igno>(dest.data, "data", db);
+    dest.floatArray.clear();
+    dest.intArray.clear();
+    dest.str.clear();
+
+    const Pointer &ptrval = dest.data.pointer;
+    if (dest.type == IDProperty::Type_String && ptrval.val != 0) {
+        try {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            if (block) {
+                const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                for (;;) {
+                    const char c = static_cast<char>(db.reader->GetI1());
+                    if (c == '\0') {
+                        break;
+                    }
+                    dest.str.push_back(c);
+                    if (dest.str.size() > 1024) {
+                        break;
+                    }
+                }
+                db.reader->SetCurrentPos(pold);
+            }
+        } catch (const Error &) {
+            dest.str.clear();
+        }
+    } else if (dest.type == IDProperty::Type_Array && ptrval.val != 0 && dest.len > 0) {
+        try {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            if (block) {
+                const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                if (dest.subtype == IDProperty::Array_Float) {
+                    dest.floatArray.resize(static_cast<size_t>(dest.len));
+                    for (int i = 0; i < dest.len; ++i) {
+                        dest.floatArray[static_cast<size_t>(i)] = db.reader->GetF4();
+                    }
+                } else if (dest.subtype == IDProperty::Array_Int) {
+                    dest.intArray.resize(static_cast<size_t>(dest.len));
+                    for (int i = 0; i < dest.len; ++i) {
+                        dest.intArray[static_cast<size_t>(i)] = db.reader->GetI4();
+                    }
+                } else if (dest.subtype == IDProperty::Array_Double) {
+                    dest.floatArray.resize(static_cast<size_t>(dest.len));
+                    for (int i = 0; i < dest.len; ++i) {
+                        dest.floatArray[static_cast<size_t>(i)] = static_cast<float>(db.reader->GetF8());
+                    }
+                }
+                db.reader->SetCurrentPos(pold);
+            }
+        } catch (const Error &) {
+            dest.floatArray.clear();
+            dest.intArray.clear();
+        }
+    }
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<NodesModifierSettings>(
+        NodesModifierSettings &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.properties, "*properties", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<NodesModifierData>(
+        NodesModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.node_group, "*node_group", db);
+    ReadField<ErrorPolicy_Igno>(dest.settings, "settings", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure::Convert<ParticleKey>(
         ParticleKey &dest,
         const FileDatabase &db) const {
@@ -1667,6 +1780,7 @@ void Structure::Convert<bNodeTree>(
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
     ReadField<ErrorPolicy_Igno>(dest.nodes, "nodes", db);
     ReadField<ErrorPolicy_Igno>(dest.links, "links", db);
+    ReadField<ErrorPolicy_Igno>(dest.inputs, "inputs", db);
     db.reader->IncPtr(size);
 }
 
@@ -2285,6 +2399,9 @@ void DNA::RegisterConverters() {
     converters["FluidEffectorSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidEffectorSettings>, &Structure::Convert<FluidEffectorSettings>);
     converters["ClothModifierData"] = DNA::FactoryPair(&Structure::Allocate<ClothModifierData>, &Structure::Convert<ClothModifierData>);
     converters["ClothSimSettings"] = DNA::FactoryPair(&Structure::Allocate<ClothSimSettings>, &Structure::Convert<ClothSimSettings>);
+    converters["IDPropertyData"] = DNA::FactoryPair(&Structure::Allocate<IDPropertyData>, &Structure::Convert<IDPropertyData>);
+    converters["IDProperty"] = DNA::FactoryPair(&Structure::Allocate<IDProperty>, &Structure::Convert<IDProperty>);
+    converters["NodesModifierSettings"] = DNA::FactoryPair(&Structure::Allocate<NodesModifierSettings>, &Structure::Convert<NodesModifierSettings>);
     converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
     {
         // All blender.git *ModifierData DNA names except Subsurf/Mirror/Fluid/Cloth/
@@ -2305,6 +2422,8 @@ void DNA::RegisterConverters() {
     converters["MeshSeqCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshSeqCacheModifierData>, &Structure::Convert<MeshSeqCacheModifierData>);
     converters["CollisionModifierData"] = DNA::FactoryPair(&Structure::Allocate<CollisionModifierData>, &Structure::Convert<CollisionModifierData>);
     converters["CurveModifierData"] = DNA::FactoryPair(&Structure::Allocate<CurveModifierData>, &Structure::Convert<CurveModifierData>);
+    // Override generic map entry for Geometry Nodes modifier inputs Presence.
+    converters["NodesModifierData"] = DNA::FactoryPair(&Structure::Allocate<NodesModifierData>, &Structure::Convert<NodesModifierData>);
     converters["SmokeModifierData"] = DNA::FactoryPair(&Structure::Allocate<SmokeModifierData>, &Structure::Convert<SmokeModifierData>);
     converters["FluidsimSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidsimSettings>, &Structure::Convert<FluidsimSettings>);
     converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);

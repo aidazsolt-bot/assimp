@@ -606,11 +606,13 @@ struct bNodeLink final : ElemBase {
     std::shared_ptr<ElemBase> tosock;
 };
 
-/** Subset of DNA bNodeTree (Material.nodetree). */
+/** Subset of DNA bNodeTree (Material.nodetree / NodesModifierData.node_group). */
 struct bNodeTree final : ElemBase {
     ID id;
     ListBase nodes;
     ListBase links;
+    /** Group interface sockets (GN modifier Input_* label map). */
+    ListBase inputs WARN;
 };
 
 /*
@@ -1157,6 +1159,23 @@ struct MeshSeqCacheModifierData final : SharedModifierData {
  * deflect!=0 => mesh collides with particles/cloth/softbody.
  */
 struct PartDeflect final : ElemBase {
+    /** DNA ePFieldType (forcefield) - Presence labels for Host Force-Step. */
+    enum FieldType {
+        Field_Force = 1,
+        Field_Vortex = 2,
+        Field_Magnetic = 3,
+        Field_Wind = 4,
+        Field_Guide = 5,
+        Field_Texture = 6,
+        Field_Harmonic = 7,
+        Field_Charge = 8,
+        Field_LennardJones = 9,
+        Field_Boid = 10,
+        Field_Turbulence = 11,
+        Field_Drag = 12,
+        Field_FluidFlow = 13
+    };
+
     int flag WARN;
     short deflect WARN;
     short forcefield WARN;
@@ -1323,6 +1342,70 @@ struct ClothModifierData final : SharedModifierData {
     std::shared_ptr<ClothSimSettings> sim_parms;
 };
 
+/**
+ * DNA IDPropertyData (embedded in IDProperty.data).
+ * pointer = string/array/ID payload; group = GROUP children; val = INT/FLOAT bits.
+ */
+struct IDPropertyData final : ElemBase {
+    Pointer pointer WARN;
+    ListBase group WARN;
+    int val WARN;
+    int val2 WARN;
+
+    IDPropertyData() :
+            val(0), val2(0) {
+        pointer.val = 0;
+    }
+};
+
+/**
+ * DNA IDProperty (NodesModifierSettings.properties group).
+ * Types: STRING=0 INT=1 FLOAT=2 ARRAY=5 GROUP=6 ID=7 DOUBLE=8 (DNA_ID.h).
+ */
+struct IDProperty final : ElemBase {
+    enum Type {
+        Type_String = 0,
+        Type_Int = 1,
+        Type_Float = 2,
+        Type_Array = 5,
+        Type_Group = 6,
+        Type_Id = 7,
+        Type_Double = 8
+    };
+    enum ArraySubtype {
+        Array_Int = 1,
+        Array_Float = 2,
+        Array_Double = 8
+    };
+
+    std::shared_ptr<ElemBase> next WARN;
+    char type WARN;
+    char subtype WARN;
+    char name[64] WARN;
+    int len WARN;
+    IDPropertyData data WARN;
+    /** Decoded Presence (filled in Convert from data.pointer / data.val). */
+    std::vector<float> floatArray WARN;
+    std::vector<int> intArray WARN;
+    std::string str WARN;
+
+    IDProperty() :
+            type(0), subtype(0), len(0) {
+        name[0] = '\0';
+    }
+};
+
+/** DNA NodesModifierSettings - IDProperty group of modifier inputs. */
+struct NodesModifierSettings final : ElemBase {
+    std::shared_ptr<IDProperty> properties WARN;
+};
+
+/** DNA NodesModifierData - Geometry Nodes modifier (specialized vs Generic hull). */
+struct NodesModifierData final : SharedModifierData {
+    std::shared_ptr<bNodeTree> node_group WARN;
+    NodesModifierSettings settings WARN;
+};
+
 /** DNA ParticleKey (ParticleData.state / prev_state). */
 struct ParticleKey final : ElemBase {
     float co[3] WARN;
@@ -1474,6 +1557,14 @@ struct ParticleSettings final : ElemBase {
         Type_FluidSprayBubble = 10,
         Type_FluidFoamBubble = 11,
         Type_FluidSprayFoamBubble = 12
+    };
+    /** DNA eParticlePhysicsType (phystype) - Newtonian / keyed / … */
+    enum PhysType {
+        Phys_No = 0,
+        Phys_Newtonian = 1,
+        Phys_Keyed = 2,
+        Phys_Boids = 3,
+        Phys_Fluid = 4
     };
     /** Blender 2.8 DNA name; newer files may use instance_collection. */
     std::shared_ptr<Collection> dup_group WARN;

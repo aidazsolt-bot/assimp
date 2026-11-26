@@ -191,6 +191,26 @@ void Structure::Convert<ClothModifierData>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<IDPropertyData>(
+        IDPropertyData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<IDProperty>(
+        IDProperty &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<NodesModifierSettings>(
+        NodesModifierSettings &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<NodesModifierData>(
+        NodesModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<ParticleKey>(
         ParticleKey &dest,
         const FileDatabase &db) const;

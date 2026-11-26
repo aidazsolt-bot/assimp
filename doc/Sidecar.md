@@ -243,11 +243,13 @@ Fluid / smoke nodes additionally bind the visual mesh:
 | `settings.effector` | FluidEffector DNA (surface_distance, guide_mode, …) when EFFEC |
 | legacy Fluidsim | `source:FluidsimModifierData` + `fluidsim_type` bits + bake/res/viscosity Presence |
 
-`BLEND_physics_collision`: Collision modifier bind and/or `Object.pd` (PartDeflect) friction/damping Presence — no Name-Score.
+`BLEND_physics_collision`: Collision modifier bind and/or `Object.pd` (PartDeflect) friction/damping Presence — no Name-Score. When `forcefield!=0`: numeric `forcefield` + `forcefield_kind` (`force`/`wind`/`vortex`/… from `ePFieldType`) + `f_strength`.
 
 `BLEND_modifier_curve`: CurveModifier DNA — `curveObject`, `defaxis`, optional `vgroup`.
 
-`BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. No invent for dust/damage (no DNA types).
+`BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. When `phystype` SDNA present: numeric `phystype` + `phys_kind` (`newtonian`/`keyed`/`boids`/`fluid`/`no`). No invent for dust/damage (no DNA types).
+
+**Emitter / Force Presence (2026-11-26):** classic DNA as above. Geometry Nodes particle modifier (`NodesModifierData`): read `settings.properties` IDProperty inputs + `node_group.inputs` labels — emit `inputs{label:value}`, and when resolved: `totpart` (socket `Count`/`Amount`/`Number` only — never from `Lifetime`), `emissionDensity` (`Emission Density`), `lifetime` (`Lifetime`), `attractionStrength` + `forcefield_kind:"attraction"` (`Attraction Strength`), `gravity[]` + `phys_kind:"newtonian"` (`Gravity`). Omit keys when DNA/input missing. Host Force-Step from these keys (no Name-Score).
 
 **0al4 PS density mask / texture influence:** when DNA resolves:
 

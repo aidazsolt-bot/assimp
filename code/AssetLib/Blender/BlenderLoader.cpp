@@ -4137,6 +4137,178 @@ static bool BlendMeshRestAvgNormal(const Assimp::Blender::Mesh &mesh, float out[
     return true;
 }
 
+/** Map NodesModifier Input_* IDProperty values to group-socket labels (Presence). */
+static void BlendAppendNodesModifierParticlePresence(std::ostringstream &settings,
+        const Assimp::Blender::NodesModifierData &nmd) {
+    using Assimp::Blender::ElemBase;
+    using Assimp::Blender::IDProperty;
+    using Assimp::Blender::bNodeSocket;
+    using Assimp::Blender::bNodeTree;
+
+    const IDProperty *root = nmd.settings.properties.get();
+    if (root == nullptr) {
+        return;
+    }
+    const ElemBase *childFirst = nullptr;
+    if (root->type == IDProperty::Type_Group) {
+        childFirst = root->data.group.first.get();
+    } else if (std::strncmp(root->name, "Input_", 6) == 0) {
+        childFirst = root;
+    }
+    if (childFirst == nullptr) {
+        return;
+    }
+
+    // identifier (Input_N) -> socket display name from node_group.inputs
+    std::unordered_map<std::string, std::string> idToLabel;
+    if (nmd.node_group) {
+        const bNodeTree &tree = *nmd.node_group;
+        for (const ElemBase *e = tree.inputs.first.get(); e != nullptr;) {
+            const bNodeSocket *sock = static_cast<const bNodeSocket *>(e);
+            if (sock->identifier[0] != '\0' && sock->name[0] != '\0') {
+                idToLabel[sock->identifier] = sock->name;
+            }
+            e = sock->next.get();
+        }
+    }
+
+    struct NamedVal {
+        std::string label;
+        const IDProperty *prop;
+    };
+    std::vector<NamedVal> vals;
+    for (const ElemBase *e = childFirst; e != nullptr;) {
+        const IDProperty *prop = static_cast<const IDProperty *>(e);
+        const char *ident = prop->name;
+        if (std::strstr(ident, "_use_attribute") != nullptr ||
+                std::strstr(ident, "_attribute_name") != nullptr) {
+            e = prop->next.get();
+            continue;
+        }
+        if (std::strncmp(ident, "Input_", 6) != 0) {
+            e = prop->next.get();
+            continue;
+        }
+        NamedVal nv;
+        auto it = idToLabel.find(ident);
+        nv.label = (it != idToLabel.end()) ? it->second : std::string(ident);
+        nv.prop = prop;
+        vals.push_back(std::move(nv));
+        e = prop->next.get();
+    }
+    if (vals.empty()) {
+        return;
+    }
+
+    bool haveAttract = false;
+    float attractStrength = 0.f;
+    bool haveGravity = false;
+    float gravity[3] = { 0.f, 0.f, 0.f };
+    bool havePhysNewtonian = false;
+    bool haveTotpart = false;
+    int totpart = 0;
+    bool haveEmissionDensity = false;
+    float emissionDensity = 0.f;
+    bool haveLifetime = false;
+    int lifetime = 0;
+    std::ostringstream hostKeys;
+
+    settings << ",\"inputs\":{";
+    bool firstIn = true;
+    for (const NamedVal &nv : vals) {
+        const IDProperty &p = *nv.prop;
+        if (!firstIn) {
+            settings << ',';
+        }
+        firstIn = false;
+        const std::string key = BlendJsonEscape(nv.label.c_str());
+        settings << '"' << key << "\":";
+        if (p.type == IDProperty::Type_Int) {
+            settings << p.data.val;
+            // Partikelzahl only from sockets that literally mean count (no invent from Lifetime).
+            if (key == "Count" || key == "Amount" || key == "Number") {
+                haveTotpart = true;
+                totpart = p.data.val;
+            }
+            if (key == "Lifetime") {
+                haveLifetime = true;
+                lifetime = p.data.val;
+            }
+        } else if (p.type == IDProperty::Type_Float) {
+            float f = 0.f;
+            std::memcpy(&f, &p.data.val, sizeof(float));
+            settings << f;
+            if (key == "Attraction Strength") {
+                haveAttract = true;
+                attractStrength = f;
+            }
+            if (key == "Emission Density") {
+                haveEmissionDensity = true;
+                emissionDensity = f;
+            }
+            if (key == "Count" || key == "Amount" || key == "Number") {
+                haveTotpart = true;
+                totpart = static_cast<int>(f);
+            }
+            if (key == "Lifetime") {
+                haveLifetime = true;
+                lifetime = static_cast<int>(f);
+            }
+        } else if (p.type == IDProperty::Type_Array) {
+            settings << '[';
+            if (!p.floatArray.empty()) {
+                for (size_t i = 0; i < p.floatArray.size(); ++i) {
+                    if (i) {
+                        settings << ',';
+                    }
+                    settings << p.floatArray[i];
+                }
+                if (key == "Gravity" && p.floatArray.size() >= 3) {
+                    haveGravity = true;
+                    gravity[0] = p.floatArray[0];
+                    gravity[1] = p.floatArray[1];
+                    gravity[2] = p.floatArray[2];
+                    // Authored Gravity on particle GN => Newtonian Presence for Host Force-Step.
+                    havePhysNewtonian = true;
+                }
+            } else if (!p.intArray.empty()) {
+                for (size_t i = 0; i < p.intArray.size(); ++i) {
+                    if (i) {
+                        settings << ',';
+                    }
+                    settings << p.intArray[i];
+                }
+            }
+            settings << ']';
+        } else if (p.type == IDProperty::Type_String) {
+            settings << '"' << BlendJsonEscape(p.str.c_str()) << '"';
+        } else {
+            settings << "null";
+        }
+    }
+    settings << '}';
+    if (haveTotpart) {
+        hostKeys << ",\"totpart\":" << totpart;
+    }
+    if (haveEmissionDensity) {
+        hostKeys << ",\"emissionDensity\":" << emissionDensity;
+    }
+    if (haveLifetime) {
+        hostKeys << ",\"lifetime\":" << lifetime;
+    }
+    settings << hostKeys.str();
+    if (haveAttract) {
+        settings << ",\"attractionStrength\":" << attractStrength;
+        settings << ",\"forcefield_kind\":\"attraction\"";
+    }
+    if (haveGravity) {
+        settings << ",\"gravity\":[" << gravity[0] << ',' << gravity[1] << ',' << gravity[2] << ']';
+    }
+    if (havePhysNewtonian) {
+        settings << ",\"phys_kind\":\"newtonian\"";
+    }
+}
+
 void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv,
         const aiNode *node) {
     using namespace Assimp::Blender;
@@ -4178,8 +4350,30 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 << ",\"flag\":" << pd.flag
                 << ",\"falloff\":" << static_cast<int>(pd.falloff)
                 << ",\"shape\":" << static_cast<int>(pd.shape)
-                << ",\"f_strength\":" << pd.f_strength
-                << ",\"pdef_damp\":" << pd.pdef_damp
+                << ",\"f_strength\":" << pd.f_strength;
+        {
+            const char *ffKind = nullptr;
+            switch (pd.forcefield) {
+            case PartDeflect::Field_Force: ffKind = "force"; break;
+            case PartDeflect::Field_Vortex: ffKind = "vortex"; break;
+            case PartDeflect::Field_Magnetic: ffKind = "magnetic"; break;
+            case PartDeflect::Field_Wind: ffKind = "wind"; break;
+            case PartDeflect::Field_Guide: ffKind = "guide"; break;
+            case PartDeflect::Field_Texture: ffKind = "texture"; break;
+            case PartDeflect::Field_Harmonic: ffKind = "harmonic"; break;
+            case PartDeflect::Field_Charge: ffKind = "charge"; break;
+            case PartDeflect::Field_LennardJones: ffKind = "lennardjones"; break;
+            case PartDeflect::Field_Boid: ffKind = "boid"; break;
+            case PartDeflect::Field_Turbulence: ffKind = "turbulence"; break;
+            case PartDeflect::Field_Drag: ffKind = "drag"; break;
+            case PartDeflect::Field_FluidFlow: ffKind = "fluidflow"; break;
+            default: break;
+            }
+            if (ffKind != nullptr) {
+                colJson << ",\"forcefield_kind\":\"" << ffKind << '"';
+            }
+        }
+        colJson << ",\"pdef_damp\":" << pd.pdef_damp
                 << ",\"pdef_rdamp\":" << pd.pdef_rdamp
                 << ",\"pdef_perm\":" << pd.pdef_perm
                 << ",\"pdef_frict\":" << pd.pdef_frict
@@ -4399,6 +4593,18 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             }
             if (p.hasPhystype) {
                 partJson << ",\"phystype\":" << p.phystype;
+                const char *physKind = nullptr;
+                switch (p.phystype) {
+                case ParticleSettings::Phys_No: physKind = "no"; break;
+                case ParticleSettings::Phys_Newtonian: physKind = "newtonian"; break;
+                case ParticleSettings::Phys_Keyed: physKind = "keyed"; break;
+                case ParticleSettings::Phys_Boids: physKind = "boids"; break;
+                case ParticleSettings::Phys_Fluid: physKind = "fluid"; break;
+                default: break;
+                }
+                if (physKind != nullptr) {
+                    partJson << ",\"phys_kind\":\"" << physKind << '"';
+                }
             }
             if (p.hasDrawAs) {
                 partJson << ",\"draw_as\":" << p.draw_as;
@@ -5006,6 +5212,12 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         settings << "{\"mode\":" << dat.mode;
         if (dat.type == ModifierData::eModifierType_Nodes) {
             settings << ",\"source\":\"NodesModifierData\"";
+            if (cur->dna_type != nullptr &&
+                    std::strcmp(cur->dna_type, "NodesModifierData") == 0 &&
+                    bagKey != nullptr && std::strcmp(bagKey, "particles") == 0) {
+                BlendAppendNodesModifierParticlePresence(
+                        settings, *static_cast<const NodesModifierData *>(cur));
+            }
         }
         if (dat.type == ModifierData::eModifierType_Cloth &&
                 cur->dna_type != nullptr &&
