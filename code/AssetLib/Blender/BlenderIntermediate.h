@@ -49,16 +49,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderDNA.h"
 #include "BlenderLoader.h"
 #include "BlenderScene.h"
+#include <assimp/anim.h>
+#include <assimp/camera.h>
+#include <assimp/light.h>
 #include <assimp/material.h>
+#include <assimp/texture.h>
 #include <cstdint>
 #include <deque>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-struct aiTexture;
-struct aiAnimation;
 
 namespace Assimp {
 class IOSystem;
