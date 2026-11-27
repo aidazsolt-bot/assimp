@@ -53,14 +53,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <map>
 #include <memory>
 
-// enable verbose log output. really verbose, so be careful.
+// Block-id VERBOSE_DEBUG while parsing (not field-miss spam).
 #ifdef ASSIMP_BUILD_DEBUG
 #define ASSIMP_BUILD_BLENDER_DEBUG
 #endif
 
-// set this to non-zero to dump BlenderDNA stuff to dna.txt.
-// you could set it on the assimp build command line too without touching it here.
-// !!! please make sure this is set to 0 in the repo !!!
+// set this to non-zero to dump BlenderDNA stuff to dna.txt AND to log routine
+// missing-field / Igno→Warn DNA gaps. Keep 0 in the repo so NORMAL builds match
+// other importers (no thousands of DNA Warn lines). Enable via -D on the
+// assimp build command line when debugging DNA mapping.
 #ifndef ASSIMP_BUILD_BLENDER_DEBUG_DNA
 #define ASSIMP_BUILD_BLENDER_DEBUG_DNA 0
 #endif
@@ -189,13 +190,13 @@ struct Field {
 enum ErrorPolicy {
     /** Substitute default value and ignore */
     ErrorPolicy_Igno,
-    /** Substitute default value; log only with ASSIMP_BUILD_BLENDER_DEBUG (DNA version gaps are common). */
+    /** Substitute default value; log only when ASSIMP_BUILD_BLENDER_DEBUG_DNA!=0. */
     ErrorPolicy_Warn,
     /** Substitute a massive error message and crash the whole matrix. Its time for another zion */
     ErrorPolicy_Fail
 };
 
-#ifdef ASSIMP_BUILD_BLENDER_DEBUG
+#if ASSIMP_BUILD_BLENDER_DEBUG_DNA
 #define ErrorPolicy_Igno ErrorPolicy_Warn
 #endif
 
@@ -394,8 +395,8 @@ struct Structure::_defaultInitializer<ErrorPolicy_Warn> {
     template <typename T>
     void operator()(T &out, const char *reason = "<add reason>") {
         // Match other importers: NORMAL builds stay quiet. Missing DNA fields across
-        // Blender versions are expected Presence gaps - spam only in BLENDER_DEBUG.
-#ifdef ASSIMP_BUILD_BLENDER_DEBUG
+        // Blender versions are expected Presence gaps - enable via BLENDER_DEBUG_DNA.
+#if ASSIMP_BUILD_BLENDER_DEBUG_DNA
         ASSIMP_LOG_WARN(reason);
 #else
         (void)reason;
