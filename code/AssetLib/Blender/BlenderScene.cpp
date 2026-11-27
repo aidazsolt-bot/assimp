@@ -763,15 +763,51 @@ void Structure::Convert<OceanModifierData>(
         OceanModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
-    ReadField<ErrorPolicy_Igno>(dest.resolution, "resolution", db);
-    ReadField<ErrorPolicy_Igno>(dest.spatial_size, "spatial_size", db);
-    ReadField<ErrorPolicy_Igno>(dest.depth, "depth", db);
-    ReadField<ErrorPolicy_Igno>(dest.wave_scale, "wave_scale", db);
-    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
-    ReadField<ErrorPolicy_Igno>(dest.chop_amount, "chop_amount", db);
-    ReadField<ErrorPolicy_Igno>(dest.wind_velocity, "wind_velocity", db);
-    ReadFieldArray<ErrorPolicy_Igno>(dest.cachepath, "cachepath", db);
-    ReadField<ErrorPolicy_Igno>(dest.cached, "cached", db);
+    // Presence: read only when SDNA names the field with the expected primitive type.
+    auto readInt = [&](int &out, bool &has, const char *name) {
+        has = false;
+        const Field *f = Get(name);
+        if (f == nullptr || f->type != "int") {
+            return;
+        }
+        ReadField<ErrorPolicy_Igno>(out, name, db);
+        has = true;
+    };
+    auto readFloat = [&](float &out, bool &has, const char *name) {
+        has = false;
+        const Field *f = Get(name);
+        if (f == nullptr || f->type != "float") {
+            return;
+        }
+        ReadField<ErrorPolicy_Igno>(out, name, db);
+        has = true;
+    };
+    auto readChar = [&](char &out, bool &has, const char *name) {
+        has = false;
+        const Field *f = Get(name);
+        if (f == nullptr || f->type != "char") {
+            return;
+        }
+        ReadField<ErrorPolicy_Igno>(out, name, db);
+        has = true;
+    };
+    readInt(dest.resolution, dest.hasResolution, "resolution");
+    readInt(dest.spatial_size, dest.hasSpatialSize, "spatial_size");
+    readFloat(dest.depth, dest.hasDepth, "depth");
+    readFloat(dest.wave_scale, dest.hasWaveScale, "wave_scale");
+    readFloat(dest.time, dest.hasTime, "time");
+    readFloat(dest.chop_amount, dest.hasChopAmount, "chop_amount");
+    readFloat(dest.wind_velocity, dest.hasWindVelocity, "wind_velocity");
+    dest.hasCachepath = false;
+    dest.cachepath[0] = '\0';
+    {
+        const Field *f = Get("cachepath");
+        if (f != nullptr && f->type == "char" && (f->flags & FieldFlag_Array)) {
+            ReadFieldArray<ErrorPolicy_Igno>(dest.cachepath, "cachepath", db);
+            dest.hasCachepath = true;
+        }
+    }
+    readChar(dest.cached, dest.hasCached, "cached");
     db.reader->IncPtr(size);
 }
 
@@ -781,7 +817,14 @@ void Structure::Convert<DynamicPaintModifierData>(
         DynamicPaintModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
-    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    dest.hasType = false;
+    {
+        const Field *f = Get("type");
+        if (f != nullptr && f->type == "int") {
+            ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+            dest.hasType = true;
+        }
+    }
     db.reader->IncPtr(size);
 }
 
@@ -791,7 +834,14 @@ void Structure::Convert<SolidifyModifierData>(
         SolidifyModifierData &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
-    ReadField<ErrorPolicy_Igno>(dest.offset, "offset", db);
+    dest.hasOffset = false;
+    {
+        const Field *f = Get("offset");
+        if (f != nullptr && f->type == "float") {
+            ReadField<ErrorPolicy_Igno>(dest.offset, "offset", db);
+            dest.hasOffset = true;
+        }
+    }
     db.reader->IncPtr(size);
 }
 
@@ -1864,7 +1914,7 @@ void Structure::Convert<bNodeSocket>(
                         dest.default_value = ((*sVal).*builders.first)();
                         db.cache(dest.default_value).set(*sVal, dest.default_value, ptrval, cache_owner);
                         ((*sVal).*builders.second)(dest.default_value, db);
-                        dest.default_value->dna_type = sVal->name.c_str();
+                        BlendElemBindTypes(*dest.default_value, sVal->name.c_str(), sVal->name.c_str());
                         db.reader->SetCurrentPos(pold);
                     }
                 }
@@ -1957,7 +2007,7 @@ void Structure::Convert<bNode>(
                         dest.storage = ((*sVal).*builders.first)();
                         db.cache(dest.storage).set(*sVal, dest.storage, ptrval, cache_owner);
                         ((*sVal).*builders.second)(dest.storage, db);
-                        dest.storage->dna_type = sVal->name.c_str();
+                        BlendElemBindTypes(*dest.storage, sVal->name.c_str(), sVal->name.c_str());
                         db.reader->SetCurrentPos(pold);
                     }
                 }
@@ -2683,7 +2733,10 @@ void DNA::RegisterConverters() {
     converters["Group"] = DNA::FactoryPair(&Structure::Allocate<Group>, &Structure::Convert<Group>);
     converters["MTex"] = DNA::FactoryPair(&Structure::Allocate<MTex>, &Structure::Convert<MTex>);
     converters["TFace"] = DNA::FactoryPair(&Structure::Allocate<TFace>, &Structure::Convert<TFace>);
+    // All specialized *ModifierData converters BEFORE the Generic map. Generic
+    // never overwrites these (also skipped by find() in the loop below).
     converters["SubsurfModifierData"] = DNA::FactoryPair(&Structure::Allocate<SubsurfModifierData>, &Structure::Convert<SubsurfModifierData>);
+    converters["MirrorModifierData"] = DNA::FactoryPair(&Structure::Allocate<MirrorModifierData>, &Structure::Convert<MirrorModifierData>);
     converters["FluidModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidModifierData>, &Structure::Convert<FluidModifierData>);
     converters["OceanModifierData"] = DNA::FactoryPair(&Structure::Allocate<OceanModifierData>, &Structure::Convert<OceanModifierData>);
     converters["DynamicPaintModifierData"] = DNA::FactoryPair(&Structure::Allocate<DynamicPaintModifierData>, &Structure::Convert<DynamicPaintModifierData>);
@@ -2696,13 +2749,21 @@ void DNA::RegisterConverters() {
     converters["IDPropertyData"] = DNA::FactoryPair(&Structure::Allocate<IDPropertyData>, &Structure::Convert<IDPropertyData>);
     converters["IDProperty"] = DNA::FactoryPair(&Structure::Allocate<IDProperty>, &Structure::Convert<IDProperty>);
     converters["NodesModifierSettings"] = DNA::FactoryPair(&Structure::Allocate<NodesModifierSettings>, &Structure::Convert<NodesModifierSettings>);
-    converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
+    converters["NodesModifierData"] = DNA::FactoryPair(&Structure::Allocate<NodesModifierData>, &Structure::Convert<NodesModifierData>);
+    converters["CacheFile"] = DNA::FactoryPair(&Structure::Allocate<CacheFile>, &Structure::Convert<CacheFile>);
+    converters["MeshCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshCacheModifierData>, &Structure::Convert<MeshCacheModifierData>);
+    converters["MeshSeqCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshSeqCacheModifierData>, &Structure::Convert<MeshSeqCacheModifierData>);
+    converters["CollisionModifierData"] = DNA::FactoryPair(&Structure::Allocate<CollisionModifierData>, &Structure::Convert<CollisionModifierData>);
+    converters["CurveModifierData"] = DNA::FactoryPair(&Structure::Allocate<CurveModifierData>, &Structure::Convert<CurveModifierData>);
+    converters["SmokeModifierData"] = DNA::FactoryPair(&Structure::Allocate<SmokeModifierData>, &Structure::Convert<SmokeModifierData>);
+    converters["FluidsimSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidsimSettings>, &Structure::Convert<FluidsimSettings>);
+    converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);
     converters["ArmatureModifierData"] = DNA::FactoryPair(&Structure::Allocate<ArmatureModifierData>, &Structure::Convert<ArmatureModifierData>);
     converters["KeyBlock"] = DNA::FactoryPair(&Structure::Allocate<KeyBlock>, &Structure::Convert<KeyBlock>);
     converters["Key"] = DNA::FactoryPair(&Structure::Allocate<Key>, &Structure::Convert<Key>);
+    converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
     {
-        // All blender.git *ModifierData DNA names except Subsurf/Mirror/Fluid/Cloth/
-        // MeshCache/MeshSeqCache/Collision/Curve (specialized).
+        // Remaining blender.git *ModifierData names: header-only Generic hull.
         static const char *const kGenericModifierDnaNames[] = {
 #include "BlenderModifierDnaNames.inc"
         };
@@ -2710,21 +2771,14 @@ void DNA::RegisterConverters() {
             if (dnaName[0] == '\0' || dnaName[0] == '/') {
                 continue; // skip comment-only lines if any slip through
             }
+            // Never overwrite a specialized converter. Generic is header-only;
+            // casting that object to Ocean/Cloth/Mirror/... is OOB (CodeRabbit PR7099).
+            if (converters.find(dnaName) != converters.end()) {
+                continue;
+            }
             converters[dnaName] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
         }
     }
-    // After generic map: MeshCache / MeshSeqCache / CacheFile (0al path inventory).
-    converters["CacheFile"] = DNA::FactoryPair(&Structure::Allocate<CacheFile>, &Structure::Convert<CacheFile>);
-    converters["MeshCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshCacheModifierData>, &Structure::Convert<MeshCacheModifierData>);
-    converters["MeshSeqCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshSeqCacheModifierData>, &Structure::Convert<MeshSeqCacheModifierData>);
-    converters["CollisionModifierData"] = DNA::FactoryPair(&Structure::Allocate<CollisionModifierData>, &Structure::Convert<CollisionModifierData>);
-    converters["CurveModifierData"] = DNA::FactoryPair(&Structure::Allocate<CurveModifierData>, &Structure::Convert<CurveModifierData>);
-    // Override generic map: Armature (skinning Object*) + Geometry Nodes inputs.
-    converters["ArmatureModifierData"] = DNA::FactoryPair(&Structure::Allocate<ArmatureModifierData>, &Structure::Convert<ArmatureModifierData>);
-    converters["NodesModifierData"] = DNA::FactoryPair(&Structure::Allocate<NodesModifierData>, &Structure::Convert<NodesModifierData>);
-    converters["SmokeModifierData"] = DNA::FactoryPair(&Structure::Allocate<SmokeModifierData>, &Structure::Convert<SmokeModifierData>);
-    converters["FluidsimSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidsimSettings>, &Structure::Convert<FluidsimSettings>);
-    converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);
     converters["PartDeflect"] = DNA::FactoryPair(&Structure::Allocate<PartDeflect>, &Structure::Convert<PartDeflect>);
     converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
     converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
@@ -2788,7 +2842,6 @@ void DNA::RegisterConverters() {
     converters["Camera"] = DNA::FactoryPair(&Structure::Allocate<Camera>, &Structure::Convert<Camera>);
     converters["GPUDOFSettings"] = DNA::FactoryPair(&Structure::Allocate<GPUDOFSettings>, &Structure::Convert<GPUDOFSettings>);
     converters["CameraDOFSettings"] = DNA::FactoryPair(&Structure::Allocate<CameraDOFSettings>, &Structure::Convert<CameraDOFSettings>);
-    converters["MirrorModifierData"] = DNA::FactoryPair(&Structure::Allocate<MirrorModifierData>, &Structure::Convert<MirrorModifierData>);
     converters["Image"] = DNA::FactoryPair(&Structure::Allocate<Image>, &Structure::Convert<Image>);
     converters["CustomData"] = DNA::FactoryPair(&Structure::Allocate<CustomData>, &Structure::Convert<CustomData>);
     converters["CustomDataLayer"] = DNA::FactoryPair(&Structure::Allocate<CustomDataLayer>, &Structure::Convert<CustomDataLayer>);
