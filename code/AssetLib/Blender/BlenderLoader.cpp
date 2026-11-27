@@ -3317,12 +3317,15 @@ void BlendCollectTexImageInventory(const BlendNodeGraph &g, const BlendNodeGraph
 }
 
 /**
- * Walk outbound DNA links from a TexImage (through Mix/Ramp/Reroute/NormalMap/Bump/
+ * Walk outbound DNA links from a TexImage (through Mix/Reroute/NormalMap/Bump/
  * Group Output) and collect usage hits. Presence only - no filename invent.
+ * ColorRamp is procedural HostEval: do not attribute ramp-output sockets to the
+ * source Image (keeps mixFac on Fac Images; Specular stays network-only).
  */
 void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::bNode *texNode,
         std::vector<BlendTexUsageHit> &out, int depth = 0,
-        const BlendNodeGraph *hostGraph = nullptr, const Assimp::Blender::bNode *hostGroup = nullptr) {
+        const BlendNodeGraph *hostGraph = nullptr, const Assimp::Blender::bNode *hostGroup = nullptr,
+        bool throughMixColor = false) {
     using namespace Assimp::Blender;
     if (texNode == nullptr || depth > 20) {
         return;
@@ -3342,6 +3345,18 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
             }
         }
         return false;
+    };
+    auto markMixLayer = [&](BlendTexUsageHit &h) {
+        // Mix Color1/Color2 layers that reach Principled Base Color are not the folded primary.
+        if (throughMixColor && std::strcmp(h.usage, "baseColor") == 0) {
+            h.usage = "mixColor";
+        }
+    };
+    auto isMixColorOperand = [](const char *sockName) -> bool {
+        return sockName != nullptr &&
+               (std::strcmp(sockName, "Color1") == 0 || std::strcmp(sockName, "Color2") == 0 ||
+                       std::strcmp(sockName, "Color") == 0 || std::strcmp(sockName, "A") == 0 ||
+                       std::strcmp(sockName, "B") == 0 || std::strcmp(sockName, "Result") == 0);
     };
     auto fillFromSock = [&](BlendTexUsageHit &hit, const bNodeLink *link) {
         if (link == nullptr) {
@@ -3367,16 +3382,22 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
         BlendTexUsageHit hit;
         const bool classified = BlendClassifySocketUsage(toSock, *to, hit);
         if (classified) {
+            markMixLayer(hit);
             fillFromSock(hit, l);
             if (!already(hit)) {
                 out.push_back(hit);
             }
             // Mix.Fac: Color comes from Color1/Color2 - do not attribute Mix Color to this map.
-            // ColorRamp.Fac: Fac selects ramp color - keep walking through the ramp.
             if (std::strcmp(hit.usage, "mixFac") == 0 && BlendNodeIsMixColor(*to)) {
                 continue;
             }
         }
+        // ColorRamp: Fac/Color select ramp output - HostEval via BLEND_shader_network.
+        if (BlendNodeIsColorRamp(*to)) {
+            continue;
+        }
+        const bool nextThroughMix =
+                throughMixColor || (BlendNodeIsMixColor(*to) && isMixColorOperand(toSock));
         if (BlendNodeIsGroupOutput(*to)) {
             // Cross into host ShaderNodeGroup outputs.
             if (hostGraph != nullptr && hostGroup != nullptr) {
@@ -3402,6 +3423,7 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                     const bNodeSocket *hts = BlendCastSocket(hl->tosock.get());
                     BlendTexUsageHit hh;
                     if (BlendClassifySocketUsage(sockLabel(hts), *hnt, hh)) {
+                        markMixLayer(hh);
                         fillFromSock(hh, hl);
                         if (!already(hh)) {
                             out.push_back(hh);
@@ -3409,7 +3431,8 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                     }
                     if (!BlendNodeIsTexWalkBarrier(*hnt) || BlendNodeIsNormalMap(*hnt) ||
                             BlendNodeIsBump(*hnt) || BlendNodeIsDisplacement(*hnt)) {
-                        BlendCollectTexImageUsages(*hostGraph, hnt, out, depth + 1, nullptr, nullptr);
+                        BlendCollectTexImageUsages(*hostGraph, hnt, out, depth + 1, nullptr, nullptr,
+                                nextThroughMix);
                     }
                 }
             }
@@ -3449,6 +3472,7 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                     BlendTexUsageHit ih;
                     const bNodeSocket *its = BlendCastSocket(il->tosock.get());
                     if (BlendClassifySocketUsage(sockLabel(its), *inner, ih)) {
+                        markMixLayer(ih);
                         fillFromSock(ih, il);
                         if (!already(ih)) {
                             out.push_back(ih);
@@ -3457,9 +3481,12 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                             continue;
                         }
                     }
+                    if (BlendNodeIsColorRamp(*inner)) {
+                        continue;
+                    }
                     if (!BlendNodeIsTexWalkBarrier(*inner) || BlendNodeIsNormalMap(*inner) ||
                             BlendNodeIsBump(*inner) || BlendNodeIsDisplacement(*inner)) {
-                        BlendCollectTexImageUsages(sub, inner, out, depth + 1, &g, to);
+                        BlendCollectTexImageUsages(sub, inner, out, depth + 1, &g, to, nextThroughMix);
                     }
                 }
             }
@@ -3468,8 +3495,8 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
         if (BlendNodeIsTexWalkBarrier(*to)) {
             continue;
         }
-        // Continue through filters / mix / ramp / reroute / normal / bump.
-        BlendCollectTexImageUsages(g, to, out, depth + 1, hostGraph, hostGroup);
+        // Continue through filters / mix / reroute / normal / bump (not ColorRamp).
+        BlendCollectTexImageUsages(g, to, out, depth + 1, hostGraph, hostGroup, nextThroughMix);
     }
 }
 
