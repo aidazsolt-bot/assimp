@@ -117,9 +117,19 @@ struct Collection;
 static const size_t MaxNameLen = 1024;
 
 // -------------------------------------------------------------------------------
+/** DNA AssetMetaData (ID.asset_data) - Asset Browser fields only. */
+struct AssetMetaData final : ElemBase {
+    std::string author; // char *author
+    std::string description; // char *description
+    std::string copyright; // char *copyright
+    std::string license; // char *license
+};
+
 struct ID final : ElemBase {
     char name[MaxNameLen] WARN;
     short flag;
+    /** Presence: only when SDNA has *asset_data (Asset Browser mark). */
+    std::shared_ptr<AssetMetaData> asset_data WARN;
 };
 
 // -------------------------------------------------------------------------------
@@ -166,7 +176,7 @@ struct Group final : ElemBase {
 
 // -------------------------------------------------------------------------------
 struct CollectionObject final : ElemBase {
-    //CollectionObject* prev;
+    // CollectionObject* prev;
     std::shared_ptr<CollectionObject> next;
     Object *ob;
 };
@@ -187,6 +197,8 @@ struct Collection final : ElemBase {
 // -------------------------------------------------------------------------------
 struct World final : ElemBase {
     ID id FAIL;
+    /** Cycles/EEVEE world shader tree (Environment Texture -> Background -> World Output). */
+    std::shared_ptr<struct bNodeTree> nodetree;
 };
 
 // -------------------------------------------------------------------------------
@@ -293,10 +305,10 @@ struct MDeformVert final : ElemBase {
 };
 
 // -------------------------------------------------------------------------------
-constexpr uint32_t MA_RAYMIRROR    = 0x40000;
+constexpr uint32_t MA_RAYMIRROR = 0x40000;
 constexpr uint32_t MA_TRANSPARENCY = 0x10000;
-constexpr uint32_t MA_RAYTRANSP    = 0x20000;
-constexpr uint32_t MA_ZTRANSP      = 0x00040;
+constexpr uint32_t MA_RAYTRANSP = 0x20000;
+constexpr uint32_t MA_ZTRANSP = 0x00040;
 
 struct Material final : ElemBase {
     ID id FAIL;
@@ -439,7 +451,7 @@ struct bNodeStack final : ElemBase {
     float min, max;
 };
 
-/** Subset of DNA bNodeSocketValueFloat / RGBA (default_value pointee). */
+/** Subset of DNA bNodeSocketValueFloat / RGBA / Vector (default_value pointee). */
 struct bNodeSocketValueFloat final : ElemBase {
     int subtype;
     float value;
@@ -449,6 +461,29 @@ struct bNodeSocketValueRGBA final : ElemBase {
     float value[4];
 };
 
+/** DNA bNodeSocketValueVector - ShaderNodeMapping Location/Rotation/Scale, etc. */
+struct bNodeSocketValueVector final : ElemBase {
+    int subtype;
+    float value[4];
+    int dimensions;
+
+    bNodeSocketValueVector() :
+            subtype(0),
+            dimensions(0) {
+        value[0] = value[1] = value[2] = value[3] = 0.f;
+    }
+};
+
+struct bNodeSocketValueString final : ElemBase {
+    int subtype;
+    char value[1024];
+
+    bNodeSocketValueString() :
+            subtype(0) {
+        value[0] = '\0';
+    }
+};
+
 /** Subset of DNA NodeShaderUVMap (bNode.storage for ShaderNodeUVMap). */
 struct NodeShaderUVMap final : ElemBase {
     char uv_map[64];
@@ -456,6 +491,69 @@ struct NodeShaderUVMap final : ElemBase {
     NodeShaderUVMap() {
         memset(uv_map, 0, sizeof uv_map);
     }
+};
+
+/**
+ * DNA TexMapping (pre-2.81 ShaderNodeMapping storage).
+ * Blender 2.81+ moved loc/rot/size onto Location/Rotation/Scale sockets;
+ * older .blend files still keep TexMapping in bNode.storage.
+ */
+struct TexMapping final : ElemBase {
+    float loc[3];
+    float rot[3];
+    float size[3];
+
+    TexMapping() {
+        loc[0] = loc[1] = loc[2] = 0.f;
+        rot[0] = rot[1] = rot[2] = 0.f;
+        size[0] = size[1] = size[2] = 1.f;
+    }
+};
+
+/**
+ * DNA NodeTexNoise (bNode.storage for ShaderNodeTexNoise).
+ * `type` is SHD_NOISE_MULTIFRACTAL..HETERO_TERRAIN (same ints as SHD_MUSGRAVE_*).
+ */
+struct NodeTexNoise final : ElemBase {
+    int dimensions;
+    char type; // DNA uint8 SHD_NOISE_* / SHD_MUSGRAVE_*
+    char normalize;
+
+    NodeTexNoise() :
+            dimensions(0),
+            type(0),
+            normalize(0) {}
+};
+
+/** DNA NodeTexMusgrave (legacy ShaderNodeTexMusgrave storage). */
+struct NodeTexMusgrave final : ElemBase {
+    int musgrave_type;
+    int dimensions;
+
+    NodeTexMusgrave() :
+            musgrave_type(0),
+            dimensions(0) {}
+};
+
+/** Subset of DNA ColorBand / CBData (ShaderNodeValToRGB storage). */
+struct CBData final : ElemBase {
+    float r, g, b, a, pos;
+    int cur;
+
+    CBData() :
+            r(0), g(0), b(0), a(0), pos(0), cur(0) {}
+};
+
+struct ColorBand final : ElemBase {
+    short tot;
+    short cur;
+    char ipotype;
+    char ipotype_hue;
+    char color_mode;
+    CBData data[32];
+
+    ColorBand() :
+            tot(0), cur(0), ipotype(0), ipotype_hue(0), color_mode(0) {}
 };
 
 /** Subset of DNA bNodeSocket. */
@@ -508,11 +606,13 @@ struct bNodeLink final : ElemBase {
     std::shared_ptr<ElemBase> tosock;
 };
 
-/** Subset of DNA bNodeTree (Material.nodetree). */
+/** Subset of DNA bNodeTree (Material.nodetree / NodesModifierData.node_group). */
 struct bNodeTree final : ElemBase {
     ID id;
     ListBase nodes;
     ListBase links;
+    /** Group interface sockets (GN modifier Input_* label map). */
+    ListBase inputs WARN;
 };
 
 /*
@@ -585,6 +685,8 @@ struct Mesh final : ElemBase {
     vector<MTexPoly> mtpoly;
     vector<MDeformVert> dvert;
     vector<MCol> mcol;
+    /** DNA Mesh.vertex_group_names (Blender 2.8+ moved from Object.defbase). */
+    ListBase vertex_group_names;
 
     vector<std::shared_ptr<Material>> mat FAIL;
 
@@ -620,6 +722,35 @@ struct Library final : ElemBase {
 };
 
 // -------------------------------------------------------------------------------
+/** Subset of DNA GPUDOFSettings (legacy Camera.gpu_dof). */
+struct GPUDOFSettings final : ElemBase {
+    float focus_distance WARN;
+    float fstop WARN;
+    float focal_length WARN;
+    float sensor WARN;
+    float rotation WARN;
+    float ratio WARN;
+    int num_blades WARN;
+
+    GPUDOFSettings() :
+            focus_distance(0.f), fstop(0.f), focal_length(0.f), sensor(0.f), rotation(0.f), ratio(0.f), num_blades(0) {}
+};
+
+/** Subset of DNA CameraDOFSettings (Camera.dof, Blender 2.8+). */
+struct CameraDOFSettings final : ElemBase {
+    enum Flag {
+        Flag_Enabled = 1 << 0
+    };
+    std::shared_ptr<Object> focus_object WARN;
+    float focus_distance WARN;
+    float aperture_fstop WARN;
+    int aperture_blades WARN;
+    short flag WARN;
+
+    CameraDOFSettings() :
+            focus_distance(0.f), aperture_fstop(0.f), aperture_blades(0), flag(0) {}
+};
+
 struct Camera : ElemBase {
     enum Type {
         Type_PERSP = 0,
@@ -634,10 +765,13 @@ struct Camera : ElemBase {
     float sensor_y WARN; // film height - aspect = sensor_x/sensor_y when both set
     float ortho_scale WARN; // Blender full ortho scale; aiCamera wants half-width
     float clipsta, clipend;
+    /** Legacy pre-2.8 DOF focus Object (*dof_ob). Tiger-era files. */
+    std::shared_ptr<Object> dof_ob WARN;
+    GPUDOFSettings gpu_dof WARN;
+    CameraDOFSettings dof WARN;
 
     Camera() :
-            type(Type_PERSP), flag(Type_PERSP), lens(0.f), sensor_x(0.f), sensor_y(0.f),
-            ortho_scale(0.f), clipsta(0.f), clipend(0.f) {}
+            type(Type_PERSP), flag(Type_PERSP), lens(0.f), sensor_x(0.f), sensor_y(0.f), ortho_scale(0.f), clipsta(0.f), clipend(0.f) {}
 };
 
 // -------------------------------------------------------------------------------
@@ -661,57 +795,57 @@ struct Lamp final : ElemBase {
     };
 
     ID id FAIL;
-    //AnimData *adt;
+    // AnimData *adt;
 
     Type type FAIL;
     short flags;
 
-    //int mode;
+    // int mode;
 
     short colormodel, totex;
     float r, g, b, k WARN;
-    //float shdwr, shdwg, shdwb;
+    // float shdwr, shdwg, shdwb;
 
     float energy, dist, spotsize, spotblend;
-    //float haint;
+    // float haint;
 
     float constant_coefficient;
     float linear_coefficient;
     float quadratic_coefficient;
 
     float att1, att2;
-    //struct CurveMapping *curfalloff;
+    // struct CurveMapping *curfalloff;
     FalloffType falloff_type;
 
-    //float clipsta, clipend, shadspotsize;
-    //float bias, soft, compressthresh;
-    //short bufsize, samp, buffers, filtertype;
-    //char bufflag, buftype;
+    // float clipsta, clipend, shadspotsize;
+    // float bias, soft, compressthresh;
+    // short bufsize, samp, buffers, filtertype;
+    // char bufflag, buftype;
 
-    //short ray_samp, ray_sampy, ray_sampz;
-    //short ray_samp_type;
+    // short ray_samp, ray_sampy, ray_sampz;
+    // short ray_samp_type;
     short area_shape;
     float area_size, area_sizey, area_sizez;
-    //float adapt_thresh;
-    //short ray_samp_method;
+    // float adapt_thresh;
+    // short ray_samp_method;
 
-    //short texact, shadhalostep;
+    // short texact, shadhalostep;
 
-    //short sun_effect_type;
-    //short skyblendtype;
-    //float horizon_brightness;
-    //float spread;
+    // short sun_effect_type;
+    // short skyblendtype;
+    // float horizon_brightness;
+    // float spread;
     float sun_brightness;
-    //float sun_size;
-    //float backscattered_light;
-    //float sun_intensity;
-    //float atm_turbidity;
-    //float atm_inscattering_factor;
-    //float atm_extinction_factor;
-    //float atm_distance_factor;
-    //float skyblendfac;
-    //float sky_exposure;
-    //short sky_colorspace;
+    // float sun_size;
+    // float backscattered_light;
+    // float sun_intensity;
+    // float atm_turbidity;
+    // float atm_inscattering_factor;
+    // float atm_extinction_factor;
+    // float atm_distance_factor;
+    // float skyblendfac;
+    // float sky_exposure;
+    // short sky_colorspace;
 
     // int YF_numphotons, YF_numsearch;
     // short YF_phdepth, YF_useqmc, YF_bufsize, YF_pad;
@@ -720,49 +854,17 @@ struct Lamp final : ElemBase {
     // float YF_glowint, YF_glowofs;
     // short YF_glowtype, YF_pad2;
 
-    //struct Ipo *ipo;
-    //struct MTex *mtex[18];
-    // short pr_texture;
+    // struct Ipo *ipo;
+    // struct MTex *mtex[18];
+    //  short pr_texture;
 
-    //struct PreviewImage *preview;
+    // struct PreviewImage *preview;
 };
 
 // -------------------------------------------------------------------------------
 struct ModifierData final : ElemBase {
     enum ModifierType {
-        eModifierType_None = 0,
-        eModifierType_Subsurf,
-        eModifierType_Lattice,
-        eModifierType_Curve,
-        eModifierType_Build,
-        eModifierType_Mirror,
-        eModifierType_Decimate,
-        eModifierType_Wave,
-        eModifierType_Armature,
-        eModifierType_Hook,
-        eModifierType_Softbody,
-        eModifierType_Boolean,
-        eModifierType_Array,
-        eModifierType_EdgeSplit,
-        eModifierType_Displace,
-        eModifierType_UVProject,
-        eModifierType_Smooth,
-        eModifierType_Cast,
-        eModifierType_MeshDeform,
-        eModifierType_ParticleSystem,
-        eModifierType_ParticleInstance,
-        eModifierType_Explode,
-        eModifierType_Cloth,
-        eModifierType_Collision,
-        eModifierType_Bevel,
-        eModifierType_Shrinkwrap,
-        eModifierType_Fluidsim,
-        eModifierType_Mask,
-        eModifierType_SimpleDeform,
-        eModifierType_Multires,
-        eModifierType_Surface,
-        eModifierType_Smoke,
-        eModifierType_ShapeKey
+#include "BlenderModifierEnum.inc"
     };
 
     std::shared_ptr<ElemBase> next WARN;
@@ -772,10 +874,975 @@ struct ModifierData final : ElemBase {
     char name[32];
 };
 
-
 // ------------------------------------------------------------------------------------------------
 struct SharedModifierData : ElemBase {
     ModifierData modifier;
+};
+
+// ------------------------------------------------------------------------------------------------
+/** Hull for every blender *ModifierData DNA type except Subsurf/Mirror/Fluid (specialized). */
+struct GenericModifierData final : SharedModifierData {};
+
+/** Subset of blender DNA FluidDomainSettings - cache paths for Host Flow/VDB. */
+struct FluidDomainSettings final : ElemBase {
+    enum DomainType {
+        Domain_Gas = 0,
+        Domain_Liquid = 1
+    };
+
+    int type WARN; // eFluidDomain_Type: gas/liquid
+    int cache_frame_start WARN;
+    int cache_frame_end WARN;
+    int cache_type WARN;
+    char cache_directory[1024] WARN;
+
+    FluidDomainSettings() :
+            type(Domain_Gas), cache_frame_start(1), cache_frame_end(250), cache_type(0) {
+        cache_directory[0] = '\0';
+    }
+};
+
+/** Subset of DNA FluidFlowSettings (inflow / fire / liquid emitter). */
+struct FluidFlowSettings final : ElemBase {
+    enum FlowType {
+        Flow_Smoke = 1,
+        Flow_Fire = 2,
+        Flow_SmokeFire = 3,
+        Flow_Liquid = 4
+    };
+    enum FlowBehavior {
+        Behavior_Inflow = 0,
+        Behavior_Outflow = 1,
+        Behavior_Geometry = 2
+    };
+
+    float density WARN;
+    float fuel_amount WARN;
+    float temperature WARN;
+    short type WARN;
+    short behavior WARN;
+
+    FluidFlowSettings() :
+            density(1.f), fuel_amount(1.f), temperature(1.f), type(Flow_Smoke), behavior(Behavior_Geometry) {}
+};
+
+/** Subset of DNA FluidEffectorSettings (fluid collision / guiding). */
+struct FluidEffectorSettings final : ElemBase {
+    enum EffectorType {
+        Type_Collision = 0,
+        Type_Guide = 1
+    };
+    enum GuideMode {
+        Guide_Max = 0,
+        Guide_Min = 1,
+        Guide_Override = 2,
+        Guide_Averaged = 3
+    };
+
+    float surface_distance WARN;
+    int flags WARN;
+    int subframes WARN;
+    short type WARN; // eFluidEffector_Type
+    float vel_multi WARN;
+    short guide_mode WARN;
+
+    FluidEffectorSettings() :
+            surface_distance(0.f), flags(0), subframes(0), type(Type_Collision), vel_multi(1.f), guide_mode(Guide_Override) {}
+};
+
+struct FluidModifierData final : SharedModifierData {
+    enum FluidModifierType {
+        MOD_FLUID_TYPE_DOMAIN = (1 << 0),
+        MOD_FLUID_TYPE_FLOW = (1 << 1),
+        MOD_FLUID_TYPE_EFFEC = (1 << 2)
+    };
+
+    std::shared_ptr<FluidDomainSettings> domain;
+    std::shared_ptr<FluidFlowSettings> flow;
+    std::shared_ptr<FluidEffectorSettings> effector;
+    float time WARN;
+    int type WARN; // FluidModifierType bitflags
+
+    FluidModifierData() :
+            time(0.f), type(0) {}
+};
+
+/**
+ * Legacy DNA SmokeModifierData (pre-Manta FluidModifier).
+ * Only `type` bitflags survive in modern SDNA - map to fluid_role Presence.
+ */
+struct SmokeModifierData final : SharedModifierData {
+    int type WARN; // same Domain/Flow/Effec bits as FluidModifierType
+    SmokeModifierData() :
+            type(0) {}
+};
+
+/**
+ * Legacy Elbeem FluidsimSettings (Blender <=2.8 Fluidsim modifier).
+ * type bits: OB_FLUIDSIM_DOMAIN/FLUID/OBSTACLE/INFLOW/OUTFLOW/…
+ */
+struct FluidsimSettings final : ElemBase {
+    enum FluidsimType {
+        Type_Enable = 1,
+        Type_Domain = 1 << 1,
+        Type_Fluid = 1 << 2,
+        Type_Obstacle = 1 << 3,
+        Type_Inflow = 1 << 4,
+        Type_Outflow = 1 << 5,
+        Type_Particle = 1 << 6,
+        Type_Control = 1 << 7
+    };
+
+    short type WARN;
+    short resolutionxyz WARN;
+    short previewresxyz WARN;
+    float realsize WARN;
+    float viscosityValue WARN;
+    float animStart WARN;
+    float animEnd WARN;
+    int bakeStart WARN;
+    int bakeEnd WARN;
+    int frameOffset WARN;
+    float iniVelx WARN, iniVely WARN, iniVelz WARN;
+    char surfdataPath[1024] WARN;
+    short typeFlags WARN;
+    int flag WARN;
+
+    FluidsimSettings() :
+            type(0), resolutionxyz(0), previewresxyz(0), realsize(0.f), viscosityValue(0.f), animStart(0.f), animEnd(0.f), bakeStart(0), bakeEnd(0), frameOffset(0), iniVelx(0.f), iniVely(0.f), iniVelz(0.f), typeFlags(0), flag(0) {
+        surfdataPath[0] = '\0';
+    }
+};
+
+/** DEPRECATED DNA FluidsimModifierData - Elbeem; settings in *fss. */
+struct FluidsimModifierData final : SharedModifierData {
+    std::shared_ptr<FluidsimSettings> fss;
+    FluidsimModifierData() = default;
+};
+
+/**
+ * DNA CollisionModifierData - mostly runtime BVH; Presence = modifier on object.
+ * Authored particle/cloth collision params live on Object.pd (PartDeflect).
+ */
+struct CollisionModifierData final : SharedModifierData {
+    CollisionModifierData() = default;
+};
+
+/** Subset of DNA CurveModifierData - deform-along-curve bind. */
+struct CurveModifierData final : SharedModifierData {
+    enum DefAxis {
+        Axis_PosX = 1,
+        Axis_PosY = 2,
+        Axis_PosZ = 3,
+        Axis_NegX = 4,
+        Axis_NegY = 5,
+        Axis_NegZ = 6
+    };
+
+    std::weak_ptr<Object> object;
+    char name[64]; // vertex group
+    short defaxis;
+    short flag;
+
+    CurveModifierData() :
+            defaxis(Axis_PosX), flag(0) {
+        name[0] = '\0';
+    }
+};
+
+/** Subset of DNA OceanModifierData - Water Caustics / ocean waves. */
+struct OceanModifierData final : SharedModifierData {
+    int resolution WARN;
+    int spatial_size WARN;
+    float depth WARN;
+    float wave_scale WARN;
+    float time WARN;
+    float chop_amount WARN;
+    float wind_velocity WARN;
+    char cachepath[1024] WARN;
+    char cached WARN;
+
+    OceanModifierData() :
+            resolution(7), spatial_size(50), depth(200.f), wave_scale(1.f), time(1.f), chop_amount(1.f), wind_velocity(30.f), cached(0) {
+        cachepath[0] = '\0';
+    }
+};
+
+/** Subset of DNA DynamicPaintModifierData. */
+struct DynamicPaintModifierData final : SharedModifierData {
+    enum Type {
+        Type_Canvas = (1 << 0),
+        Type_Brush = (1 << 1)
+    };
+    int type WARN; // canvas / brush UI
+
+    DynamicPaintModifierData() :
+            type(Type_Canvas) {}
+};
+
+/** Subset of DNA SolidifyModifierData - thickness for Host volumeThickness. */
+struct SolidifyModifierData final : SharedModifierData {
+    float offset WARN; // thickness (DNA name "offset")
+
+    SolidifyModifierData() :
+            offset(0.01f) {}
+};
+
+/**
+ * DNA CacheFile (ID_CF) - Alembic/USD archive referenced by MeshSeqCache.
+ * Assimp emits filepath Presence only; Host loads .abc/.usd (0al).
+ */
+struct CacheFile final : ElemBase {
+    enum CacheFileType {
+        Type_Invalid = 0,
+        Type_Alembic = 1,
+        Type_USD = 2
+    };
+
+    ID id;
+    char filepath[1024];
+    char type; // eCacheFileType
+    float frame;
+    float frame_offset;
+    char override_frame;
+
+    CacheFile() :
+            type(Type_Invalid), frame(0.f), frame_offset(0.f), override_frame(0) {
+        filepath[0] = '\0';
+    }
+};
+
+/**
+ * DNA MeshCacheModifierData - MDD/PC2 filepath on the modifier (0al).
+ * type: MOD_MESHCACHE_TYPE_MDD=1, PC2=2.
+ */
+struct MeshCacheModifierData final : SharedModifierData {
+    enum CacheType {
+        Type_MDD = 1,
+        Type_PC2 = 2
+    };
+
+    char type; // MeshCacheModifierType
+    char time_mode;
+    char play_mode;
+    float factor;
+    float frame_start;
+    float frame_scale;
+    float eval_frame;
+    float eval_time;
+    float eval_factor;
+    char filepath[1024];
+
+    MeshCacheModifierData() :
+            type(Type_MDD), time_mode(0), play_mode(0), factor(1.f), frame_start(0.f), frame_scale(1.f), eval_frame(0.f), eval_time(0.f), eval_factor(0.f) {
+        filepath[0] = '\0';
+    }
+};
+
+/**
+ * DNA MeshSeqCacheModifierData - Alembic/USD via CacheFile* + archive object_path (0al).
+ */
+struct MeshSeqCacheModifierData final : SharedModifierData {
+    std::shared_ptr<CacheFile> cache_file;
+    char object_path[1024];
+    char read_flag;
+    float velocity_scale;
+
+    MeshSeqCacheModifierData() :
+            read_flag(0), velocity_scale(1.f) {
+        object_path[0] = '\0';
+    }
+};
+
+/**
+ * DNA PartDeflect (Object.pd) - Collision / Force Field authored settings.
+ * deflect!=0 => mesh collides with particles/cloth/softbody.
+ */
+struct PartDeflect final : ElemBase {
+    /** DNA ePFieldType (forcefield) - Presence labels for Host Force-Step. */
+    enum FieldType {
+        Field_Force = 1,
+        Field_Vortex = 2,
+        Field_Magnetic = 3,
+        Field_Wind = 4,
+        Field_Guide = 5,
+        Field_Texture = 6,
+        Field_Harmonic = 7,
+        Field_Charge = 8,
+        Field_LennardJones = 9,
+        Field_Boid = 10,
+        Field_Turbulence = 11,
+        Field_Drag = 12,
+        Field_FluidFlow = 13
+    };
+
+    int flag WARN;
+    short deflect WARN;
+    short forcefield WARN;
+    short falloff WARN;
+    short shape WARN;
+    float f_strength WARN;
+    float pdef_damp WARN;
+    float pdef_rdamp WARN;
+    float pdef_perm WARN;
+    float pdef_frict WARN;
+    float pdef_rfrict WARN;
+    float pdef_stickness WARN;
+    float pdef_sbdamp WARN;
+    float pdef_sbift WARN;
+    float pdef_sboft WARN;
+    float pdef_cfrict WARN;
+
+    PartDeflect() :
+            flag(0), deflect(0), forcefield(0), falloff(0), shape(0), f_strength(0.f), pdef_damp(0.f), pdef_rdamp(0.f), pdef_perm(0.f), pdef_frict(0.f), pdef_rfrict(0.f), pdef_stickness(0.f), pdef_sbdamp(0.f), pdef_sbift(0.f), pdef_sboft(0.f), pdef_cfrict(0.f) {}
+};
+
+/** Subset of DNA SoftBody (Object.soft). */
+struct SoftBody final : ElemBase {
+    float nodemass WARN;
+    float grav WARN;
+    float mediafrict WARN;
+    float goalspring WARN;
+    float goalfrict WARN;
+    float mingoal WARN;
+    float maxgoal WARN;
+    float defgoal WARN;
+    float inspring WARN;
+    float infrict WARN;
+
+    SoftBody() :
+            nodemass(1.f), grav(9.8f), mediafrict(0.5f), goalspring(0.5f), goalfrict(0.f), mingoal(0.f), maxgoal(1.f), defgoal(0.7f), inspring(0.5f), infrict(0.5f) {}
+};
+
+/** Subset of DNA RigidBodyOb (Object.rigidbody_object). */
+struct RigidBodyOb final : ElemBase {
+    enum Type { Type_Active = 0,
+        Type_Passive = 1 };
+    enum Shape {
+        Shape_Box = 0,
+        Shape_Sphere = 1,
+        Shape_Capsule = 2,
+        Shape_Cylinder = 3,
+        Shape_Cone = 4,
+        Shape_ConvexH = 5,
+        Shape_Trimesh = 6,
+        Shape_Compound = 7
+    };
+    enum Flag {
+        Flag_Kinematic = 1 << 0,
+        Flag_Disabled = 1 << 5
+    };
+
+    short type WARN;
+    short shape WARN;
+    int flag WARN;
+    int col_groups WARN;
+    float mass WARN;
+    float friction WARN;
+    float restitution WARN;
+    float margin WARN;
+    float lin_damping WARN;
+    float ang_damping WARN;
+
+    RigidBodyOb() :
+            type(Type_Active), shape(Shape_Box), flag(0), col_groups(0), mass(1.f), friction(0.5f), restitution(0.f), margin(0.04f), lin_damping(0.04f), ang_damping(0.1f) {}
+};
+
+/** Subset of DNA RigidBodyCon (Object.rigidbody_constraint). */
+struct RigidBodyCon final : ElemBase {
+    enum Type {
+        Type_Point = 0,
+        Type_Hinge = 1,
+        Type_Slider = 3,
+        Type_6Dof = 5,
+        Type_6DofSpring = 6,
+        Type_Fixed = 8,
+        Type_Piston = 9,
+        Type_Motor = 11
+    };
+    enum Flag {
+        Flag_Enabled = 1 << 0,
+        Flag_DisableCollisions = 1 << 2,
+        Flag_UseBreaking = 1 << 3,
+        Flag_UseLimitLinX = 1 << 5,
+        Flag_UseLimitLinY = 1 << 6,
+        Flag_UseLimitLinZ = 1 << 7,
+        Flag_UseLimitAngX = 1 << 8,
+        Flag_UseLimitAngY = 1 << 9,
+        Flag_UseLimitAngZ = 1 << 10,
+        Flag_UseMotorLin = 1 << 14,
+        Flag_UseMotorAng = 1 << 15,
+        Flag_UseSpringX = 1 << 11,
+        Flag_UseSpringY = 1 << 12,
+        Flag_UseSpringZ = 1 << 13,
+        Flag_UseSpringAngX = 1 << 16,
+        Flag_UseSpringAngY = 1 << 17,
+        Flag_UseSpringAngZ = 1 << 18
+    };
+
+    Object *ob1 WARN;
+    Object *ob2 WARN;
+    short type WARN;
+    int flag WARN;
+    float breaking_threshold WARN;
+    float limit_lin_x_lower WARN;
+    float limit_lin_x_upper WARN;
+    float limit_lin_y_lower WARN;
+    float limit_lin_y_upper WARN;
+    float limit_lin_z_lower WARN;
+    float limit_lin_z_upper WARN;
+    float limit_ang_x_lower WARN;
+    float limit_ang_x_upper WARN;
+    float limit_ang_y_lower WARN;
+    float limit_ang_y_upper WARN;
+    float limit_ang_z_lower WARN;
+    float limit_ang_z_upper WARN;
+    float spring_stiffness_x WARN;
+    float spring_stiffness_y WARN;
+    float spring_stiffness_z WARN;
+    float spring_stiffness_ang_x WARN;
+    float spring_stiffness_ang_y WARN;
+    float spring_stiffness_ang_z WARN;
+    float spring_damping_x WARN;
+    float spring_damping_y WARN;
+    float spring_damping_z WARN;
+    float spring_damping_ang_x WARN;
+    float spring_damping_ang_y WARN;
+    float spring_damping_ang_z WARN;
+    float motor_lin_target_velocity WARN;
+    float motor_ang_target_velocity WARN;
+    float motor_lin_max_impulse WARN;
+    float motor_ang_max_impulse WARN;
+
+    RigidBodyCon() :
+            ob1(nullptr), ob2(nullptr), type(Type_Point), flag(Flag_Enabled), breaking_threshold(10.f), limit_lin_x_lower(0.f), limit_lin_x_upper(0.f), limit_lin_y_lower(0.f), limit_lin_y_upper(0.f), limit_lin_z_lower(0.f), limit_lin_z_upper(0.f), limit_ang_x_lower(0.f), limit_ang_x_upper(0.f), limit_ang_y_lower(0.f), limit_ang_y_upper(0.f), limit_ang_z_lower(0.f), limit_ang_z_upper(0.f), spring_stiffness_x(0.f), spring_stiffness_y(0.f), spring_stiffness_z(0.f), spring_stiffness_ang_x(0.f), spring_stiffness_ang_y(0.f), spring_stiffness_ang_z(0.f), spring_damping_x(0.f), spring_damping_y(0.f), spring_damping_z(0.f), spring_damping_ang_x(0.f), spring_damping_ang_y(0.f), spring_damping_ang_z(0.f), motor_lin_target_velocity(0.f), motor_ang_target_velocity(0.f), motor_lin_max_impulse(1.f), motor_ang_max_impulse(1.f) {}
+};
+
+/** Subset of DNA ClothSimSettings (*ClothModifierData.sim_parms). */
+struct ClothSimSettings final : ElemBase {
+    float mass WARN;
+    float shear WARN;
+    float bending WARN;
+    float tension WARN;
+    float gravity[3] WARN;
+    float goalspring WARN;
+    float goalfrict WARN;
+    int stepsPerFrame WARN;
+
+    ClothSimSettings() :
+            mass(0.3f), shear(5.f), bending(0.5f), tension(15.f), goalspring(1.f), goalfrict(0.f), stepsPerFrame(5) {
+        gravity[0] = 0.f;
+        gravity[1] = 0.f;
+        gravity[2] = -9.81f;
+    }
+};
+
+/** Cloth modifier with sim settings pointer (specialized vs Generic hull). */
+struct ClothModifierData final : SharedModifierData {
+    std::shared_ptr<ClothSimSettings> sim_parms;
+};
+
+/**
+ * DNA IDPropertyData (embedded in IDProperty.data).
+ * pointer = string/array/ID payload; group = GROUP children; val = INT/FLOAT bits.
+ */
+struct IDPropertyData final : ElemBase {
+    Pointer pointer WARN;
+    ListBase group WARN;
+    int val WARN;
+    int val2 WARN;
+
+    IDPropertyData() :
+            val(0), val2(0) {
+        pointer.val = 0;
+    }
+};
+
+/**
+ * DNA IDProperty (NodesModifierSettings.properties group).
+ * Types: STRING=0 INT=1 FLOAT=2 ARRAY=5 GROUP=6 ID=7 DOUBLE=8 (DNA_ID.h).
+ */
+struct IDProperty final : ElemBase {
+    enum Type {
+        Type_String = 0,
+        Type_Int = 1,
+        Type_Float = 2,
+        Type_Array = 5,
+        Type_Group = 6,
+        Type_Id = 7,
+        Type_Double = 8
+    };
+    enum ArraySubtype {
+        Array_Int = 1,
+        Array_Float = 2,
+        Array_Double = 8
+    };
+
+    std::shared_ptr<ElemBase> next WARN;
+    char type WARN;
+    char subtype WARN;
+    char name[64] WARN;
+    int len WARN;
+    IDPropertyData data WARN;
+    /** Decoded Presence (filled in Convert from data.pointer / data.val). */
+    std::vector<float> floatArray WARN;
+    std::vector<int> intArray WARN;
+    std::string str WARN;
+
+    IDProperty() :
+            type(0), subtype(0), len(0) {
+        name[0] = '\0';
+    }
+};
+
+/** DNA NodesModifierSettings - IDProperty group of modifier inputs. */
+struct NodesModifierSettings final : ElemBase {
+    std::shared_ptr<IDProperty> properties WARN;
+};
+
+/** DNA NodesModifierData - Geometry Nodes modifier (specialized vs Generic hull). */
+struct NodesModifierData final : SharedModifierData {
+    std::shared_ptr<bNodeTree> node_group WARN;
+    NodesModifierSettings settings WARN;
+};
+
+/** DNA ParticleKey (ParticleData.state / prev_state). */
+struct ParticleKey final : ElemBase {
+    float co[3] WARN;
+    float vel[3] WARN;
+    float rot[4] WARN;
+    float ave[3] WARN;
+    float time WARN;
+
+    ParticleKey() :
+            time(0.f) {
+        co[0] = co[1] = co[2] = 0.f;
+        vel[0] = vel[1] = vel[2] = 0.f;
+        rot[0] = 1.f;
+        rot[1] = rot[2] = rot[3] = 0.f;
+        ave[0] = ave[1] = ave[2] = 0.f;
+    }
+};
+
+/** DNA HairKey (ParticleData.hair[]) - C14 hair path vertices when written to the blend. */
+struct HairKey final : ElemBase {
+    float co[3] WARN;
+    float time WARN;
+    float weight WARN;
+    float world_co[3] WARN;
+    bool hasWorldCo WARN;
+
+    HairKey() :
+            time(0.f), weight(1.f), hasWorldCo(false) {
+        co[0] = co[1] = co[2] = 0.f;
+        world_co[0] = world_co[1] = world_co[2] = 0.f;
+    }
+};
+
+/** Subset of DNA ParticleData (per-particle state when written to the blend). */
+struct ParticleData final : ElemBase {
+    ParticleKey state WARN;
+    float size WARN;
+    /** Hair path keys (Presence: only when *hair DATA block resolves). */
+    vector<HairKey> hair WARN;
+    int totkey WARN;
+    bool hasTotkey WARN;
+    /**
+     * DNA ParticleData.num - birth face/vert/edge index (tessellated faces for FACE emit).
+     * Presence only when SDNA field resolves; negative = unresolved / DMCACHE_*.
+     */
+    int num WARN;
+    int num_dmcache WARN;
+    float fuv[4] WARN;
+    float foffset WARN;
+    bool hasNum WARN;
+    bool hasNumDmcache WARN;
+
+    ParticleData() :
+            size(0.f),
+            totkey(0),
+            hasTotkey(false),
+            num(0),
+            num_dmcache(0),
+            foffset(0.f),
+            hasNum(false),
+            hasNumDmcache(false) {
+        fuv[0] = fuv[1] = fuv[2] = fuv[3] = 0.f;
+    }
+};
+
+/** DNA bDeformGroup - vertex group name (Object.defbase / Mesh.vertex_group_names). */
+struct bDeformGroup final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<ElemBase> prev WARN;
+    char name[64] WARN;
+
+    bDeformGroup() {
+        name[0] = '\0';
+    }
+};
+
+/** DNA ParticleDupliWeight (ParticleSettings.dupliweights / instance_weights). */
+struct ParticleDupliWeight final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    Object *ob WARN;
+    short count WARN;
+    short flag WARN;
+    short index WARN;
+
+    ParticleDupliWeight() :
+            ob(nullptr), count(0), flag(0), index(0) {}
+};
+
+/** Subset of DNA ParticleSettings - emission / instance / hair scale fields.
+ *  Branch policy: DNA read lives on both improve+feature; typed aiNode metadata
+ *  emit = (improve)-blender-2x-5x; JSON bags = feature/blend-sidecar.
+ *  See doc/BLEND_DNA_EMIT_MAP.md.
+ */
+struct ParticleSettings final : ElemBase {
+    ID id WARN;
+    int flag WARN;
+    short type WARN;
+    short from WARN;
+    short distr WARN;
+    short ren_as WARN;
+    short phystype WARN;
+    short draw_as WARN;
+    int draw WARN;
+    int totpart WARN;
+    int userjit WARN;
+    int grid_res WARN;
+    float mass WARN;
+    float size WARN;
+    float randsize WARN;
+    float lifetime WARN;
+    float sta WARN;
+    float end WARN;
+    float jitfac WARN;
+    float grid_rand WARN;
+    float randlife WARN;
+    float randlength WARN;
+    short hair_step WARN;
+    /**
+     * DNA ParticleSettings.normfac. Blender RNA `hair_length` = normfac * 4
+     * (rna_PartSetting_hairlength_get). Collection-instance scale uses
+     * particle_size * hair_length.
+     */
+    float normfac WARN;
+    float path_start WARN;
+    float path_end WARN;
+    /**
+     * Hair thickness (DNA_particle_types.h). RNA root_radius/tip_radius/
+     * radius_scale/shape/use_close_tip. Cycles: r=rad_scale*0.5,
+     * root=r*rad_root, tip=r*rad_tip - not ParticleSettings.size.
+     */
+    float shape WARN;
+    float rad_root WARN;
+    float rad_tip WARN;
+    float rad_scale WARN;
+    short shape_flag WARN;
+    /**
+     * 0al5 Child-Distribution (DNA_particle_types.h). Presence only when SDNA
+     * resolves - Host expands children after parents; no invent.
+     * Old DNA: child_nbr / ren_child_nbr; newer: child_percent / child_render_percent.
+     */
+    short childtype WARN;
+    int child_flag WARN;
+    int child_nbr WARN;
+    int ren_child_nbr WARN;
+    int child_percent WARN;
+    int child_render_percent WARN;
+    int child_seed WARN;
+    float parents WARN;
+    float childsize WARN;
+    float childrandsize WARN;
+    float childrad WARN;
+    float childflat WARN;
+    float clumpfac WARN;
+    float clumppow WARN;
+    short kink WARN;
+    float kink_amp WARN;
+    float kink_freq WARN;
+    float kink_shape WARN;
+    float kink_flat WARN;
+    float kink_amp_clump WARN;
+    int kink_extra_steps WARN;
+    float kink_axis_random WARN;
+    float kink_amp_random WARN;
+    float parting_fac WARN;
+    float parting_min WARN;
+    float parting_max WARN;
+    float branch_thres WARN;
+    float clength WARN;
+    float clength_thres WARN;
+    bool hasNormfac WARN;
+    bool hasUserjit WARN;
+    bool hasGridRes WARN;
+    bool hasGridRand WARN;
+    bool hasRandlife WARN;
+    bool hasRandlength WARN;
+    bool hasHairStep WARN;
+    bool hasPhystype WARN;
+    bool hasDrawAs WARN;
+    bool hasDraw WARN;
+    bool hasPathStart WARN;
+    bool hasPathEnd WARN;
+    bool hasShape WARN;
+    bool hasRadRoot WARN;
+    bool hasRadTip WARN;
+    bool hasRadScale WARN;
+    bool hasShapeFlag WARN;
+    bool hasChildtype WARN;
+    bool hasChildFlag WARN;
+    bool hasChildNbr WARN;
+    bool hasRenChildNbr WARN;
+    bool hasChildPercent WARN;
+    bool hasChildRenderPercent WARN;
+    bool hasChildSeed WARN;
+    bool hasParents WARN;
+    bool hasChildsize WARN;
+    bool hasChildrandsize WARN;
+    bool hasChildrad WARN;
+    bool hasChildflat WARN;
+    bool hasClumpfac WARN;
+    bool hasClumppow WARN;
+    bool hasKink WARN;
+    bool hasKinkAmp WARN;
+    bool hasKinkFreq WARN;
+    bool hasKinkShape WARN;
+    bool hasKinkFlat WARN;
+    bool hasKinkAmpClump WARN;
+    bool hasKinkExtraSteps WARN;
+    bool hasKinkAxisRandom WARN;
+    bool hasKinkAmpRandom WARN;
+    bool hasPartingFac WARN;
+    bool hasPartingMin WARN;
+    bool hasPartingMax WARN;
+    bool hasBranchThres WARN;
+    bool hasClength WARN;
+    bool hasClengthThres WARN;
+    /** DNA eParticleShapeFlag. */
+    enum ShapeFlag {
+        Shape_CloseTip = 1 << 0 // PART_SHAPE_CLOSE_TIP
+    };
+    /** DNA eParticleChildType (childtype). */
+    enum ChildType {
+        Child_None = 0,
+        Child_Particles = 1, // PART_CHILD_PARTICLES
+        Child_Faces = 2 // PART_CHILD_FACES
+    };
+    /** DNA eParticleKink. */
+    enum KinkType {
+        Kink_No = 0,
+        Kink_Curl = 1,
+        Kink_Radial = 2,
+        Kink_Wave = 3,
+        Kink_Braid = 4,
+        Kink_Spiral = 5
+    };
+    /** DNA ParticleSettings.flag child-related bits. */
+    enum ChildFlagBits {
+        Flag_ChildEffect = 1 << 27, // PART_CHILD_EFFECT
+        Flag_ChildLongHair = 1 << 28, // PART_CHILD_LONG_HAIR
+        Flag_ChildGuide = 1 << 30 // PART_CHILD_GUIDE
+    };
+    /** DNA eParticleChildFlag (child_flag). */
+    enum ChildFlag {
+        Child_UseClumpNoise = 1 << 0,
+        Child_UseClumpCurve = 1 << 1,
+        Child_UseRoughCurve = 1 << 2,
+        Child_UseTwistCurve = 1 << 3
+    };
+    /** DNA eParticleType labels for Host (PART_EMITTER=0, PART_HAIR=2, …). */
+    enum PartType {
+        Type_Emitter = 0,
+        Type_Hair = 2,
+        Type_Fluid = 3,
+        Type_FluidFlip = 4,
+        Type_FluidSpray = 5,
+        Type_FluidBubble = 6,
+        Type_FluidFoam = 7,
+        Type_FluidTracer = 8,
+        Type_FluidSprayFoam = 9,
+        Type_FluidSprayBubble = 10,
+        Type_FluidFoamBubble = 11,
+        Type_FluidSprayFoamBubble = 12
+    };
+    /** DNA eParticlePhysicsType (phystype) - Newtonian / keyed / … */
+    enum PhysType {
+        Phys_No = 0,
+        Phys_Newtonian = 1,
+        Phys_Keyed = 2,
+        Phys_Boids = 3,
+        Phys_Fluid = 4
+    };
+    /** Blender 2.8 DNA name; newer files may use instance_collection. */
+    std::shared_ptr<Collection> dup_group WARN;
+    ListBase dupliweights WARN; // ParticleDupliWeight
+    std::shared_ptr<Object> dup_ob WARN;
+    /** Particle texture slots (Fur density maps, etc.) - same MAX_MTEX=18 as Material. */
+    std::shared_ptr<MTex> mtex[18];
+
+    enum DrawAs {
+        Draw_None = 0,
+        Draw_Halo = 1,
+        Draw_Line = 5,
+        Draw_Path = 6,
+        Draw_Object = 7,
+        Draw_Collection = 8
+    };
+
+    ParticleSettings() :
+            flag(0),
+            type(0),
+            from(0),
+            distr(0),
+            ren_as(0),
+            phystype(0),
+            draw_as(0),
+            draw(0),
+            totpart(0),
+            userjit(0),
+            grid_res(10),
+            mass(1.f),
+            size(0.05f),
+            randsize(0.f),
+            lifetime(50.f),
+            sta(1.f),
+            end(200.f),
+            jitfac(1.f),
+            grid_rand(0.f),
+            randlife(0.f),
+            randlength(0.f),
+            hair_step(5),
+            normfac(1.f),
+            path_start(0.f),
+            path_end(1.f),
+            shape(0.f),
+            rad_root(1.f),
+            rad_tip(0.f),
+            rad_scale(0.01f),
+            shape_flag(0),
+            childtype(0),
+            child_flag(0),
+            child_nbr(0),
+            ren_child_nbr(0),
+            child_percent(0),
+            child_render_percent(0),
+            child_seed(0),
+            parents(0.f),
+            childsize(1.f),
+            childrandsize(0.f),
+            childrad(0.2f),
+            childflat(0.f),
+            clumpfac(0.f),
+            clumppow(0.f),
+            kink(0),
+            kink_amp(0.f),
+            kink_freq(0.f),
+            kink_shape(0.f),
+            kink_flat(0.f),
+            kink_amp_clump(0.f),
+            kink_extra_steps(0),
+            kink_axis_random(0.f),
+            kink_amp_random(0.f),
+            parting_fac(0.f),
+            parting_min(0.f),
+            parting_max(0.f),
+            branch_thres(0.f),
+            clength(1.f),
+            clength_thres(0.f),
+            hasNormfac(false),
+            hasUserjit(false),
+            hasGridRes(false),
+            hasGridRand(false),
+            hasRandlife(false),
+            hasRandlength(false),
+            hasHairStep(false),
+            hasPhystype(false),
+            hasDrawAs(false),
+            hasDraw(false),
+            hasPathStart(false),
+            hasPathEnd(false),
+            hasShape(false),
+            hasRadRoot(false),
+            hasRadTip(false),
+            hasRadScale(false),
+            hasShapeFlag(false),
+            hasChildtype(false),
+            hasChildFlag(false),
+            hasChildNbr(false),
+            hasRenChildNbr(false),
+            hasChildPercent(false),
+            hasChildRenderPercent(false),
+            hasChildSeed(false),
+            hasParents(false),
+            hasChildsize(false),
+            hasChildrandsize(false),
+            hasChildrad(false),
+            hasChildflat(false),
+            hasClumpfac(false),
+            hasClumppow(false),
+            hasKink(false),
+            hasKinkAmp(false),
+            hasKinkFreq(false),
+            hasKinkShape(false),
+            hasKinkFlat(false),
+            hasKinkAmpClump(false),
+            hasKinkExtraSteps(false),
+            hasKinkAxisRandom(false),
+            hasKinkAmpRandom(false),
+            hasPartingFac(false),
+            hasPartingMin(false),
+            hasPartingMax(false),
+            hasBranchThres(false),
+            hasClength(false),
+            hasClengthThres(false) {}
+};
+
+/** Subset of DNA ParticleSystem (Object.particlesystem ListBase). */
+struct ParticleSystem final : ElemBase {
+    /** DNA eParticleSystem_Vgroup indices into vgroup[] (PSYS_TOT_VG=13). */
+    enum VGroupSlot {
+        VG_Density = 0,
+        VG_Vel = 1,
+        VG_Length = 2,
+        VG_Clump = 3,
+        VG_Kink = 4,
+        VG_Rough1 = 5,
+        VG_Rough2 = 6,
+        VG_RoughE = 7,
+        VG_Size = 8,
+        VG_Tan = 9,
+        VG_Rot = 10,
+        VG_Effector = 11,
+        VG_Twist = 12,
+        VG_Tot = 13
+    };
+
+    std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<ParticleSettings> part;
+    vector<ParticleData> particles WARN;
+    char name[64] WARN;
+    int seed WARN;
+    int totpart WARN;
+    /**
+     * DNA ParticleSystem.vgroup[PSYS_TOT_VG]: 0=disabled, 1-based index into
+     * Object.defbase / Mesh.vertex_group_names. Presence: emit names when >0.
+     */
+    short vgroup[VG_Tot] WARN;
+    /** DNA vg_neg bitmask - bit i set => invert vgroup[i] weights. */
+    short vg_neg WARN;
+    bool hasVgroup WARN;
+    bool hasVgNeg WARN;
+
+    ParticleSystem() :
+            seed(0), totpart(0), vg_neg(0), hasVgroup(false), hasVgNeg(false) {
+        name[0] = '\0';
+        for (int i = 0; i < VG_Tot; ++i) {
+            vgroup[i] = 0;
+        }
+    }
 };
 
 // -------------------------------------------------------------------------------
@@ -881,6 +1948,16 @@ struct Object final : ElemBase {
     std::shared_ptr<struct AnimData> adt WARN; // object animation (Actions / NLA)
 
     ListBase modifiers;
+    ListBase particlesystem; // ParticleSystem
+    /** DNA Object.defbase - vertex group names (legacy / versioning; Mesh may own names). */
+    ListBase defbase; // bDeformGroup
+    std::shared_ptr<PartDeflect> pd; // Collision / force field
+    std::shared_ptr<SoftBody> soft;
+    std::shared_ptr<RigidBodyOb> rigidbody_object;
+    std::shared_ptr<RigidBodyCon> rigidbody_constraint;
+    /** Empty display (DNA empty_drawtype / empty_drawsize). */
+    char empty_drawtype WARN;
+    float empty_drawsize WARN;
 
     Object() :
             type(Type_EMPTY),
@@ -888,7 +1965,9 @@ struct Object final : ElemBase {
             drotAngle(0.f),
             rotmode(1), // ROT_MODE_EUL / XYZ
             has_world_matrix(false),
-            parent(nullptr) {
+            parent(nullptr),
+            empty_drawtype(0),
+            empty_drawsize(0.f) {
         // Identity parentinv / unit scale / unit quat (Blender defaults).
         for (unsigned int i = 0; i < 4; ++i) {
             for (unsigned int j = 0; j < 4; ++j) {
@@ -920,6 +1999,142 @@ struct Base final : ElemBase {
 };
 
 // -------------------------------------------------------------------------------
+/** Subset of DNA RenderData - frame range / FPS for C0 scene sidecar. */
+struct RenderData final : ElemBase {
+    int sfra WARN; ///< Start frame
+    int efra WARN; ///< End frame
+    float frs_sec WARN; ///< Frames per second (numerator)
+    float frs_sec_base WARN; ///< Frames per second (denominator); 0 => treat as 1
+
+    RenderData() :
+            sfra(1), efra(250), frs_sec(24.f), frs_sec_base(1.f) {}
+};
+
+// -------------------------------------------------------------------------------
+/** Subset of DNA UnitSettings - scale_length for metersPerUnit mapping. */
+struct UnitSettings final : ElemBase {
+    float scale_length WARN;
+
+    UnitSettings() :
+            scale_length(1.f) {}
+};
+
+/**
+ * DNA Brush subset for sculpt cloth Presence.
+ * Field list + enums from blender.git makesdna:
+ *   DNA_brush_types.h (struct Brush cloth_* / flag2 / boundary_*)
+ *   DNA_brush_enums.h (eBrushSculptType / eBrushCloth* / eBrushFlags2 / eBrushBoundaryDeformType)
+ * Blender 3.x DNA name `sculpt_tool`; newer files `sculpt_brush_type` (same offset class).
+ */
+struct Brush final : ElemBase {
+    /** DNA eBrushSculptType / SCULPT_BRUSH_TYPE_*. */
+    enum SculptTool {
+        Sculpt_Cloth = 26, // SCULPT_BRUSH_TYPE_CLOTH
+        Sculpt_Boundary = 30 // SCULPT_BRUSH_TYPE_BOUNDARY
+    };
+    /** DNA eBrushClothDeformType. */
+    enum ClothDeform {
+        ClothDeform_Drag = 0,
+        ClothDeform_Push = 1,
+        ClothDeform_Grab = 2,
+        ClothDeform_PinchPoint = 3,
+        ClothDeform_PinchPerpendicular = 4,
+        ClothDeform_Inflate = 5,
+        ClothDeform_Expand = 6,
+        ClothDeform_SnakeHook = 7
+    };
+    /** DNA eBrushClothForceFalloffType. */
+    enum ClothForceFalloff {
+        ClothFalloff_Radial = 0,
+        ClothFalloff_Plane = 1
+    };
+    /** DNA eBrushClothSimulationAreaType. */
+    enum ClothSimArea {
+        ClothArea_Local = 0,
+        ClothArea_Global = 1,
+        ClothArea_Dynamic = 2
+    };
+    /** DNA eBrushBoundaryDeformType. */
+    enum BoundaryDeform {
+        BoundaryDeform_Bend = 0,
+        BoundaryDeform_Expand = 1,
+        BoundaryDeform_Inflate = 2,
+        BoundaryDeform_Grab = 3,
+        BoundaryDeform_Twist = 4,
+        BoundaryDeform_Smooth = 5
+    };
+    /** DNA eBrushBoundaryFalloffType. */
+    enum BoundaryFalloff {
+        BoundaryFalloff_Constant = 0,
+        BoundaryFalloff_Radius = 1,
+        BoundaryFalloff_Loop = 2,
+        BoundaryFalloff_LoopInvert = 3
+    };
+    /** DNA eBrushFlags2 cloth bits. */
+    enum Flag2 {
+        Flag2_ClothPinSimulationBoundary = 1 << 4, // BRUSH_CLOTH_PIN_SIMULATION_BOUNDARY
+        Flag2_ClothUseCollision = 1 << 6 // BRUSH_CLOTH_USE_COLLISION
+    };
+
+    ID id WARN;
+    char sculpt_tool WARN; // sculpt_tool (3.x) or sculpt_brush_type (newer) via Convert
+    int size WARN;
+    float alpha WARN;
+    int flag2 WARN;
+    int boundary_deform_type WARN;
+    int boundary_falloff_type WARN;
+    float boundary_offset WARN;
+    int cloth_deform_type WARN;
+    int cloth_force_falloff_type WARN;
+    int cloth_simulation_area_type WARN;
+    float cloth_mass WARN;
+    float cloth_damping WARN;
+    float cloth_sim_limit WARN;
+    float cloth_sim_falloff WARN;
+    float cloth_constraint_softbody_strength WARN;
+    bool hasSculptTool WARN;
+    bool hasFlag2 WARN;
+    bool hasClothParms WARN;
+    bool hasBoundaryDeform WARN;
+
+    Brush() :
+            sculpt_tool(0),
+            size(0),
+            alpha(0.f),
+            flag2(0),
+            boundary_deform_type(0),
+            boundary_falloff_type(0),
+            boundary_offset(0.f),
+            cloth_deform_type(0),
+            cloth_force_falloff_type(0),
+            cloth_simulation_area_type(0),
+            cloth_mass(0.f),
+            cloth_damping(0.f),
+            cloth_sim_limit(0.f),
+            cloth_sim_falloff(0.f),
+            cloth_constraint_softbody_strength(0.f),
+            hasSculptTool(false),
+            hasFlag2(false),
+            hasClothParms(false),
+            hasBoundaryDeform(false) {}
+};
+
+/** DNA Sculpt (ToolSettings.sculpt) - gravity Presence; see DNA_scene_types.h. */
+struct Sculpt final : ElemBase {
+    float gravity_factor WARN;
+    std::shared_ptr<Object> gravity_object WARN;
+    bool hasGravityFactor WARN;
+
+    Sculpt() :
+            gravity_factor(0.f), hasGravityFactor(false) {}
+};
+
+/** DNA ToolSettings - sculpt pointer. */
+struct ToolSettings final : ElemBase {
+    std::shared_ptr<Sculpt> sculpt WARN;
+};
+
+// -------------------------------------------------------------------------------
 struct Scene final : ElemBase {
     ID id FAIL;
 
@@ -927,8 +2142,12 @@ struct Scene final : ElemBase {
     std::shared_ptr<World> world WARN;
     std::shared_ptr<Base> basact WARN;
     std::shared_ptr<Collection> master_collection WARN;
+    std::shared_ptr<ToolSettings> toolsettings WARN;
 
     ListBase base;
+
+    RenderData r WARN;
+    UnitSettings unit WARN;
 
     Scene() = default;
 };
@@ -940,7 +2159,7 @@ struct Image final : ElemBase {
     /** Legacy DNA `name` or modern `filepath` (FILE_MAX). */
     char name[MaxNameLen] WARN;
 
-    //struct anim *anim;
+    // struct anim *anim;
 
     short ok, flag;
     short source, type, pad, pad1;
@@ -949,14 +2168,14 @@ struct Image final : ElemBase {
     short tpageflag, totbind;
     short xrep, yrep;
     short twsta, twend;
-    //unsigned int bindcode;
-    //unsigned int *repbind;
+    // unsigned int bindcode;
+    // unsigned int *repbind;
 
     /** Deprecated DNA pointer; often null when packedfiles is used. */
     std::shared_ptr<PackedFile> packedfile;
     /** Blender 2.77+ / 4.x: ListBase of ImagePackedFile. */
     ListBase packedfiles WARN;
-    //struct PreviewImage * preview;
+    // struct PreviewImage * preview;
 
     float lastupdate;
     int lastused;
@@ -1013,54 +2232,54 @@ struct Tex final : ElemBase {
     ID id FAIL;
     // AnimData *adt;
 
-    //float noisesize, turbul;
-    //float bright, contrast, rfac, gfac, bfac;
-    //float filtersize;
+    // float noisesize, turbul;
+    // float bright, contrast, rfac, gfac, bfac;
+    // float filtersize;
 
-    //float mg_H, mg_lacunarity, mg_octaves, mg_offset, mg_gain;
-    //float dist_amount, ns_outscale;
+    // float mg_H, mg_lacunarity, mg_octaves, mg_offset, mg_gain;
+    // float dist_amount, ns_outscale;
 
-    //float vn_w1;
-    //float vn_w2;
-    //float vn_w3;
-    //float vn_w4;
-    //float vn_mexp;
-    //short vn_distm, vn_coltype;
+    // float vn_w1;
+    // float vn_w2;
+    // float vn_w3;
+    // float vn_w4;
+    // float vn_mexp;
+    // short vn_distm, vn_coltype;
 
-    //short noisedepth, noisetype;
-    //short noisebasis, noisebasis2;
+    // short noisedepth, noisetype;
+    // short noisebasis, noisebasis2;
 
-    //short flag;
+    // short flag;
     ImageFlags imaflag;
     Type type FAIL;
-    //short stype;
+    // short stype;
 
-    //float cropxmin, cropymin, cropxmax, cropymax;
-    //int texfilter;
-    //int afmax;
-    //short xrepeat, yrepeat;
-    //short extend;
+    // float cropxmin, cropymin, cropxmax, cropymax;
+    // int texfilter;
+    // int afmax;
+    // short xrepeat, yrepeat;
+    // short extend;
 
-    //short fie_ima;
-    //int len;
-    //int frames, offset, sfra;
+    // short fie_ima;
+    // int len;
+    // int frames, offset, sfra;
 
-    //float checkerdist, nabla;
-    //float norfac;
+    // float checkerdist, nabla;
+    // float norfac;
 
-    //ImageUser iuser;
+    // ImageUser iuser;
 
-    //bNodeTree *nodetree;
-    //Ipo *ipo;
+    // bNodeTree *nodetree;
+    // Ipo *ipo;
     std::shared_ptr<Image> ima WARN;
-    //PluginTex *plugin;
-    //ColorBand *coba;
-    //EnvMap *env;
-    //PreviewImage * preview;
-    //PointDensity *pd;
-    //VoxelData *vd;
+    // PluginTex *plugin;
+    // ColorBand *coba;
+    // EnvMap *env;
+    // PreviewImage * preview;
+    // PointDensity *pd;
+    // VoxelData *vd;
 
-    //char use_nodes;
+    // char use_nodes;
 
     Tex() : imaflag(ImageFlags_INTERPOL), type(Type_CLOUDS) {
         // empty
@@ -1119,7 +2338,10 @@ struct MTex final : ElemBase {
         MapType_WARP = 8192
     };
 
-    // short texco, maptoneg;
+    /** DNA eMTex_TexCo bits (TEXCO_UV=1<<4, …) - Presence when SDNA has texco. */
+    short texco WARN;
+    bool hasTexco WARN;
+
     MapType mapto;
 
     BlendType blendtype;
@@ -1133,26 +2355,36 @@ struct MTex final : ElemBase {
 
     int texflag;
     short colormodel, pmapto, pmaptoneg;
-    //short normapspace, which_output;
-    //char brush_map_mode;
+    // short normapspace, which_output;
+    // char brush_map_mode;
     float r, g, b, k WARN;
-    //float def_var, rt;
+    // float def_var, rt;
 
-    //float colfac, varfac;
+    // float colfac, varfac;
 
     float norfac;
-    //float dispfac, warpfac;
+    // float dispfac, warpfac;
     float colspecfac, mirrfac, alphafac;
     float difffac, specfac, emitfac, hardfac;
-    //float raymirrfac, translfac, ambfac;
-    //float colemitfac, colreflfac, coltransfac;
-    //float densfac, scatterfac, reflfac;
+    // float raymirrfac, translfac, ambfac;
+    // float colemitfac, colreflfac, coltransfac;
+    // float densfac, scatterfac, reflfac;
 
-    //float timefac, lengthfac, clumpfac;
-    //float kinkfac, roughfac, padensfac;
-    //float lifefac, sizefac, ivelfac, pvelfac;
-    //float shadowfac;
-    //float zenupfac, zendownfac, blendfac;
+    /** Particle texture influence factors (DNA MTex) - Presence when SDNA resolves. */
+    float timefac WARN;
+    float lengthfac WARN;
+    float padensfac WARN;
+    float lifefac WARN;
+    float sizefac WARN;
+    bool hasTimefac WARN;
+    bool hasLengthfac WARN;
+    bool hasPadensfac WARN;
+    bool hasLifefac WARN;
+    bool hasSizefac WARN;
+    // float kinkfac, roughfac;
+    // float ivelfac, pvelfac;
+    // float shadowfac;
+    // float zenupfac, zendownfac, blendfac;
 
     MTex() = default;
 };
@@ -1169,9 +2401,70 @@ struct BezTriple final : ElemBase {
     }
 };
 
+/** DNA DriverTarget - one input for a DriverVar. */
+struct DriverTarget final : ElemBase {
+    // *id is polymorphic (Object/Bone ID/...); name+code resolved at Convert.
+    std::string id_name;
+    std::string id_code; // first 2 chars of ID.name ("OB", "MA", ...)
+    std::string rna_path;
+    char pchan_name[64];
+    short transChan;
+    short flag;
+    short options;
+    int idtype;
+    int context_property;
+    float fallback_value;
+    char rotation_mode;
+
+    DriverTarget() :
+            transChan(0),
+            flag(0),
+            options(0),
+            idtype(0),
+            context_property(0),
+            fallback_value(0.f),
+            rotation_mode(0) {
+        memset(pchan_name, 0, sizeof pchan_name);
+    }
+};
+
+/** DNA DriverVar - named variable with up to 8 targets. */
+struct DriverVar final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    char name[64];
+    DriverTarget targets[8];
+    short num_targets;
+    short type;
+    short flag;
+
+    DriverVar() :
+            num_targets(0),
+            type(0),
+            flag(0) {
+        memset(name, 0, sizeof name);
+    }
+};
+
+/** DNA ChannelDriver - expression / aggregate over DriverVars. */
+struct ChannelDriver final : ElemBase {
+    ListBase variables; // DriverVar
+    char expression[256];
+    float influence;
+    int type;
+    int flag;
+
+    ChannelDriver() :
+            influence(0.f),
+            type(0),
+            flag(0) {
+        memset(expression, 0, sizeof expression);
+    }
+};
+
 /** DNA FCurve - one animated RNA path component. */
 struct FCurve final : ElemBase {
     std::shared_ptr<ElemBase> next WARN;
+    std::shared_ptr<ChannelDriver> driver WARN; // only for AnimData.drivers
     int totvert;
     int array_index;
     std::string rna_path; // from char *rna_path
@@ -1255,6 +2548,7 @@ struct NlaTrack final : ElemBase {
 struct AnimData final : ElemBase {
     std::shared_ptr<bAction> action;
     ListBase nla_tracks;
+    ListBase drivers; // FCurve list with ChannelDriver (separate from Action)
 };
 
 } // namespace Assimp::Blender

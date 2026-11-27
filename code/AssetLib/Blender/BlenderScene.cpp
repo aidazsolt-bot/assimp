@@ -54,7 +54,7 @@ namespace Blender {
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Object>(
+void Structure::Convert<Object>(
         Object &dest,
         const FileDatabase &db) const {
 
@@ -112,13 +112,21 @@ void Structure ::Convert<Object>(
     ReadFieldPtr<ErrorPolicy_Fail>(dest.data, "*data", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.adt, "*adt", db);
     ReadField<ErrorPolicy_Igno>(dest.modifiers, "modifiers", db);
+    ReadField<ErrorPolicy_Igno>(dest.particlesystem, "particlesystem", db);
+    ReadField<ErrorPolicy_Igno>(dest.defbase, "defbase", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.pd, "*pd", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.soft, "*soft", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_object, "*rigidbody_object", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_constraint, "*rigidbody_constraint", db);
+    ReadField<ErrorPolicy_Igno>(dest.empty_drawtype, "empty_drawtype", db);
+    ReadField<ErrorPolicy_Igno>(dest.empty_drawsize, "empty_drawsize", db);
 
     db.reader->IncPtr(size);
 }
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<BezTriple>(
+void Structure::Convert<BezTriple>(
         BezTriple &dest,
         const FileDatabase &db) const {
     ReadFieldArray2<ErrorPolicy_Igno>(dest.vec, "vec", db);
@@ -128,15 +136,122 @@ void Structure ::Convert<BezTriple>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<FCurve>(
+void Structure::Convert<DriverTarget>(
+        DriverTarget &dest,
+        const FileDatabase &db) const {
+    // *id is polymorphic (Object/Material/...); read leading DNA ID only.
+    dest.id_name.clear();
+    dest.id_code.clear();
+    try {
+        const Field &f = (*this)["*id"];
+        if (f.flags & FieldFlag_Pointer) {
+            const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+            db.reader->IncPtr(f.offset);
+            Pointer ptrval;
+            Convert(ptrval, db);
+            db.reader->SetCurrentPos(old);
+            if (ptrval.val) {
+                const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+                const Structure *idStruc = db.dna.Get("ID");
+                if (block && idStruc) {
+                    const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                    db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                    ID tmp;
+                    idStruc->Convert(tmp, db);
+                    db.reader->SetCurrentPos(pold);
+                    if (tmp.name[0] != '\0') {
+                        dest.id_code.assign(tmp.name, tmp.name + 2);
+                        if (tmp.name[2] != '\0') {
+                            dest.id_name.assign(tmp.name + 2);
+                        }
+                    }
+                }
+            }
+        }
+    } catch (const Error &) {
+        dest.id_name.clear();
+        dest.id_code.clear();
+    }
+
+    dest.rna_path.clear();
+    try {
+        const Field &f = (*this)["*rna_path"];
+        const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+        db.reader->IncPtr(f.offset);
+        Pointer ptrval;
+        Convert(ptrval, db);
+        db.reader->SetCurrentPos(old);
+        if (ptrval.val) {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            if (block) {
+                const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                for (;;) {
+                    const char c = static_cast<char>(db.reader->GetI1());
+                    if (c == '\0') {
+                        break;
+                    }
+                    dest.rna_path.push_back(c);
+                    if (dest.rna_path.size() > 512) {
+                        break;
+                    }
+                }
+                db.reader->SetCurrentPos(pold);
+            }
+        }
+    } catch (const Error &) {
+        dest.rna_path.clear();
+    }
+
+    ReadFieldArray<ErrorPolicy_Igno>(dest.pchan_name, "pchan_name", db);
+    ReadField<ErrorPolicy_Igno>(dest.transChan, "transChan", db);
+    ReadField<ErrorPolicy_Igno>(dest.rotation_mode, "rotation_mode", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.options, "options", db);
+    ReadField<ErrorPolicy_Igno>(dest.idtype, "idtype", db);
+    ReadField<ErrorPolicy_Igno>(dest.context_property, "context_property", db);
+    ReadField<ErrorPolicy_Igno>(dest.fallback_value, "fallback_value", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<DriverVar>(
+        DriverVar &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.targets, "targets", db);
+    ReadField<ErrorPolicy_Igno>(dest.num_targets, "num_targets", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ChannelDriver>(
+        ChannelDriver &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.variables, "variables", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.expression, "expression", db);
+    ReadField<ErrorPolicy_Igno>(dest.influence, "influence", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<FCurve>(
         FCurve &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.driver, "*driver", db);
     ReadField<ErrorPolicy_Igno>(dest.totvert, "totvert", db);
     ReadField<ErrorPolicy_Igno>(dest.array_index, "array_index", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.bezt, "*bezt", db);
 
-    // char *rna_path -> C string in a DATA block
     dest.rna_path.clear();
     try {
         const Field &f = (*this)["*rna_path"];
@@ -172,7 +287,7 @@ void Structure ::Convert<FCurve>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Bone>(
+void Structure::Convert<Bone>(
         Bone &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -185,7 +300,7 @@ void Structure ::Convert<Bone>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bArmature>(
+void Structure::Convert<bArmature>(
         bArmature &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
@@ -195,7 +310,7 @@ void Structure ::Convert<bArmature>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ActionChannelBag>(
+void Structure::Convert<ActionChannelBag>(
         ActionChannelBag &dest,
         const FileDatabase &db) const {
     // DNA: FCurve **fcurve_array (count from block size / pointer width).
@@ -205,7 +320,7 @@ void Structure ::Convert<ActionChannelBag>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ActionStripKeyframeData>(
+void Structure::Convert<ActionStripKeyframeData>(
         ActionStripKeyframeData &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Igno>(dest.channelbag_array, "**channelbag_array", db);
@@ -214,7 +329,7 @@ void Structure ::Convert<ActionStripKeyframeData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bAction>(
+void Structure::Convert<bAction>(
         bAction &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
@@ -226,7 +341,7 @@ void Structure ::Convert<bAction>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<NlaStrip>(
+void Structure::Convert<NlaStrip>(
         NlaStrip &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -239,7 +354,7 @@ void Structure ::Convert<NlaStrip>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<NlaTrack>(
+void Structure::Convert<NlaTrack>(
         NlaTrack &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -250,17 +365,18 @@ void Structure ::Convert<NlaTrack>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<AnimData>(
+void Structure::Convert<AnimData>(
         AnimData &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Igno>(dest.action, "*action", db);
     ReadField<ErrorPolicy_Igno>(dest.nla_tracks, "nla_tracks", db);
+    ReadField<ErrorPolicy_Igno>(dest.drivers, "drivers", db);
     db.reader->IncPtr(size);
 }
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Group>(
+void Structure::Convert<Group>(
         Group &dest,
         const FileDatabase &db) const {
 
@@ -315,11 +431,15 @@ void Structure::Convert<Collection>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MTex>(
+void Structure::Convert<MTex>(
         MTex &dest,
         const FileDatabase &db) const {
 
     int temp_short = 0;
+    dest.hasTexco = (Get("texco") != nullptr);
+    if (dest.hasTexco) {
+        ReadField<ErrorPolicy_Igno>(dest.texco, "texco", db);
+    }
     ReadField<ErrorPolicy_Igno>(temp_short, "mapto", db);
     dest.mapto = static_cast<Assimp::Blender::MTex::MapType>(temp_short);
     int temp = 0;
@@ -354,13 +474,34 @@ void Structure ::Convert<MTex>(
     ReadField<ErrorPolicy_Igno>(dest.emitfac, "emitfac", db);
     ReadField<ErrorPolicy_Igno>(dest.hardfac, "hardfac", db);
     ReadField<ErrorPolicy_Igno>(dest.norfac, "norfac", db);
+    // Particle MTex influence factors (PAMAP_* uses mapto bits; facs are separate).
+    dest.hasTimefac = (Get("timefac") != nullptr);
+    if (dest.hasTimefac) {
+        ReadField<ErrorPolicy_Igno>(dest.timefac, "timefac", db);
+    }
+    dest.hasLengthfac = (Get("lengthfac") != nullptr);
+    if (dest.hasLengthfac) {
+        ReadField<ErrorPolicy_Igno>(dest.lengthfac, "lengthfac", db);
+    }
+    dest.hasPadensfac = (Get("padensfac") != nullptr);
+    if (dest.hasPadensfac) {
+        ReadField<ErrorPolicy_Igno>(dest.padensfac, "padensfac", db);
+    }
+    dest.hasLifefac = (Get("lifefac") != nullptr);
+    if (dest.hasLifefac) {
+        ReadField<ErrorPolicy_Igno>(dest.lifefac, "lifefac", db);
+    }
+    dest.hasSizefac = (Get("sizefac") != nullptr);
+    if (dest.hasSizefac) {
+        ReadField<ErrorPolicy_Igno>(dest.sizefac, "sizefac", db);
+    }
 
     db.reader->IncPtr(size);
 }
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<TFace>(
+void Structure::Convert<TFace>(
         TFace &dest,
         const FileDatabase &db) const {
 
@@ -376,7 +517,7 @@ void Structure ::Convert<TFace>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<SubsurfModifierData>(
+void Structure::Convert<SubsurfModifierData>(
         SubsurfModifierData &dest,
         const FileDatabase &db) const {
 
@@ -391,7 +532,803 @@ void Structure ::Convert<SubsurfModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MFace>(
+void Structure::Convert<GenericModifierData>(
+        GenericModifierData &dest,
+        const FileDatabase &db) const {
+    // Only the ModifierData header (next/type/name) - enough to walk the list
+    // and classify by dest.modifier.type for physics inventory.
+    ReadField<ErrorPolicy_Warn>(dest.modifier, "modifier", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<FluidDomainSettings>(
+        FluidDomainSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.cache_frame_start, "cache_frame_start", db);
+    ReadField<ErrorPolicy_Igno>(dest.cache_frame_end, "cache_frame_end", db);
+    ReadField<ErrorPolicy_Igno>(dest.cache_type, "cache_type", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.cache_directory, "cache_directory", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<FluidFlowSettings>(
+        FluidFlowSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.density, "density", db);
+    ReadField<ErrorPolicy_Igno>(dest.fuel_amount, "fuel_amount", db);
+    ReadField<ErrorPolicy_Igno>(dest.temperature, "temperature", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.behavior, "behavior", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<FluidEffectorSettings>(
+        FluidEffectorSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.surface_distance, "surface_distance", db);
+    ReadField<ErrorPolicy_Igno>(dest.flags, "flags", db);
+    ReadField<ErrorPolicy_Igno>(dest.subframes, "subframes", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.vel_multi, "vel_multi", db);
+    ReadField<ErrorPolicy_Igno>(dest.guide_mode, "guide_mode", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<FluidModifierData>(
+        FluidModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.domain, "*domain", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.flow, "*flow", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.effector, "*effector", db);
+    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<SmokeModifierData>(
+        SmokeModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<FluidsimSettings>(
+        FluidsimSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.resolutionxyz, "resolutionxyz", db);
+    ReadField<ErrorPolicy_Igno>(dest.previewresxyz, "previewresxyz", db);
+    ReadField<ErrorPolicy_Igno>(dest.realsize, "realsize", db);
+    ReadField<ErrorPolicy_Igno>(dest.viscosityValue, "viscosityValue", db);
+    ReadField<ErrorPolicy_Igno>(dest.animStart, "animStart", db);
+    ReadField<ErrorPolicy_Igno>(dest.animEnd, "animEnd", db);
+    ReadField<ErrorPolicy_Igno>(dest.bakeStart, "bakeStart", db);
+    ReadField<ErrorPolicy_Igno>(dest.bakeEnd, "bakeEnd", db);
+    ReadField<ErrorPolicy_Igno>(dest.frameOffset, "frameOffset", db);
+    ReadField<ErrorPolicy_Igno>(dest.iniVelx, "iniVelx", db);
+    ReadField<ErrorPolicy_Igno>(dest.iniVely, "iniVely", db);
+    ReadField<ErrorPolicy_Igno>(dest.iniVelz, "iniVelz", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.surfdataPath, "surfdataPath", db);
+    ReadField<ErrorPolicy_Igno>(dest.typeFlags, "typeFlags", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<FluidsimModifierData>(
+        FluidsimModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.fss, "*fss", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<CollisionModifierData>(
+        CollisionModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<CurveModifierData>(
+        CurveModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    {
+        std::shared_ptr<Object> curveOb;
+        ReadFieldPtr<ErrorPolicy_Warn>(curveOb, "*object", db);
+        dest.object = curveOb;
+    }
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadField<ErrorPolicy_Igno>(dest.defaxis, "defaxis", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<PartDeflect>(
+        PartDeflect &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.deflect, "deflect", db);
+    ReadField<ErrorPolicy_Igno>(dest.forcefield, "forcefield", db);
+    ReadField<ErrorPolicy_Igno>(dest.falloff, "falloff", db);
+    ReadField<ErrorPolicy_Igno>(dest.shape, "shape", db);
+    ReadField<ErrorPolicy_Igno>(dest.f_strength, "f_strength", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_damp, "pdef_damp", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_rdamp, "pdef_rdamp", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_perm, "pdef_perm", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_frict, "pdef_frict", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_rfrict, "pdef_rfrict", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_stickness, "pdef_stickness", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_sbdamp, "pdef_sbdamp", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_sbift, "pdef_sbift", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_sboft, "pdef_sboft", db);
+    ReadField<ErrorPolicy_Igno>(dest.pdef_cfrict, "pdef_cfrict", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<OceanModifierData>(
+        OceanModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.resolution, "resolution", db);
+    ReadField<ErrorPolicy_Igno>(dest.spatial_size, "spatial_size", db);
+    ReadField<ErrorPolicy_Igno>(dest.depth, "depth", db);
+    ReadField<ErrorPolicy_Igno>(dest.wave_scale, "wave_scale", db);
+    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
+    ReadField<ErrorPolicy_Igno>(dest.chop_amount, "chop_amount", db);
+    ReadField<ErrorPolicy_Igno>(dest.wind_velocity, "wind_velocity", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.cachepath, "cachepath", db);
+    ReadField<ErrorPolicy_Igno>(dest.cached, "cached", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<DynamicPaintModifierData>(
+        DynamicPaintModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<SolidifyModifierData>(
+        SolidifyModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.offset, "offset", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<CacheFile>(
+        CacheFile &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.filepath, "filepath", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.frame, "frame", db);
+    ReadField<ErrorPolicy_Igno>(dest.frame_offset, "frame_offset", db);
+    ReadField<ErrorPolicy_Igno>(dest.override_frame, "override_frame", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<MeshCacheModifierData>(
+        MeshCacheModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.time_mode, "time_mode", db);
+    ReadField<ErrorPolicy_Igno>(dest.play_mode, "play_mode", db);
+    ReadField<ErrorPolicy_Igno>(dest.factor, "factor", db);
+    ReadField<ErrorPolicy_Igno>(dest.frame_start, "frame_start", db);
+    ReadField<ErrorPolicy_Igno>(dest.frame_scale, "frame_scale", db);
+    ReadField<ErrorPolicy_Igno>(dest.eval_frame, "eval_frame", db);
+    ReadField<ErrorPolicy_Igno>(dest.eval_time, "eval_time", db);
+    ReadField<ErrorPolicy_Igno>(dest.eval_factor, "eval_factor", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.filepath, "filepath", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<MeshSeqCacheModifierData>(
+        MeshSeqCacheModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.cache_file, "*cache_file", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.object_path, "object_path", db);
+    ReadField<ErrorPolicy_Igno>(dest.read_flag, "read_flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.velocity_scale, "velocity_scale", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<SoftBody>(
+        SoftBody &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.nodemass, "nodemass", db);
+    ReadField<ErrorPolicy_Igno>(dest.grav, "grav", db);
+    ReadField<ErrorPolicy_Igno>(dest.mediafrict, "mediafrict", db);
+    ReadField<ErrorPolicy_Igno>(dest.goalspring, "goalspring", db);
+    ReadField<ErrorPolicy_Igno>(dest.goalfrict, "goalfrict", db);
+    ReadField<ErrorPolicy_Igno>(dest.mingoal, "mingoal", db);
+    ReadField<ErrorPolicy_Igno>(dest.maxgoal, "maxgoal", db);
+    ReadField<ErrorPolicy_Igno>(dest.defgoal, "defgoal", db);
+    ReadField<ErrorPolicy_Igno>(dest.inspring, "inspring", db);
+    ReadField<ErrorPolicy_Igno>(dest.infrict, "infrict", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<RigidBodyOb>(
+        RigidBodyOb &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.shape, "shape", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.col_groups, "col_groups", db);
+    ReadField<ErrorPolicy_Igno>(dest.mass, "mass", db);
+    ReadField<ErrorPolicy_Igno>(dest.friction, "friction", db);
+    ReadField<ErrorPolicy_Igno>(dest.restitution, "restitution", db);
+    ReadField<ErrorPolicy_Igno>(dest.margin, "margin", db);
+    ReadField<ErrorPolicy_Igno>(dest.lin_damping, "lin_damping", db);
+    ReadField<ErrorPolicy_Igno>(dest.ang_damping, "ang_damping", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<RigidBodyCon>(
+        RigidBodyCon &dest,
+        const FileDatabase &db) const {
+    {
+        std::shared_ptr<Object> ob1;
+        ReadFieldPtr<ErrorPolicy_Igno>(ob1, "*ob1", db);
+        dest.ob1 = ob1.get();
+    }
+    {
+        std::shared_ptr<Object> ob2;
+        ReadFieldPtr<ErrorPolicy_Igno>(ob2, "*ob2", db);
+        dest.ob2 = ob2.get();
+    }
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.breaking_threshold, "breaking_threshold", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_x_lower, "limit_lin_x_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_x_upper, "limit_lin_x_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_y_lower, "limit_lin_y_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_y_upper, "limit_lin_y_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_z_lower, "limit_lin_z_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_lin_z_upper, "limit_lin_z_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_x_lower, "limit_ang_x_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_x_upper, "limit_ang_x_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_y_lower, "limit_ang_y_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_y_upper, "limit_ang_y_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_z_lower, "limit_ang_z_lower", db);
+    ReadField<ErrorPolicy_Igno>(dest.limit_ang_z_upper, "limit_ang_z_upper", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_x, "spring_stiffness_x", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_y, "spring_stiffness_y", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_z, "spring_stiffness_z", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_ang_x, "spring_stiffness_ang_x", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_ang_y, "spring_stiffness_ang_y", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_stiffness_ang_z, "spring_stiffness_ang_z", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_x, "spring_damping_x", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_y, "spring_damping_y", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_z, "spring_damping_z", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_ang_x, "spring_damping_ang_x", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_ang_y, "spring_damping_ang_y", db);
+    ReadField<ErrorPolicy_Igno>(dest.spring_damping_ang_z, "spring_damping_ang_z", db);
+    ReadField<ErrorPolicy_Igno>(dest.motor_lin_target_velocity, "motor_lin_target_velocity", db);
+    ReadField<ErrorPolicy_Igno>(dest.motor_ang_target_velocity, "motor_ang_target_velocity", db);
+    ReadField<ErrorPolicy_Igno>(dest.motor_lin_max_impulse, "motor_lin_max_impulse", db);
+    ReadField<ErrorPolicy_Igno>(dest.motor_ang_max_impulse, "motor_ang_max_impulse", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ClothSimSettings>(
+        ClothSimSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.mass, "mass", db);
+    ReadField<ErrorPolicy_Igno>(dest.shear, "shear", db);
+    ReadField<ErrorPolicy_Igno>(dest.bending, "bending", db);
+    ReadField<ErrorPolicy_Igno>(dest.tension, "tension", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.gravity, "gravity", db);
+    ReadField<ErrorPolicy_Igno>(dest.goalspring, "goalspring", db);
+    ReadField<ErrorPolicy_Igno>(dest.goalfrict, "goalfrict", db);
+    ReadField<ErrorPolicy_Igno>(dest.stepsPerFrame, "stepsPerFrame", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ClothModifierData>(
+        ClothModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.sim_parms, "*sim_parms", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<IDPropertyData>(
+        IDPropertyData &dest,
+        const FileDatabase &db) const {
+    dest.pointer.val = 0;
+    dest.val = 0;
+    dest.val2 = 0;
+    // void *pointer - raw file address (string / array / ID payload).
+    try {
+        const Field &fp = (*this)["*pointer"];
+        const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+        db.reader->IncPtr(fp.offset);
+        Convert(dest.pointer, db);
+        db.reader->SetCurrentPos(old);
+    } catch (const Error &) {
+        dest.pointer.val = 0;
+    }
+    ReadField<ErrorPolicy_Igno>(dest.group, "group", db);
+    ReadField<ErrorPolicy_Igno>(dest.val, "val", db);
+    ReadField<ErrorPolicy_Igno>(dest.val2, "val2", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<IDProperty>(
+        IDProperty &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.next, "*next", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadField<ErrorPolicy_Igno>(dest.len, "len", db);
+    ReadField<ErrorPolicy_Igno>(dest.data, "data", db);
+    dest.floatArray.clear();
+    dest.intArray.clear();
+    dest.str.clear();
+
+    const Pointer &ptrval = dest.data.pointer;
+    if (dest.type == IDProperty::Type_String && ptrval.val != 0) {
+        try {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            if (block) {
+                const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                for (;;) {
+                    const char c = static_cast<char>(db.reader->GetI1());
+                    if (c == '\0') {
+                        break;
+                    }
+                    dest.str.push_back(c);
+                    if (dest.str.size() > 1024) {
+                        break;
+                    }
+                }
+                db.reader->SetCurrentPos(pold);
+            }
+        } catch (const Error &) {
+            dest.str.clear();
+        }
+    } else if (dest.type == IDProperty::Type_Array && ptrval.val != 0 && dest.len > 0) {
+        try {
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            if (block) {
+                const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+                db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+                if (dest.subtype == IDProperty::Array_Float) {
+                    dest.floatArray.resize(static_cast<size_t>(dest.len));
+                    for (int i = 0; i < dest.len; ++i) {
+                        dest.floatArray[static_cast<size_t>(i)] = db.reader->GetF4();
+                    }
+                } else if (dest.subtype == IDProperty::Array_Int) {
+                    dest.intArray.resize(static_cast<size_t>(dest.len));
+                    for (int i = 0; i < dest.len; ++i) {
+                        dest.intArray[static_cast<size_t>(i)] = db.reader->GetI4();
+                    }
+                } else if (dest.subtype == IDProperty::Array_Double) {
+                    dest.floatArray.resize(static_cast<size_t>(dest.len));
+                    for (int i = 0; i < dest.len; ++i) {
+                        dest.floatArray[static_cast<size_t>(i)] = static_cast<float>(db.reader->GetF8());
+                    }
+                }
+                db.reader->SetCurrentPos(pold);
+            }
+        } catch (const Error &) {
+            dest.floatArray.clear();
+            dest.intArray.clear();
+        }
+    }
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<NodesModifierSettings>(
+        NodesModifierSettings &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.properties, "*properties", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<NodesModifierData>(
+        NodesModifierData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Fail>(dest.modifier, "modifier", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.node_group, "*node_group", db);
+    ReadField<ErrorPolicy_Igno>(dest.settings, "settings", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ParticleKey>(
+        ParticleKey &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.co, "co", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.vel, "vel", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.rot, "rot", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.ave, "ave", db);
+    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<HairKey>(
+        HairKey &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.co, "co", db);
+    ReadField<ErrorPolicy_Igno>(dest.time, "time", db);
+    ReadField<ErrorPolicy_Igno>(dest.weight, "weight", db);
+    dest.hasWorldCo = (Get("world_co") != nullptr);
+    if (dest.hasWorldCo) {
+        ReadFieldArray<ErrorPolicy_Igno>(dest.world_co, "world_co", db);
+    }
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ParticleData>(
+        ParticleData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.state, "state", db);
+    ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
+    // C14: hair path keys when Blender wrote ParticleData.hair / totkey into the file.
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.hair, "*hair", db);
+    dest.hasTotkey = (Get("totkey") != nullptr);
+    if (dest.hasTotkey) {
+        ReadField<ErrorPolicy_Igno>(dest.totkey, "totkey", db);
+    }
+    dest.hasNum = (Get("num") != nullptr);
+    if (dest.hasNum) {
+        ReadField<ErrorPolicy_Igno>(dest.num, "num", db);
+    }
+    dest.hasNumDmcache = (Get("num_dmcache") != nullptr);
+    if (dest.hasNumDmcache) {
+        ReadField<ErrorPolicy_Igno>(dest.num_dmcache, "num_dmcache", db);
+    }
+    ReadFieldArray<ErrorPolicy_Igno>(dest.fuv, "fuv", db);
+    ReadField<ErrorPolicy_Igno>(dest.foffset, "foffset", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ParticleDupliWeight>(
+        ParticleDupliWeight &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    {
+        std::shared_ptr<Object> ob;
+        ReadFieldPtr<ErrorPolicy_Igno>(ob, "*ob", db);
+        dest.ob = ob.get();
+    }
+    ReadField<ErrorPolicy_Igno>(dest.count, "count", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.index, "index", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ParticleSettings>(
+        ParticleSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.from, "from", db);
+    ReadField<ErrorPolicy_Igno>(dest.distr, "distr", db);
+    ReadField<ErrorPolicy_Igno>(dest.ren_as, "ren_as", db);
+    dest.hasPhystype = (Get("phystype") != nullptr);
+    if (dest.hasPhystype) {
+        ReadField<ErrorPolicy_Igno>(dest.phystype, "phystype", db);
+    }
+    dest.hasDrawAs = (Get("draw_as") != nullptr);
+    if (dest.hasDrawAs) {
+        ReadField<ErrorPolicy_Igno>(dest.draw_as, "draw_as", db);
+    }
+    dest.hasDraw = (Get("draw") != nullptr);
+    if (dest.hasDraw) {
+        ReadField<ErrorPolicy_Igno>(dest.draw, "draw", db);
+    }
+    ReadField<ErrorPolicy_Igno>(dest.totpart, "totpart", db);
+    dest.hasUserjit = (Get("userjit") != nullptr);
+    if (dest.hasUserjit) {
+        ReadField<ErrorPolicy_Igno>(dest.userjit, "userjit", db);
+    }
+    dest.hasGridRes = (Get("grid_res") != nullptr);
+    if (dest.hasGridRes) {
+        ReadField<ErrorPolicy_Igno>(dest.grid_res, "grid_res", db);
+    }
+    ReadField<ErrorPolicy_Igno>(dest.mass, "mass", db);
+    ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
+    ReadField<ErrorPolicy_Igno>(dest.randsize, "randsize", db);
+    ReadField<ErrorPolicy_Igno>(dest.lifetime, "lifetime", db);
+    ReadField<ErrorPolicy_Igno>(dest.sta, "sta", db);
+    ReadField<ErrorPolicy_Igno>(dest.end, "end", db);
+    ReadField<ErrorPolicy_Igno>(dest.jitfac, "jitfac", db);
+    dest.hasGridRand = (Get("grid_rand") != nullptr);
+    if (dest.hasGridRand) {
+        ReadField<ErrorPolicy_Igno>(dest.grid_rand, "grid_rand", db);
+    }
+    dest.hasRandlife = (Get("randlife") != nullptr);
+    if (dest.hasRandlife) {
+        ReadField<ErrorPolicy_Igno>(dest.randlife, "randlife", db);
+    }
+    dest.hasRandlength = (Get("randlength") != nullptr);
+    if (dest.hasRandlength) {
+        ReadField<ErrorPolicy_Igno>(dest.randlength, "randlength", db);
+    }
+    dest.hasHairStep = (Get("hair_step") != nullptr);
+    if (dest.hasHairStep) {
+        ReadField<ErrorPolicy_Igno>(dest.hair_step, "hair_step", db);
+    }
+    // Presence: only mark hair_length emit when SDNA has normfac (RNA hair_length = *4).
+    dest.hasNormfac = (Get("normfac") != nullptr);
+    if (dest.hasNormfac) {
+        ReadField<ErrorPolicy_Igno>(dest.normfac, "normfac", db);
+    }
+    dest.hasPathStart = (Get("path_start") != nullptr);
+    if (dest.hasPathStart) {
+        ReadField<ErrorPolicy_Igno>(dest.path_start, "path_start", db);
+    }
+    dest.hasPathEnd = (Get("path_end") != nullptr);
+    if (dest.hasPathEnd) {
+        ReadField<ErrorPolicy_Igno>(dest.path_end, "path_end", db);
+    }
+    // Hair thickness Presence (DNA_particle_types.h) - omit keys when SDNA absent.
+    dest.hasShape = (Get("shape") != nullptr);
+    if (dest.hasShape) {
+        ReadField<ErrorPolicy_Igno>(dest.shape, "shape", db);
+    }
+    dest.hasRadRoot = (Get("rad_root") != nullptr);
+    if (dest.hasRadRoot) {
+        ReadField<ErrorPolicy_Igno>(dest.rad_root, "rad_root", db);
+    }
+    dest.hasRadTip = (Get("rad_tip") != nullptr);
+    if (dest.hasRadTip) {
+        ReadField<ErrorPolicy_Igno>(dest.rad_tip, "rad_tip", db);
+    }
+    dest.hasRadScale = (Get("rad_scale") != nullptr);
+    if (dest.hasRadScale) {
+        ReadField<ErrorPolicy_Igno>(dest.rad_scale, "rad_scale", db);
+    }
+    dest.hasShapeFlag = (Get("shape_flag") != nullptr);
+    if (dest.hasShapeFlag) {
+        ReadField<ErrorPolicy_Igno>(dest.shape_flag, "shape_flag", db);
+    }
+    // 0al5 Child-Distribution - SDNA Presence only (old child_nbr vs new child_percent).
+    dest.hasChildtype = (Get("childtype") != nullptr);
+    if (dest.hasChildtype) {
+        ReadField<ErrorPolicy_Igno>(dest.childtype, "childtype", db);
+    }
+    dest.hasChildFlag = (Get("child_flag") != nullptr);
+    if (dest.hasChildFlag) {
+        ReadField<ErrorPolicy_Igno>(dest.child_flag, "child_flag", db);
+    }
+    dest.hasChildNbr = (Get("child_nbr") != nullptr);
+    if (dest.hasChildNbr) {
+        ReadField<ErrorPolicy_Igno>(dest.child_nbr, "child_nbr", db);
+    }
+    dest.hasRenChildNbr = (Get("ren_child_nbr") != nullptr);
+    if (dest.hasRenChildNbr) {
+        ReadField<ErrorPolicy_Igno>(dest.ren_child_nbr, "ren_child_nbr", db);
+    }
+    dest.hasChildPercent = (Get("child_percent") != nullptr);
+    if (dest.hasChildPercent) {
+        ReadField<ErrorPolicy_Igno>(dest.child_percent, "child_percent", db);
+    }
+    dest.hasChildRenderPercent = (Get("child_render_percent") != nullptr);
+    if (dest.hasChildRenderPercent) {
+        ReadField<ErrorPolicy_Igno>(dest.child_render_percent, "child_render_percent", db);
+    }
+    dest.hasChildSeed = (Get("child_seed") != nullptr);
+    if (dest.hasChildSeed) {
+        ReadField<ErrorPolicy_Igno>(dest.child_seed, "child_seed", db);
+    }
+    dest.hasParents = (Get("parents") != nullptr);
+    if (dest.hasParents) {
+        ReadField<ErrorPolicy_Igno>(dest.parents, "parents", db);
+    }
+    dest.hasChildsize = (Get("childsize") != nullptr);
+    if (dest.hasChildsize) {
+        ReadField<ErrorPolicy_Igno>(dest.childsize, "childsize", db);
+    }
+    dest.hasChildrandsize = (Get("childrandsize") != nullptr);
+    if (dest.hasChildrandsize) {
+        ReadField<ErrorPolicy_Igno>(dest.childrandsize, "childrandsize", db);
+    }
+    dest.hasChildrad = (Get("childrad") != nullptr);
+    if (dest.hasChildrad) {
+        ReadField<ErrorPolicy_Igno>(dest.childrad, "childrad", db);
+    }
+    dest.hasChildflat = (Get("childflat") != nullptr);
+    if (dest.hasChildflat) {
+        ReadField<ErrorPolicy_Igno>(dest.childflat, "childflat", db);
+    }
+    dest.hasClumpfac = (Get("clumpfac") != nullptr);
+    if (dest.hasClumpfac) {
+        ReadField<ErrorPolicy_Igno>(dest.clumpfac, "clumpfac", db);
+    }
+    dest.hasClumppow = (Get("clumppow") != nullptr);
+    if (dest.hasClumppow) {
+        ReadField<ErrorPolicy_Igno>(dest.clumppow, "clumppow", db);
+    }
+    dest.hasKink = (Get("kink") != nullptr);
+    if (dest.hasKink) {
+        ReadField<ErrorPolicy_Igno>(dest.kink, "kink", db);
+    }
+    dest.hasKinkAmp = (Get("kink_amp") != nullptr);
+    if (dest.hasKinkAmp) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_amp, "kink_amp", db);
+    }
+    dest.hasKinkFreq = (Get("kink_freq") != nullptr);
+    if (dest.hasKinkFreq) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_freq, "kink_freq", db);
+    }
+    dest.hasKinkShape = (Get("kink_shape") != nullptr);
+    if (dest.hasKinkShape) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_shape, "kink_shape", db);
+    }
+    dest.hasKinkFlat = (Get("kink_flat") != nullptr);
+    if (dest.hasKinkFlat) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_flat, "kink_flat", db);
+    }
+    dest.hasKinkAmpClump = (Get("kink_amp_clump") != nullptr);
+    if (dest.hasKinkAmpClump) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_amp_clump, "kink_amp_clump", db);
+    }
+    dest.hasKinkExtraSteps = (Get("kink_extra_steps") != nullptr);
+    if (dest.hasKinkExtraSteps) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_extra_steps, "kink_extra_steps", db);
+    }
+    dest.hasKinkAxisRandom = (Get("kink_axis_random") != nullptr);
+    if (dest.hasKinkAxisRandom) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_axis_random, "kink_axis_random", db);
+    }
+    dest.hasKinkAmpRandom = (Get("kink_amp_random") != nullptr);
+    if (dest.hasKinkAmpRandom) {
+        ReadField<ErrorPolicy_Igno>(dest.kink_amp_random, "kink_amp_random", db);
+    }
+    dest.hasPartingFac = (Get("parting_fac") != nullptr);
+    if (dest.hasPartingFac) {
+        ReadField<ErrorPolicy_Igno>(dest.parting_fac, "parting_fac", db);
+    }
+    dest.hasPartingMin = (Get("parting_min") != nullptr);
+    if (dest.hasPartingMin) {
+        ReadField<ErrorPolicy_Igno>(dest.parting_min, "parting_min", db);
+    }
+    dest.hasPartingMax = (Get("parting_max") != nullptr);
+    if (dest.hasPartingMax) {
+        ReadField<ErrorPolicy_Igno>(dest.parting_max, "parting_max", db);
+    }
+    dest.hasBranchThres = (Get("branch_thres") != nullptr);
+    if (dest.hasBranchThres) {
+        ReadField<ErrorPolicy_Igno>(dest.branch_thres, "branch_thres", db);
+    }
+    dest.hasClength = (Get("clength") != nullptr);
+    if (dest.hasClength) {
+        ReadField<ErrorPolicy_Igno>(dest.clength, "clength", db);
+    }
+    dest.hasClengthThres = (Get("clength_thres") != nullptr);
+    if (dest.hasClengthThres) {
+        ReadField<ErrorPolicy_Igno>(dest.clength_thres, "clength_thres", db);
+    }
+    if (Get("*instance_collection") != nullptr) {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*instance_collection", db);
+    } else {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*dup_group", db);
+    }
+    if (Get("instance_weights") != nullptr) {
+        ReadField<ErrorPolicy_Igno>(dest.dupliweights, "instance_weights", db);
+    } else {
+        ReadField<ErrorPolicy_Igno>(dest.dupliweights, "dupliweights", db);
+    }
+    if (Get("*instance_object") != nullptr) {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_ob, "*instance_object", db);
+    } else {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_ob, "*dup_ob", db);
+    }
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.mtex, "*mtex", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ParticleSystem>(
+        ParticleSystem &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.part, "*part", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.particles, "*particles", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    ReadField<ErrorPolicy_Igno>(dest.seed, "seed", db);
+    ReadField<ErrorPolicy_Igno>(dest.totpart, "totpart", db);
+    dest.hasVgroup = (Get("vgroup") != nullptr);
+    if (dest.hasVgroup) {
+        ReadFieldArray<ErrorPolicy_Igno>(dest.vgroup, "vgroup", db);
+    }
+    dest.hasVgNeg = (Get("vg_neg") != nullptr);
+    if (dest.hasVgNeg) {
+        ReadField<ErrorPolicy_Igno>(dest.vg_neg, "vg_neg", db);
+    }
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<bDeformGroup>(
+        bDeformGroup &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.next, "*next", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.prev, "*prev", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.name, "name", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<MFace>(
         MFace &dest,
         const FileDatabase &db) const {
 
@@ -407,7 +1344,7 @@ void Structure ::Convert<MFace>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Lamp>(
+void Structure::Convert<Lamp>(
         Lamp &dest,
         const FileDatabase &db) const {
 
@@ -444,7 +1381,7 @@ void Structure ::Convert<Lamp>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MDeformWeight>(
+void Structure::Convert<MDeformWeight>(
         MDeformWeight &dest,
         const FileDatabase &db) const {
 
@@ -456,7 +1393,7 @@ void Structure ::Convert<MDeformWeight>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<PackedFile>(
+void Structure::Convert<PackedFile>(
         PackedFile &dest,
         const FileDatabase &db) const {
 
@@ -469,7 +1406,7 @@ void Structure ::Convert<PackedFile>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ImagePackedFile>(
+void Structure::Convert<ImagePackedFile>(
         ImagePackedFile &dest,
         const FileDatabase &db) const {
 
@@ -484,7 +1421,7 @@ void Structure ::Convert<ImagePackedFile>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Base>(
+void Structure::Convert<Base>(
         Base &dest,
         const FileDatabase &db) const {
     // note: as per https://github.com/assimp/assimp/issues/128,
@@ -521,7 +1458,7 @@ void Structure ::Convert<Base>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MTFace>(
+void Structure::Convert<MTFace>(
         MTFace &dest,
         const FileDatabase &db) const {
 
@@ -536,7 +1473,7 @@ void Structure ::Convert<MTFace>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Material>(
+void Structure::Convert<Material>(
         Material &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
@@ -661,7 +1598,7 @@ void Structure ::Convert<Material>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MaterialGPencilStyle>(
+void Structure::Convert<MaterialGPencilStyle>(
         MaterialGPencilStyle &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Igno>(dest.sima, "*sima", db);
@@ -671,7 +1608,7 @@ void Structure ::Convert<MaterialGPencilStyle>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<GreasePencil>(
+void Structure::Convert<GreasePencil>(
         GreasePencil &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
@@ -683,7 +1620,7 @@ void Structure ::Convert<GreasePencil>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeStack>(
+void Structure::Convert<bNodeStack>(
         bNodeStack &dest,
         const FileDatabase &db) const {
     ReadFieldArray<ErrorPolicy_Igno>(dest.vec, "vec", db);
@@ -694,7 +1631,7 @@ void Structure ::Convert<bNodeStack>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeSocketValueFloat>(
+void Structure::Convert<bNodeSocketValueFloat>(
         bNodeSocketValueFloat &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
@@ -704,7 +1641,7 @@ void Structure ::Convert<bNodeSocketValueFloat>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeSocketValueRGBA>(
+void Structure::Convert<bNodeSocketValueRGBA>(
         bNodeSocketValueRGBA &dest,
         const FileDatabase &db) const {
     ReadFieldArray<ErrorPolicy_Igno>(dest.value, "value", db);
@@ -713,7 +1650,56 @@ void Structure ::Convert<bNodeSocketValueRGBA>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<NodeShaderUVMap>(
+void Structure::Convert<bNodeSocketValueVector>(
+        bNodeSocketValueVector &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.value, "value", db);
+    ReadField<ErrorPolicy_Igno>(dest.dimensions, "dimensions", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<bNodeSocketValueString>(
+        bNodeSocketValueString &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.subtype, "subtype", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.value, "value", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<CBData>(
+        CBData &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.r, "r", db);
+    ReadField<ErrorPolicy_Igno>(dest.g, "g", db);
+    ReadField<ErrorPolicy_Igno>(dest.b, "b", db);
+    ReadField<ErrorPolicy_Igno>(dest.a, "a", db);
+    ReadField<ErrorPolicy_Igno>(dest.pos, "pos", db);
+    ReadField<ErrorPolicy_Igno>(dest.cur, "cur", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ColorBand>(
+        ColorBand &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.tot, "tot", db);
+    ReadField<ErrorPolicy_Igno>(dest.cur, "cur", db);
+    ReadField<ErrorPolicy_Igno>(dest.ipotype, "ipotype", db);
+    ReadField<ErrorPolicy_Igno>(dest.ipotype_hue, "ipotype_hue", db);
+    ReadField<ErrorPolicy_Igno>(dest.color_mode, "color_mode", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.data, "data", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<NodeShaderUVMap>(
         NodeShaderUVMap &dest,
         const FileDatabase &db) const {
     ReadFieldArray<ErrorPolicy_Igno>(dest.uv_map, "uv_map", db);
@@ -722,7 +1708,41 @@ void Structure ::Convert<NodeShaderUVMap>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeSocket>(
+void Structure::Convert<TexMapping>(
+        TexMapping &dest,
+        const FileDatabase &db) const {
+    ReadFieldArray<ErrorPolicy_Igno>(dest.loc, "loc", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.rot, "rot", db);
+    ReadFieldArray<ErrorPolicy_Igno>(dest.size, "size", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<NodeTexNoise>(
+        NodeTexNoise &dest,
+        const FileDatabase &db) const {
+    // DNA: NodeTexBase base; int dimensions; uint8_t type; uint8_t normalize; ...
+    // Read by field name (Presence) - subset struct, IncPtr uses DNA size.
+    ReadField<ErrorPolicy_Igno>(dest.dimensions, "dimensions", db);
+    ReadField<ErrorPolicy_Igno>(dest.type, "type", db);
+    ReadField<ErrorPolicy_Igno>(dest.normalize, "normalize", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<NodeTexMusgrave>(
+        NodeTexMusgrave &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.musgrave_type, "musgrave_type", db);
+    ReadField<ErrorPolicy_Igno>(dest.dimensions, "dimensions", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<bNodeSocket>(
         bNodeSocket &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -733,7 +1753,7 @@ void Structure ::Convert<bNodeSocket>(
 
     // default_value is void* in DNA. Many .blend writers store the pointee DATA
     // block with SDNAnr 0 (appears as "Link"), so typed ResolvePointer fails.
-    // Decode by socket datatype (SOCK_FLOAT / SOCK_RGBA) - never invent values.
+    // Decode by socket datatype (SOCK_FLOAT / VECTOR / RGBA) - never invent values.
     dest.default_value.reset();
     {
         Pointer ptrval;
@@ -748,12 +1768,18 @@ void Structure ::Convert<bNodeSocket>(
         }
         db.reader->SetCurrentPos(old);
 
-        // eNodeSocketDatatype: SOCK_FLOAT=0, SOCK_RGBA=2 (makesdna DNA_node_types.h).
+        // eNodeSocketDatatype: SOCK_FLOAT=0, SOCK_VECTOR=1, SOCK_RGBA=2, SOCK_STRING=7
+        // (makesdna DNA_node_types.h). SOCK_VECTOR needed for ShaderNodeMapping
+        // Location/Rotation/Scale Presence when SDNAnr is 0.
         const char *valueStruct = nullptr;
         if (dest.type == 0) {
             valueStruct = "bNodeSocketValueFloat";
+        } else if (dest.type == 1) {
+            valueStruct = "bNodeSocketValueVector";
         } else if (dest.type == 2) {
             valueStruct = "bNodeSocketValueRGBA";
+        } else if (dest.type == 7) { // SOCK_STRING
+            valueStruct = "bNodeSocketValueString";
         }
         if (ptrval.val && valueStruct != nullptr) {
             const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
@@ -787,7 +1813,7 @@ void Structure ::Convert<bNodeSocket>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNode>(
+void Structure::Convert<bNode>(
         bNode &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -824,9 +1850,33 @@ void Structure ::Convert<bNode>(
         const bool isUvMapNode =
                 (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeUVMap") == 0) ||
                 dest.type == 311; // SH_NODE_UVMAP
-        if (ptrval.val && isUvMapNode) {
+        const bool isMappingNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeMapping") == 0) ||
+                dest.type == 109; // SH_NODE_MAPPING (pre-2.81 TexMapping storage)
+        const bool isColorRampNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeValToRGB") == 0) ||
+                dest.type == 104; // SH_NODE_VALTORGB
+        // Blender 5: Musgrave is ShaderNodeTexNoise (NodeTexNoise.type == SHD_NOISE_*).
+        // Legacy: ShaderNodeTexMusgrave + NodeTexMusgrave.musgrave_type (same enum ints).
+        const bool isTexNoiseNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeTexNoise") == 0);
+        const bool isTexMusgraveNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeTexMusgrave") == 0);
+        const char *forceStorageType = nullptr;
+        if (isUvMapNode) {
+            forceStorageType = "NodeShaderUVMap";
+        } else if (isMappingNode) {
+            forceStorageType = "TexMapping";
+        } else if (isColorRampNode) {
+            forceStorageType = "ColorBand";
+        } else if (isTexNoiseNode) {
+            forceStorageType = "NodeTexNoise";
+        } else if (isTexMusgraveNode) {
+            forceStorageType = "NodeTexMusgrave";
+        }
+        if (ptrval.val && forceStorageType != nullptr) {
             const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
-            const Structure *sVal = db.dna.Get("NodeShaderUVMap");
+            const Structure *sVal = db.dna.Get(forceStorageType);
             if (block != nullptr && sVal != nullptr) {
                 DNA::FactoryPair builders = db.dna.GetBlobToStructureConverter(*sVal, db);
                 if (builders.first && builders.second) {
@@ -853,7 +1903,7 @@ void Structure ::Convert<bNode>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeLink>(
+void Structure::Convert<bNodeLink>(
         bNodeLink &dest,
         const FileDatabase &db) const {
     ReadFieldPtr<ErrorPolicy_Warn>(dest.next, "*next", db);
@@ -866,18 +1916,19 @@ void Structure ::Convert<bNodeLink>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<bNodeTree>(
+void Structure::Convert<bNodeTree>(
         bNodeTree &dest,
         const FileDatabase &db) const {
     ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
     ReadField<ErrorPolicy_Igno>(dest.nodes, "nodes", db);
     ReadField<ErrorPolicy_Igno>(dest.links, "links", db);
+    ReadField<ErrorPolicy_Igno>(dest.inputs, "inputs", db);
     db.reader->IncPtr(size);
 }
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MTexPoly>(
+void Structure::Convert<MTexPoly>(
         MTexPoly &dest,
         const FileDatabase &db) const {
 
@@ -897,7 +1948,7 @@ void Structure ::Convert<MTexPoly>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Mesh>(
+void Structure::Convert<Mesh>(
         Mesh &dest,
         const FileDatabase &db) const {
 
@@ -955,6 +2006,7 @@ void Structure ::Convert<Mesh>(
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mtpoly, "*mtpoly", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.dvert, "*dvert", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.mcol, "*mcol", db);
+    ReadField<ErrorPolicy_Igno>(dest.vertex_group_names, "vertex_group_names", db);
     ReadFieldPtr<ErrorPolicy_Fail>(dest.mat, "**mat", db);
 
     // CustomData renames: vdata->vert_data, edata->edge_data, pdata->face_data, ldata->corner_data.
@@ -1002,7 +2054,7 @@ void Structure ::Convert<Mesh>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MDeformVert>(
+void Structure::Convert<MDeformVert>(
         MDeformVert &dest,
         const FileDatabase &db) const {
 
@@ -1014,18 +2066,44 @@ void Structure ::Convert<MDeformVert>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<World>(
+void Structure::Convert<World>(
         World &dest,
         const FileDatabase &db) const {
 
     ReadField<ErrorPolicy_Fail>(dest.id, "id", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.nodetree, "*nodetree", db);
 
     db.reader->IncPtr(size);
 }
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MLoopCol>(
+void Structure::Convert<RenderData>(
+        RenderData &dest,
+        const FileDatabase &db) const {
+
+    ReadField<ErrorPolicy_Warn>(dest.sfra, "sfra", db);
+    ReadField<ErrorPolicy_Warn>(dest.efra, "efra", db);
+    ReadField<ErrorPolicy_Warn>(dest.frs_sec, "frs_sec", db);
+    ReadField<ErrorPolicy_Warn>(dest.frs_sec_base, "frs_sec_base", db);
+
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<UnitSettings>(
+        UnitSettings &dest,
+        const FileDatabase &db) const {
+
+    ReadField<ErrorPolicy_Warn>(dest.scale_length, "scale_length", db);
+
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<MLoopCol>(
         MLoopCol &dest,
         const FileDatabase &db) const {
 
@@ -1039,14 +2117,14 @@ void Structure ::Convert<MLoopCol>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MVert>(
+void Structure::Convert<MVert>(
         MVert &dest,
         const FileDatabase &db) const {
 
     ReadFieldArray<ErrorPolicy_Fail>(dest.co, "co", db);
     ReadFieldArray<ErrorPolicy_Warn>(dest.no, "no", db);
     ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
-    //ReadField<ErrorPolicy_Warn>(dest.mat_nr,"mat_nr",db);
+    // ReadField<ErrorPolicy_Warn>(dest.mat_nr,"mat_nr",db);
     ReadField<ErrorPolicy_Igno>(dest.bweight, "bweight", db);
 
     db.reader->IncPtr(size);
@@ -1054,7 +2132,7 @@ void Structure ::Convert<MVert>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MEdge>(
+void Structure::Convert<MEdge>(
         MEdge &dest,
         const FileDatabase &db) const {
 
@@ -1069,7 +2147,7 @@ void Structure ::Convert<MEdge>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MLoopUV>(
+void Structure::Convert<MLoopUV>(
         MLoopUV &dest,
         const FileDatabase &db) const {
 
@@ -1081,7 +2159,7 @@ void Structure ::Convert<MLoopUV>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<GroupObject>(
+void Structure::Convert<GroupObject>(
         GroupObject &dest,
         const FileDatabase &db) const {
 
@@ -1094,7 +2172,7 @@ void Structure ::Convert<GroupObject>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ListBase>(
+void Structure::Convert<ListBase>(
         ListBase &dest,
         const FileDatabase &db) const {
 
@@ -1108,7 +2186,7 @@ void Structure ::Convert<ListBase>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MLoop>(
+void Structure::Convert<MLoop>(
         MLoop &dest,
         const FileDatabase &db) const {
 
@@ -1120,7 +2198,7 @@ void Structure ::Convert<MLoop>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ModifierData>(
+void Structure::Convert<ModifierData>(
         ModifierData &dest,
         const FileDatabase &db) const {
 
@@ -1137,19 +2215,69 @@ void Structure ::Convert<ModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<ID>(
+void Structure::Convert<AssetMetaData>(
+        AssetMetaData &dest,
+        const FileDatabase &db) const {
+    // Presence: Asset Browser char* fields (DATA blocks), same pattern as FCurve.rna_path.
+    auto readCString = [&](const char *fieldName, std::string &out) {
+        out.clear();
+        try {
+            const Field &f = (*this)[fieldName];
+            const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+            db.reader->IncPtr(f.offset);
+            Pointer ptrval;
+            Convert(ptrval, db);
+            db.reader->SetCurrentPos(old);
+            if (!ptrval.val) {
+                return;
+            }
+            const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+            if (!block) {
+                return;
+            }
+            const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
+            db.reader->SetCurrentPos(block->start + static_cast<size_t>(ptrval.val - block->address.val));
+            for (;;) {
+                const char ch = static_cast<char>(db.reader->GetI1());
+                if (ch == '\0') {
+                    break;
+                }
+                out.push_back(ch);
+                if (out.size() >= 8192) {
+                    break;
+                }
+            }
+            db.reader->SetCurrentPos(pold);
+        } catch (const Error &) {
+            out.clear();
+        }
+    };
+    readCString("*author", dest.author);
+    readCString("*description", dest.description);
+    readCString("*copyright", dest.copyright);
+    readCString("*license", dest.license);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ID>(
         ID &dest,
         const FileDatabase &db) const {
 
     ReadFieldArray<ErrorPolicy_Warn>(dest.name, "name", db);
     ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    // Asset Browser mark (Presence: SDNA *asset_data).
+    if (Get("*asset_data") != nullptr) {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.asset_data, "*asset_data", db);
+    }
 
     db.reader->IncPtr(size);
 }
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MCol>(
+void Structure::Convert<MCol>(
         MCol &dest,
         const FileDatabase &db) const {
 
@@ -1163,7 +2291,7 @@ void Structure ::Convert<MCol>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MPoly>(
+void Structure::Convert<MPoly>(
         MPoly &dest,
         const FileDatabase &db) const {
 
@@ -1177,7 +2305,89 @@ void Structure ::Convert<MPoly>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Scene>(
+void Structure::Convert<Brush>(
+        Brush &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Warn>(dest.id, "id", db);
+    // Blender 3.x: sculpt_tool; current DNA: sculpt_brush_type (same eBrushSculptType values).
+    dest.hasSculptTool = false;
+    if (Get("sculpt_brush_type") != nullptr) {
+        dest.hasSculptTool = true;
+        ReadField<ErrorPolicy_Igno>(dest.sculpt_tool, "sculpt_brush_type", db);
+    } else if (Get("sculpt_tool") != nullptr) {
+        dest.hasSculptTool = true;
+        ReadField<ErrorPolicy_Igno>(dest.sculpt_tool, "sculpt_tool", db);
+    }
+    ReadField<ErrorPolicy_Igno>(dest.size, "size", db);
+    ReadField<ErrorPolicy_Igno>(dest.alpha, "alpha", db);
+    dest.hasFlag2 = (Get("flag2") != nullptr);
+    if (dest.hasFlag2) {
+        ReadField<ErrorPolicy_Igno>(dest.flag2, "flag2", db);
+    }
+    dest.hasBoundaryDeform = (Get("boundary_deform_type") != nullptr);
+    if (dest.hasBoundaryDeform) {
+        ReadField<ErrorPolicy_Igno>(dest.boundary_deform_type, "boundary_deform_type", db);
+        if (Get("boundary_falloff_type") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.boundary_falloff_type, "boundary_falloff_type", db);
+        }
+        if (Get("boundary_offset") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.boundary_offset, "boundary_offset", db);
+        }
+    }
+    // Cloth block from DNA_brush_types.h - omit keys when SDNA field absent (old brushes).
+    dest.hasClothParms = (Get("cloth_deform_type") != nullptr);
+    if (dest.hasClothParms) {
+        ReadField<ErrorPolicy_Igno>(dest.cloth_deform_type, "cloth_deform_type", db);
+        if (Get("cloth_force_falloff_type") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_force_falloff_type, "cloth_force_falloff_type", db);
+        }
+        if (Get("cloth_simulation_area_type") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_simulation_area_type, "cloth_simulation_area_type", db);
+        }
+        if (Get("cloth_mass") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_mass, "cloth_mass", db);
+        }
+        if (Get("cloth_damping") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_damping, "cloth_damping", db);
+        }
+        if (Get("cloth_sim_limit") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_sim_limit, "cloth_sim_limit", db);
+        }
+        if (Get("cloth_sim_falloff") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_sim_falloff, "cloth_sim_falloff", db);
+        }
+        if (Get("cloth_constraint_softbody_strength") != nullptr) {
+            ReadField<ErrorPolicy_Igno>(dest.cloth_constraint_softbody_strength, "cloth_constraint_softbody_strength", db);
+        }
+    }
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<Sculpt>(
+        Sculpt &dest,
+        const FileDatabase &db) const {
+    dest.hasGravityFactor = (Get("gravity_factor") != nullptr);
+    if (dest.hasGravityFactor) {
+        ReadField<ErrorPolicy_Igno>(dest.gravity_factor, "gravity_factor", db);
+    }
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.gravity_object, "*gravity_object", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<ToolSettings>(
+        ToolSettings &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.sculpt, "*sculpt", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<Scene>(
         Scene &dest,
         const FileDatabase &db) const {
 
@@ -1186,14 +2396,17 @@ void Structure ::Convert<Scene>(
     ReadFieldPtr<ErrorPolicy_Warn>(dest.world, "*world", db);
     ReadFieldPtr<ErrorPolicy_Warn>(dest.basact, "*basact", db);
     ReadFieldPtr<ErrorPolicy_Warn>(dest.master_collection, "*master_collection", db);
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.toolsettings, "*toolsettings", db);
     ReadField<ErrorPolicy_Igno>(dest.base, "base", db);
+    ReadField<ErrorPolicy_Warn>(dest.r, "r", db);
+    ReadField<ErrorPolicy_Warn>(dest.unit, "unit", db);
 
     db.reader->IncPtr(size);
 }
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Library>(
+void Structure::Convert<Library>(
         Library &dest,
         const FileDatabase &db) const {
 
@@ -1207,7 +2420,7 @@ void Structure ::Convert<Library>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Tex>(
+void Structure::Convert<Tex>(
         Tex &dest,
         const FileDatabase &db) const {
     short temp_short = 0;
@@ -1223,7 +2436,7 @@ void Structure ::Convert<Tex>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Camera>(
+void Structure::Convert<Camera>(
         Camera &dest,
         const FileDatabase &db) const {
 
@@ -1239,13 +2452,51 @@ void Structure ::Convert<Camera>(
     ReadField<ErrorPolicy_Warn>(dest.ortho_scale, "ortho_scale", db);
     ReadField<ErrorPolicy_Igno>(dest.clipsta, "clipsta", db);
     ReadField<ErrorPolicy_Igno>(dest.clipend, "clipend", db);
+    // Legacy tiger-era DOF: *dof_ob + gpu_dof. Modern: embedded dof (CameraDOFSettings).
+    if ((*this).Get("*dof_ob") != nullptr) {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.dof_ob, "*dof_ob", db);
+    }
+    if ((*this).Get("gpu_dof") != nullptr) {
+        ReadField<ErrorPolicy_Igno>(dest.gpu_dof, "gpu_dof", db);
+    }
+    if ((*this).Get("dof") != nullptr) {
+        ReadField<ErrorPolicy_Igno>(dest.dof, "dof", db);
+    }
 
     db.reader->IncPtr(size);
 }
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<MirrorModifierData>(
+void Structure::Convert<GPUDOFSettings>(
+        GPUDOFSettings &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.focus_distance, "focus_distance", db);
+    ReadField<ErrorPolicy_Igno>(dest.fstop, "fstop", db);
+    ReadField<ErrorPolicy_Igno>(dest.focal_length, "focal_length", db);
+    ReadField<ErrorPolicy_Igno>(dest.sensor, "sensor", db);
+    ReadField<ErrorPolicy_Igno>(dest.rotation, "rotation", db);
+    ReadField<ErrorPolicy_Igno>(dest.ratio, "ratio", db);
+    ReadField<ErrorPolicy_Igno>(dest.num_blades, "num_blades", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<CameraDOFSettings>(
+        CameraDOFSettings &dest,
+        const FileDatabase &db) const {
+    ReadFieldPtr<ErrorPolicy_Igno>(dest.focus_object, "*focus_object", db);
+    ReadField<ErrorPolicy_Igno>(dest.focus_distance, "focus_distance", db);
+    ReadField<ErrorPolicy_Igno>(dest.aperture_fstop, "aperture_fstop", db);
+    ReadField<ErrorPolicy_Igno>(dest.aperture_blades, "aperture_blades", db);
+    ReadField<ErrorPolicy_Igno>(dest.flag, "flag", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
+void Structure::Convert<MirrorModifierData>(
         MirrorModifierData &dest,
         const FileDatabase &db) const {
 
@@ -1262,7 +2513,7 @@ void Structure ::Convert<MirrorModifierData>(
 
 //--------------------------------------------------------------------------------
 template <>
-void Structure ::Convert<Image>(
+void Structure::Convert<Image>(
         Image &dest,
         const FileDatabase &db) const {
 
@@ -1348,6 +2599,9 @@ void DNA::RegisterConverters() {
 
     converters["Object"] = DNA::FactoryPair(&Structure::Allocate<Object>, &Structure::Convert<Object>);
     converters["BezTriple"] = DNA::FactoryPair(&Structure::Allocate<BezTriple>, &Structure::Convert<BezTriple>);
+    converters["DriverTarget"] = DNA::FactoryPair(&Structure::Allocate<DriverTarget>, &Structure::Convert<DriverTarget>);
+    converters["DriverVar"] = DNA::FactoryPair(&Structure::Allocate<DriverVar>, &Structure::Convert<DriverVar>);
+    converters["ChannelDriver"] = DNA::FactoryPair(&Structure::Allocate<ChannelDriver>, &Structure::Convert<ChannelDriver>);
     converters["Bone"] = DNA::FactoryPair(&Structure::Allocate<Bone>, &Structure::Convert<Bone>);
     converters["bArmature"] = DNA::FactoryPair(&Structure::Allocate<bArmature>, &Structure::Convert<bArmature>);
     converters["ActionChannelBag"] = DNA::FactoryPair(&Structure::Allocate<ActionChannelBag>, &Structure::Convert<ActionChannelBag>);
@@ -1361,6 +2615,54 @@ void DNA::RegisterConverters() {
     converters["MTex"] = DNA::FactoryPair(&Structure::Allocate<MTex>, &Structure::Convert<MTex>);
     converters["TFace"] = DNA::FactoryPair(&Structure::Allocate<TFace>, &Structure::Convert<TFace>);
     converters["SubsurfModifierData"] = DNA::FactoryPair(&Structure::Allocate<SubsurfModifierData>, &Structure::Convert<SubsurfModifierData>);
+    converters["FluidModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidModifierData>, &Structure::Convert<FluidModifierData>);
+    converters["OceanModifierData"] = DNA::FactoryPair(&Structure::Allocate<OceanModifierData>, &Structure::Convert<OceanModifierData>);
+    converters["DynamicPaintModifierData"] = DNA::FactoryPair(&Structure::Allocate<DynamicPaintModifierData>, &Structure::Convert<DynamicPaintModifierData>);
+    converters["SolidifyModifierData"] = DNA::FactoryPair(&Structure::Allocate<SolidifyModifierData>, &Structure::Convert<SolidifyModifierData>);
+    converters["FluidDomainSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidDomainSettings>, &Structure::Convert<FluidDomainSettings>);
+    converters["FluidFlowSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidFlowSettings>, &Structure::Convert<FluidFlowSettings>);
+    converters["FluidEffectorSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidEffectorSettings>, &Structure::Convert<FluidEffectorSettings>);
+    converters["ClothModifierData"] = DNA::FactoryPair(&Structure::Allocate<ClothModifierData>, &Structure::Convert<ClothModifierData>);
+    converters["ClothSimSettings"] = DNA::FactoryPair(&Structure::Allocate<ClothSimSettings>, &Structure::Convert<ClothSimSettings>);
+    converters["IDPropertyData"] = DNA::FactoryPair(&Structure::Allocate<IDPropertyData>, &Structure::Convert<IDPropertyData>);
+    converters["IDProperty"] = DNA::FactoryPair(&Structure::Allocate<IDProperty>, &Structure::Convert<IDProperty>);
+    converters["NodesModifierSettings"] = DNA::FactoryPair(&Structure::Allocate<NodesModifierSettings>, &Structure::Convert<NodesModifierSettings>);
+    converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
+    {
+        // All blender.git *ModifierData DNA names except Subsurf/Mirror/Fluid/Cloth/
+        // MeshCache/MeshSeqCache/Collision/Curve (specialized).
+        static const char *const kGenericModifierDnaNames[] = {
+#include "BlenderModifierDnaNames.inc"
+        };
+        for (const char *dnaName : kGenericModifierDnaNames) {
+            if (dnaName[0] == '\0' || dnaName[0] == '/') {
+                continue; // skip comment-only lines if any slip through
+            }
+            converters[dnaName] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
+        }
+    }
+    // After generic map: MeshCache / MeshSeqCache / CacheFile (0al path inventory).
+    converters["CacheFile"] = DNA::FactoryPair(&Structure::Allocate<CacheFile>, &Structure::Convert<CacheFile>);
+    converters["MeshCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshCacheModifierData>, &Structure::Convert<MeshCacheModifierData>);
+    converters["MeshSeqCacheModifierData"] = DNA::FactoryPair(&Structure::Allocate<MeshSeqCacheModifierData>, &Structure::Convert<MeshSeqCacheModifierData>);
+    converters["CollisionModifierData"] = DNA::FactoryPair(&Structure::Allocate<CollisionModifierData>, &Structure::Convert<CollisionModifierData>);
+    converters["CurveModifierData"] = DNA::FactoryPair(&Structure::Allocate<CurveModifierData>, &Structure::Convert<CurveModifierData>);
+    // Override generic map entry for Geometry Nodes modifier inputs Presence.
+    converters["NodesModifierData"] = DNA::FactoryPair(&Structure::Allocate<NodesModifierData>, &Structure::Convert<NodesModifierData>);
+    converters["SmokeModifierData"] = DNA::FactoryPair(&Structure::Allocate<SmokeModifierData>, &Structure::Convert<SmokeModifierData>);
+    converters["FluidsimSettings"] = DNA::FactoryPair(&Structure::Allocate<FluidsimSettings>, &Structure::Convert<FluidsimSettings>);
+    converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);
+    converters["PartDeflect"] = DNA::FactoryPair(&Structure::Allocate<PartDeflect>, &Structure::Convert<PartDeflect>);
+    converters["SoftBody"] = DNA::FactoryPair(&Structure::Allocate<SoftBody>, &Structure::Convert<SoftBody>);
+    converters["RigidBodyOb"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyOb>, &Structure::Convert<RigidBodyOb>);
+    converters["RigidBodyCon"] = DNA::FactoryPair(&Structure::Allocate<RigidBodyCon>, &Structure::Convert<RigidBodyCon>);
+    converters["ParticleKey"] = DNA::FactoryPair(&Structure::Allocate<ParticleKey>, &Structure::Convert<ParticleKey>);
+    converters["HairKey"] = DNA::FactoryPair(&Structure::Allocate<HairKey>, &Structure::Convert<HairKey>);
+    converters["ParticleData"] = DNA::FactoryPair(&Structure::Allocate<ParticleData>, &Structure::Convert<ParticleData>);
+    converters["ParticleDupliWeight"] = DNA::FactoryPair(&Structure::Allocate<ParticleDupliWeight>, &Structure::Convert<ParticleDupliWeight>);
+    converters["ParticleSettings"] = DNA::FactoryPair(&Structure::Allocate<ParticleSettings>, &Structure::Convert<ParticleSettings>);
+    converters["ParticleSystem"] = DNA::FactoryPair(&Structure::Allocate<ParticleSystem>, &Structure::Convert<ParticleSystem>);
+    converters["bDeformGroup"] = DNA::FactoryPair(&Structure::Allocate<bDeformGroup>, &Structure::Convert<bDeformGroup>);
     converters["MFace"] = DNA::FactoryPair(&Structure::Allocate<MFace>, &Structure::Convert<MFace>);
     converters["Lamp"] = DNA::FactoryPair(&Structure::Allocate<Lamp>, &Structure::Convert<Lamp>);
     converters["MDeformWeight"] = DNA::FactoryPair(&Structure::Allocate<MDeformWeight>, &Structure::Convert<MDeformWeight>);
@@ -1374,7 +2676,14 @@ void DNA::RegisterConverters() {
     converters["bNodeStack"] = DNA::FactoryPair(&Structure::Allocate<bNodeStack>, &Structure::Convert<bNodeStack>);
     converters["bNodeSocketValueFloat"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueFloat>, &Structure::Convert<bNodeSocketValueFloat>);
     converters["bNodeSocketValueRGBA"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueRGBA>, &Structure::Convert<bNodeSocketValueRGBA>);
+    converters["bNodeSocketValueVector"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueVector>, &Structure::Convert<bNodeSocketValueVector>);
+    converters["bNodeSocketValueString"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocketValueString>, &Structure::Convert<bNodeSocketValueString>);
     converters["NodeShaderUVMap"] = DNA::FactoryPair(&Structure::Allocate<NodeShaderUVMap>, &Structure::Convert<NodeShaderUVMap>);
+    converters["TexMapping"] = DNA::FactoryPair(&Structure::Allocate<TexMapping>, &Structure::Convert<TexMapping>);
+    converters["NodeTexNoise"] = DNA::FactoryPair(&Structure::Allocate<NodeTexNoise>, &Structure::Convert<NodeTexNoise>);
+    converters["NodeTexMusgrave"] = DNA::FactoryPair(&Structure::Allocate<NodeTexMusgrave>, &Structure::Convert<NodeTexMusgrave>);
+    converters["CBData"] = DNA::FactoryPair(&Structure::Allocate<CBData>, &Structure::Convert<CBData>);
+    converters["ColorBand"] = DNA::FactoryPair(&Structure::Allocate<ColorBand>, &Structure::Convert<ColorBand>);
     converters["bNodeSocket"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocket>, &Structure::Convert<bNodeSocket>);
     converters["bNode"] = DNA::FactoryPair(&Structure::Allocate<bNode>, &Structure::Convert<bNode>);
     converters["bNodeLink"] = DNA::FactoryPair(&Structure::Allocate<bNodeLink>, &Structure::Convert<bNodeLink>);
@@ -1383,6 +2692,8 @@ void DNA::RegisterConverters() {
     converters["Mesh"] = DNA::FactoryPair(&Structure::Allocate<Mesh>, &Structure::Convert<Mesh>);
     converters["MDeformVert"] = DNA::FactoryPair(&Structure::Allocate<MDeformVert>, &Structure::Convert<MDeformVert>);
     converters["World"] = DNA::FactoryPair(&Structure::Allocate<World>, &Structure::Convert<World>);
+    converters["RenderData"] = DNA::FactoryPair(&Structure::Allocate<RenderData>, &Structure::Convert<RenderData>);
+    converters["UnitSettings"] = DNA::FactoryPair(&Structure::Allocate<UnitSettings>, &Structure::Convert<UnitSettings>);
     converters["MLoopCol"] = DNA::FactoryPair(&Structure::Allocate<MLoopCol>, &Structure::Convert<MLoopCol>);
     converters["MVert"] = DNA::FactoryPair(&Structure::Allocate<MVert>, &Structure::Convert<MVert>);
     converters["MEdge"] = DNA::FactoryPair(&Structure::Allocate<MEdge>, &Structure::Convert<MEdge>);
@@ -1391,13 +2702,19 @@ void DNA::RegisterConverters() {
     converters["ListBase"] = DNA::FactoryPair(&Structure::Allocate<ListBase>, &Structure::Convert<ListBase>);
     converters["MLoop"] = DNA::FactoryPair(&Structure::Allocate<MLoop>, &Structure::Convert<MLoop>);
     converters["ModifierData"] = DNA::FactoryPair(&Structure::Allocate<ModifierData>, &Structure::Convert<ModifierData>);
+    converters["AssetMetaData"] = DNA::FactoryPair(&Structure::Allocate<AssetMetaData>, &Structure::Convert<AssetMetaData>);
     converters["ID"] = DNA::FactoryPair(&Structure::Allocate<ID>, &Structure::Convert<ID>);
     converters["MCol"] = DNA::FactoryPair(&Structure::Allocate<MCol>, &Structure::Convert<MCol>);
     converters["MPoly"] = DNA::FactoryPair(&Structure::Allocate<MPoly>, &Structure::Convert<MPoly>);
+    converters["Brush"] = DNA::FactoryPair(&Structure::Allocate<Brush>, &Structure::Convert<Brush>);
+    converters["Sculpt"] = DNA::FactoryPair(&Structure::Allocate<Sculpt>, &Structure::Convert<Sculpt>);
+    converters["ToolSettings"] = DNA::FactoryPair(&Structure::Allocate<ToolSettings>, &Structure::Convert<ToolSettings>);
     converters["Scene"] = DNA::FactoryPair(&Structure::Allocate<Scene>, &Structure::Convert<Scene>);
     converters["Library"] = DNA::FactoryPair(&Structure::Allocate<Library>, &Structure::Convert<Library>);
     converters["Tex"] = DNA::FactoryPair(&Structure::Allocate<Tex>, &Structure::Convert<Tex>);
     converters["Camera"] = DNA::FactoryPair(&Structure::Allocate<Camera>, &Structure::Convert<Camera>);
+    converters["GPUDOFSettings"] = DNA::FactoryPair(&Structure::Allocate<GPUDOFSettings>, &Structure::Convert<GPUDOFSettings>);
+    converters["CameraDOFSettings"] = DNA::FactoryPair(&Structure::Allocate<CameraDOFSettings>, &Structure::Convert<CameraDOFSettings>);
     converters["MirrorModifierData"] = DNA::FactoryPair(&Structure::Allocate<MirrorModifierData>, &Structure::Convert<MirrorModifierData>);
     converters["Image"] = DNA::FactoryPair(&Structure::Allocate<Image>, &Structure::Convert<Image>);
     converters["CustomData"] = DNA::FactoryPair(&Structure::Allocate<CustomData>, &Structure::Convert<CustomData>);
@@ -1409,6 +2726,6 @@ void DNA::RegisterConverters() {
 }
 
 } // namespace Blender
-} //namespace Assimp
+} // namespace Assimp
 
 #endif // ASSIMP_BUILD_NO_BLEND_IMPORTER

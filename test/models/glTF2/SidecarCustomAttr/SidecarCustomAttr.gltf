@@ -1,0 +1,77 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "assimp-sidecar-fixture"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [0]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0,
+      "name": "SidecarNode"
+    }
+  ],
+  "meshes": [
+    {
+      "name": "SidecarTri",
+      "extras": {
+        "babylonHint": "sidecar-test",
+        "priority": 7
+      },
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "_SCALE": 1
+          },
+          "mode": 4,
+          "extras": {
+            "primitiveTag": "p0"
+          }
+        }
+      ]
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "max": [1.0, 1.0, 0.0],
+      "min": [0.0, 0.0, 0.0],
+      "name": "POSITION"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "name": "_SCALE"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 36,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 36,
+      "byteLength": 36,
+      "target": 34962
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 72,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAAEAAAEBAAACAQAAAoEAAAMBAAADgQAAAAEEAABBB"
+    }
+  ]
+}

@@ -273,6 +273,7 @@ enum AnimationPath {
     AnimationPath_ROTATION,
     AnimationPath_SCALE,
     AnimationPath_WEIGHTS,
+    AnimationPath_POINTER //!< KHR_animation_pointer (JSON pointer in Target::pointer)
 };
 
 //! Values for the Animation::Sampler::interpolation field
@@ -822,6 +823,47 @@ struct MaterialAnisotropy {
     void SetDefaults();
 };
 
+/** KHR_materials_iridescence - fields only set when present in the source JSON
+ *  (no Assimp defaults; consumer applies Babylon/glTF defaults). */
+struct MaterialIridescence {
+    Nullable<float> iridescenceFactor;
+    Nullable<float> iridescenceIor;
+    Nullable<float> iridescenceThicknessMinimum;
+    Nullable<float> iridescenceThicknessMaximum;
+
+    bool hasIridescenceTexture{ false };
+    bool hasIridescenceTexCoord{ false };
+    bool hasIridescenceTransformScale{ false };
+    TextureInfo iridescenceTexture;
+
+    bool hasThicknessTexture{ false };
+    bool hasThicknessTexCoord{ false };
+    bool hasThicknessTransformScale{ false };
+    TextureInfo iridescenceThicknessTexture;
+};
+
+/** KHR_materials_dispersion - authored keys only (sidecar until a typed MATKEY exists). */
+struct MaterialDispersion {
+    Nullable<float> dispersion;
+};
+
+/** KHR_materials_diffuse_transmission - authored keys only (sidecar). */
+struct MaterialDiffuseTransmission {
+    Nullable<float> diffuseTransmissionFactor;
+    bool hasColorFactor{ false };
+    vec3 diffuseTransmissionColorFactor;
+
+    bool hasDiffuseTransmissionTexture{ false };
+    bool hasDiffuseTransmissionTexCoord{ false };
+    bool hasDiffuseTransmissionTransformScale{ false };
+    TextureInfo diffuseTransmissionTexture;
+
+    bool hasColorTexture{ false };
+    bool hasColorTexCoord{ false };
+    bool hasColorTransformScale{ false };
+    TextureInfo diffuseTransmissionColorTexture;
+};
+
 //! The material appearance of a primitive.
 struct Material : public Object {
     //PBR metallic roughness properties
@@ -863,6 +905,15 @@ struct Material : public Object {
     //extension: KHR_materials_anisotropy
     Nullable<MaterialAnisotropy> materialAnisotropy;
 
+    //extension: KHR_materials_iridescence (sidecar JSON until typed MATKEYs exist)
+    Nullable<MaterialIridescence> materialIridescence;
+
+    //extension: KHR_materials_dispersion (sidecar JSON; no typed MATKEY yet)
+    Nullable<MaterialDispersion> materialDispersion;
+
+    //extension: KHR_materials_diffuse_transmission (sidecar JSON)
+    Nullable<MaterialDiffuseTransmission> materialDiffuseTransmission;
+
     //extension: KHR_materials_unlit
     bool unlit;
 
@@ -885,6 +936,8 @@ struct Mesh : public Object {
 
         struct Attributes {
             AccessorList position, normal, tangent, texcoord, color, joint, jointmatrix, weight;
+            /** Non-standard / underscore attributes (e.g. _SCALE) kept for sidecar export. */
+            std::vector<std::pair<std::string, Ref<Accessor>>> custom;
         } attributes;
 
         Ref<Accessor> indices;
@@ -893,13 +946,19 @@ struct Mesh : public Object {
 
         struct Target {
             AccessorList position, normal, tangent;
+            /** Extension morph attrs (e.g. KHR_gaussian_splatting:SCALE). */
+            std::vector<std::pair<std::string, Ref<Accessor>>> custom;
         };
         std::vector<Target> targets;
 
         // extension: FB_ngon_encoding
         bool ngonEncoded;
 
-        Primitive(): ngonEncoded(false) {}
+        /** Primitive-level extras / extensions (mesh-level live on Object). */
+        Extras extras;
+        CustomExtension customExtensions;
+
+        Primitive() : ngonEncoded(false) {}
     };
 
     std::vector<Primitive> primitives;
@@ -1003,8 +1062,9 @@ struct Animation : public Object {
     struct Target {
         Target() = default;
 
-        Ref<Node> node; //!< The node to animate.
-        AnimationPath path{AnimationPath_TRANSLATION}; //!< The property of the node to animate.
+        Ref<Node> node; //!< The node to animate (unset for KHR_animation_pointer).
+        AnimationPath path{AnimationPath_TRANSLATION}; //!< The property of the node to animate, or POINTER.
+        std::string pointer; //!< JSON Pointer when path == AnimationPath_POINTER.
     };
 
     struct Channel {
@@ -1135,6 +1195,11 @@ public:
         bool KHR_materials_ior{false};
         bool KHR_materials_emissive_strength{false};
         bool KHR_materials_anisotropy{false};
+        bool KHR_materials_iridescence{false};
+        bool KHR_gaussian_splatting{false};
+        bool KHR_animation_pointer{false};
+        bool KHR_implicit_shapes{false};
+        bool KHR_physics_rigid_bodies{false};
         bool KHR_draco_mesh_compression{false};
         bool FB_ngon_encoding{false};
         bool KHR_texture_basisu{false};
@@ -1174,6 +1239,9 @@ public:
     LazyDict<Texture> textures;
 
     Ref<Scene> scene;
+
+    /** Prebuilt UTF-8 JSON for aiPhysicsSidecar (filled in Load when physics ext used). */
+    std::string physicsSidecarJson;
 
 public:
     Asset(IOSystem *io = nullptr, rapidjson::IRemoteSchemaDocumentProvider *schemaDocumentProvider = nullptr) :

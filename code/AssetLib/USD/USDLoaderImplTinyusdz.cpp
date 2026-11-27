@@ -48,13 +48,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "USDLoaderImplTinyusdz.h"
 #include "USDLoaderImplTinyusdzHelper.h"
 #include "USDLoaderUtil.h"
+#include "USDGprimMesh.h"
 #include "USDPreprocessor.h"
+#include "USDSidecarEmit.h"
 #include "io-util.hh" // namespace lightusd::io
 #include "tydra/scene-access.hh"
 #include "tydra/shader-network.hh"
 
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <sstream>
+#include <string>
+#include <vector>
 
 // internal headers
 #include "assimp/MemoryIOWrapper.h"
@@ -65,17 +74,93 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/StringUtils.h>
 #include <assimp/ai_assert.h>
 #include <assimp/anim.h>
+#include <assimp/commonMetaData.h>
 #include <assimp/fast_atof.h>
 #include <assimp/importerdesc.h>
 #include <assimp/DefaultLogger.hpp>
 #include <assimp/IOSystem.hpp>
 #include <assimp/Importer.hpp>
+#include <assimp/metadata.h>
+#include <assimp/sidecar.h>
 
 
 #include "../../../contrib/tinyusdz/assimp_tinyusdz_logging.inc"
 
 namespace {
     static constexpr char TAG[] = "tinyusdz loader";
+
+    const char *UsdSourceFormatToken(const std::string &pFile) {
+        if (Assimp::isUsdz(pFile)) {
+            return "usdz";
+        }
+        if (Assimp::isUsdc(pFile)) {
+            return "usdc";
+        }
+        if (Assimp::isUsda(pFile)) {
+            return "usda";
+        }
+        return "usd";
+    }
+
+    void AppendJsonDouble(std::ostringstream &os, const char *key, double value, bool &first) {
+        if (!std::isfinite(value)) {
+            return;
+        }
+        if (!first) {
+            os << ',';
+        }
+        first = false;
+        os << '"' << key << "\":" << value;
+    }
+
+    /// C0 scene timing / units bag (doc/Sidecar.md USD). No new public API.
+    void AttachUsdSceneTimingMetadata(aiScene *pScene, const std::string &pFile,
+            const lightusd::tydra::SceneMetadata &meta) {
+        if (pScene == nullptr) {
+            return;
+        }
+        if (pScene->mMetaData == nullptr) {
+            pScene->mMetaData = new aiMetadata();
+        }
+
+        const char *format = UsdSourceFormatToken(pFile);
+        std::ostringstream json;
+        json.setf(std::ios::fixed);
+        json.precision(9);
+        json << "{\"schemaVersion\":1,\"source\":{";
+        bool first = true;
+        json << "\"format\":\"" << format << '"';
+        first = false;
+        if (!meta.upAxis.empty()) {
+            json << ",\"upAxis\":\"" << meta.upAxis << '"';
+        }
+        AppendJsonDouble(json, "metersPerUnit", meta.metersPerUnit, first);
+        AppendJsonDouble(json, "timeCodesPerSecond", meta.timeCodesPerSecond, first);
+        AppendJsonDouble(json, "framesPerSecond", meta.framesPerSecond, first);
+        if (meta.startTimeCode) {
+            AppendJsonDouble(json, "startTimeCode", *meta.startTimeCode, first);
+        }
+        if (meta.endTimeCode) {
+            AppendJsonDouble(json, "endTimeCode", *meta.endTimeCode, first);
+        }
+        json << "}}";
+
+        const std::string jsonStr = json.str();
+        // Heap scene bag (not aiString / AI_MAXLEN). Full S0-S8 may replace later.
+        {
+            auto *ssc = new aiSceneSidecar();
+            const size_t n = jsonStr.size();
+            char *p = new char[n + 1];
+            std::memcpy(p, jsonStr.c_str(), n + 1);
+            ssc->mExtensionsJson = p;
+            ssc->mExtensionsJsonLength = n;
+            Assimp::AttachSceneSidecar(pScene, ssc);
+        }
+        // Prefer package token over generic importer name for host inject.
+        pScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString(format));
+        const bool flag = true;
+        pScene->mMetaData->Add(AI_METADATA_SCENE_SIDECAR, flag);
+    }
 }
 
 namespace Assimp {
@@ -115,6 +200,7 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
     lightusd::Stage stage;
     std::string warn, err;
     bool is_usdz{ false };
+    std::vector<std::string> honestyNotes;
     if (isUsdc(pFile)) {
         ret = is_load_from_mem ? LoadUSDCFromMemory(in_mem_data.data(), in_mem_data.size(), pFile, &stage, &warn, &err, options) :
                                  LoadUSDCFromFile(pFile, &stage, &warn, &err, options);
@@ -122,6 +208,8 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
         ss << "InternReadFile(): LoadUSDCFromFile() result: " << ret;
         TINYUSDZLOGD(TAG, "%s", ss.str().c_str());
     } else if (isUsda(pFile)) {
+        // TinyUSDZ (Assimp patch) ignores unknown stage/prim metas and accepts
+        // UsdPhysics kilogramsPerUnit + Physics*API tokens - no Assimp ASCII strip.
         ret = is_load_from_mem ? LoadUSDAFromMemory(in_mem_data.data(), in_mem_data.size(), pFile, &stage, &warn, &err, options) :
                                  LoadUSDAFromFile(pFile, &stage, &warn, &err, options);
         ss.str("");
@@ -211,22 +299,104 @@ void USDImporterImplTinyusdz::InternReadFile(const std::string &pFile, aiScene *
     ret = converter.ConvertToRenderScene(env, &render_scene);
     if (!ret) {
         ss.str("");
-        ss << "InternReadFile(): ConvertToRenderScene() failed!";
-        TINYUSDZLOGE(TAG, "%s", ss.str().c_str());
-        return;
+        ss << "InternReadFile(): ConvertToRenderScene() failed - falling back to Stage gprim tessellation";
+        TINYUSDZLOGW(TAG, "%s", ss.str().c_str());
+    } else {
+        // sanityCheckNodesRecursive(pScene->mRootNode);
+        animations(render_scene, pScene);
+        meshes(render_scene, pScene, nameWExt);
+        bones(render_scene, pScene, nameWExt);
+        materials(render_scene, pScene, nameWExt, stage);
+        textures(render_scene, pScene, nameWExt);
+        textureImages(render_scene, pScene, nameWExt);
+        buffers(render_scene, pScene, nameWExt);
+        if (!render_scene.nodes.empty()) {
+            pScene->mRootNode = nodesRecursive(nullptr, render_scene.nodes[0], render_scene.skeletons);
+        }
+        setupBlendShapes(render_scene, pScene, nameWExt);
     }
 
-    // sanityCheckNodesRecursive(pScene->mRootNode);
-    animations(render_scene, pScene);
-    meshes(render_scene, pScene, nameWExt);
-    bones(render_scene, pScene, nameWExt);
-    materials(render_scene, pScene, nameWExt);
-    textures(render_scene, pScene, nameWExt);
-    textureImages(render_scene, pScene, nameWExt);
-    buffers(render_scene, pScene, nameWExt);
-    pScene->mRootNode = nodesRecursive(nullptr, render_scene.nodes[0], render_scene.skeletons);
+    if (pScene->mRootNode == nullptr) {
+        // Convert failed or empty RenderScene: rebuild a minimal hierarchy from Stage
+        // so Gprim tessellation can bind meshes by prim leaf name.
+        const auto &roots = stage.root_prims();
+        if (!roots.empty()) {
+            std::function<aiNode *(const lightusd::Prim &)> build = [&](const lightusd::Prim &prim) -> aiNode * {
+                aiNode *node = new aiNode(prim.element_name().c_str());
+                const auto &kids = prim.children();
+                if (!kids.empty()) {
+                    node->mNumChildren = static_cast<unsigned int>(kids.size());
+                    node->mChildren = new aiNode *[node->mNumChildren]();
+                    for (unsigned int ci = 0; ci < node->mNumChildren; ++ci) {
+                        node->mChildren[ci] = build(kids[ci]);
+                        if (node->mChildren[ci] != nullptr) {
+                            node->mChildren[ci]->mParent = node;
+                        }
+                    }
+                }
+                return node;
+            };
+            if (roots.size() == 1) {
+                pScene->mRootNode = build(roots[0]);
+            } else {
+                pScene->mRootNode = new aiNode("<USDRoot>");
+                pScene->mRootNode->mNumChildren = static_cast<unsigned int>(roots.size());
+                pScene->mRootNode->mChildren = new aiNode *[pScene->mRootNode->mNumChildren]();
+                for (unsigned int ri = 0; ri < pScene->mRootNode->mNumChildren; ++ri) {
+                    pScene->mRootNode->mChildren[ri] = build(roots[ri]);
+                    if (pScene->mRootNode->mChildren[ri] != nullptr) {
+                        pScene->mRootNode->mChildren[ri]->mParent = pScene->mRootNode;
+                    }
+                }
+            }
+        } else {
+            pScene->mRootNode = new aiNode("<USDRoot>");
+        }
+    }
 
-    setupBlendShapes(render_scene, pScene, nameWExt);
+    // TinyUSDZ leaves GeomCube/Sphere/... as Xform nodes without meshes.
+    // Tessellate them so Physics USDA fixtures yield a usable aiScene.
+    std::vector<std::string> gprimSkipped;
+    AppendTessellatedUsdGprimMeshes(pScene, stage, &gprimSkipped);
+    for (const auto &note : gprimSkipped) {
+        honestyNotes.push_back(note);
+    }
+
+    // meshes() may allocate a zero-length mMeshes pointer; ValidateDS rejects that.
+    if (pScene->mNumMeshes == 0 && pScene->mMeshes != nullptr) {
+        delete[] pScene->mMeshes;
+        pScene->mMeshes = nullptr;
+    }
+
+    // Volume-only / schema-only / payload-only stages: allow ValidateDS without hard-failing.
+    if (pScene->mNumMeshes == 0) {
+        pScene->mFlags |= AI_SCENE_FLAGS_INCOMPLETE;
+    }
+
+    // Prefer authored Stage metas when present; fall back to RenderScene meta.
+    lightusd::tydra::SceneMetadata sceneMeta = render_scene.meta;
+    {
+        const auto &sm = stage.metas();
+        const auto up = sm.upAxis.get_value();
+        if (up == lightusd::Axis::X) {
+            sceneMeta.upAxis = "X";
+        } else if (up == lightusd::Axis::Y) {
+            sceneMeta.upAxis = "Y";
+        } else if (up == lightusd::Axis::Z) {
+            sceneMeta.upAxis = "Z";
+        }
+        sceneMeta.metersPerUnit = sm.metersPerUnit.get_value();
+        sceneMeta.timeCodesPerSecond = sm.timeCodesPerSecond.get_value();
+        sceneMeta.framesPerSecond = sm.framesPerSecond.get_value();
+        sceneMeta.startTimeCode = sm.startTimeCode.get_value();
+        const double endTc = sm.endTimeCode.get_value();
+        if (std::isfinite(endTc)) {
+            sceneMeta.endTimeCode = endTc;
+        }
+    }
+    AttachUsdSceneTimingMetadata(pScene, pFile, sceneMeta);
+    // S1-S8 category sidecars (mesh/material/anim/physics + scene bags).
+    EmitUsdCategorySidecars(pScene, pFile, stage, render_scene, sceneMeta, &honestyNotes);
 }
 
 void USDImporterImplTinyusdz::animations(const lightusd::tydra::RenderScene &render_scene, aiScene *pScene) {
@@ -778,10 +948,42 @@ static void assignTexture(
     mat->AddProperty(&texName, _AI_MATKEY_TEXTURE_BASE, aiTextureType, 0);
 }
 
+namespace {
+template <typename T>
+bool UsdTryAuthoredAnimValue(const lightusd::TypedAttributeWithFallback<lightusd::Animatable<T>> &attr, T &out) {
+    if (!attr.authored() || attr.is_blocked() || attr.is_connection()) {
+        return false;
+    }
+    return attr.get_value().get(lightusd::value::TimeCode::Default(), &out);
+}
+
+const lightusd::UsdPreviewSurface *UsdFindPreviewSurface(
+        const lightusd::tydra::PathShaderMap<lightusd::UsdPreviewSurface> &shaders,
+        const std::string &matAbsPath) {
+    const lightusd::UsdPreviewSurface *best = nullptr;
+    size_t bestLen = 0;
+    for (const auto &kv : shaders) {
+        const std::string &spath = kv.first;
+        if (spath.compare(0, matAbsPath.size(), matAbsPath) != 0) {
+            continue;
+        }
+        if (spath.size() != matAbsPath.size() && spath[matAbsPath.size()] != '/') {
+            continue;
+        }
+        if (spath.size() >= bestLen) {
+            bestLen = spath.size();
+            best = kv.second.second;
+        }
+    }
+    return best;
+}
+} // namespace
+
 void USDImporterImplTinyusdz::materials(
         const lightusd::tydra::RenderScene &render_scene,
         aiScene *pScene,
-        const std::string &nameWExt) {
+        const std::string &nameWExt,
+        const lightusd::Stage &stage) {
     const size_t numMaterials{ render_scene.materials.size() };
     std::stringstream ss;
     ss.str("");
@@ -791,6 +993,9 @@ void USDImporterImplTinyusdz::materials(
     if (render_scene.materials.empty()) {
         return;
     }
+
+    lightusd::tydra::PathShaderMap<lightusd::UsdPreviewSurface> previewShaders;
+    (void)lightusd::tydra::ListShaders(stage, previewShaders);
 
     pScene->mMaterials = new aiMaterial *[render_scene.materials.size()];
     for (const auto &material : render_scene.materials) {
@@ -803,131 +1008,92 @@ void USDImporterImplTinyusdz::materials(
         materialName.Set(material.name);
         mat->AddProperty(&materialName, AI_MATKEY_NAME);
 
+        // Authored UsdPreviewSurface inputs only - never invent TinyUSDZ schema fallbacks.
+        if (const lightusd::UsdPreviewSurface *ps = UsdFindPreviewSurface(previewShaders, material.abs_path)) {
+            lightusd::value::color3f col;
+            if (UsdTryAuthoredAnimValue(ps->diffuseColor, col)) {
+                const aiColor3D c(col.r, col.g, col.b);
+                mat->AddProperty(&c, 1, AI_MATKEY_COLOR_DIFFUSE);
+            }
+            if (UsdTryAuthoredAnimValue(ps->specularColor, col)) {
+                const aiColor3D c(col.r, col.g, col.b);
+                mat->AddProperty(&c, 1, AI_MATKEY_COLOR_SPECULAR);
+            }
+            if (UsdTryAuthoredAnimValue(ps->emissiveColor, col)) {
+                const aiColor3D c(col.r, col.g, col.b);
+                mat->AddProperty(&c, 1, AI_MATKEY_COLOR_EMISSIVE);
+            }
+            float f = 0.f;
+            if (UsdTryAuthoredAnimValue(ps->metallic, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_METALLIC_FACTOR);
+            }
+            if (UsdTryAuthoredAnimValue(ps->roughness, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_ROUGHNESS_FACTOR);
+            }
+            if (UsdTryAuthoredAnimValue(ps->opacity, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_OPACITY);
+            }
+            if (UsdTryAuthoredAnimValue(ps->ior, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_REFRACTI);
+            }
+            if (UsdTryAuthoredAnimValue(ps->clearcoat, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_CLEARCOAT_FACTOR);
+            }
+            if (UsdTryAuthoredAnimValue(ps->clearcoatRoughness, f)) {
+                mat->AddProperty(&f, 1, AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR);
+            }
+        }
+
 #if defined(ASSIMP_BUILD_USD_BETA)
-        if (material.surfaceShader.has_value()) {
-            mat->AddProperty(
-                    reinterpret_cast<const aiColor3D *>(material.surfaceShader->diffuseColor.value.data()),
-                    1, AI_MATKEY_COLOR_DIFFUSE);
-            mat->AddProperty(
-                    reinterpret_cast<const aiColor3D *>(material.surfaceShader->specularColor.value.data()),
-                    1, AI_MATKEY_COLOR_SPECULAR);
-            mat->AddProperty(
-                    reinterpret_cast<const aiColor3D *>(material.surfaceShader->emissiveColor.value.data()),
-                    1, AI_MATKEY_COLOR_EMISSIVE);
-
-            ss.str("");
-            if (material.surfaceShader->diffuseColor.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->diffuseColor.texture_id, aiTextureType_DIFFUSE);
-                ss << "    material[" << pScene->mNumMaterials << "]: diff tex id " << material.surfaceShader->diffuseColor.texture_id << "\n";
-            }
-            if (material.surfaceShader->specularColor.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->specularColor.texture_id, aiTextureType_SPECULAR);
-                ss << "    material[" << pScene->mNumMaterials << "]: spec tex id " << material.surfaceShader->specularColor.texture_id << "\n";
-            }
-            if (material.surfaceShader->normal.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->normal.texture_id, aiTextureType_NORMALS);
-                ss << "    material[" << pScene->mNumMaterials << "]: normal tex id " << material.surfaceShader->normal.texture_id << "\n";
-            }
-            if (material.surfaceShader->emissiveColor.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->emissiveColor.texture_id, aiTextureType_EMISSIVE);
-                ss << "    material[" << pScene->mNumMaterials << "]: emissive tex id " << material.surfaceShader->emissiveColor.texture_id << "\n";
-            }
-            if (material.surfaceShader->occlusion.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->occlusion.texture_id, aiTextureType_LIGHTMAP);
-                ss << "    material[" << pScene->mNumMaterials << "]: lightmap (occlusion) tex id " << material.surfaceShader->occlusion.texture_id << "\n";
-            }
-            if (material.surfaceShader->metallic.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->metallic.texture_id, aiTextureType_METALNESS);
-                ss << "    material[" << pScene->mNumMaterials << "]: metallic tex id " << material.surfaceShader->metallic.texture_id << "\n";
-            }
-            if (material.surfaceShader->roughness.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->roughness.texture_id, aiTextureType_DIFFUSE_ROUGHNESS);
-                ss << "    material[" << pScene->mNumMaterials << "]: roughness tex id " << material.surfaceShader->roughness.texture_id << "\n";
-            }
-            if (material.surfaceShader->clearcoat.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->clearcoat.texture_id, aiTextureType_CLEARCOAT);
-                ss << "    material[" << pScene->mNumMaterials << "]: clearcoat tex id " << material.surfaceShader->clearcoat.texture_id << "\n";
-            }
-            if (material.surfaceShader->opacity.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->opacity.texture_id, aiTextureType_OPACITY);
-                ss << "    material[" << pScene->mNumMaterials << "]: opacity tex id " << material.surfaceShader->opacity.texture_id << "\n";
-            }
-            if (material.surfaceShader->displacement.is_texture()) {
-                assignTexture(render_scene, material, mat, material.surfaceShader->displacement.texture_id, aiTextureType_DISPLACEMENT);
-                ss << "    material[" << pScene->mNumMaterials << "]: displacement tex id " << material.surfaceShader->displacement.texture_id << "\n";
-            }
-            if (material.surfaceShader->clearcoatRoughness.is_texture()) {
-                ss << "    material[" << pScene->mNumMaterials << "]: clearcoatRoughness tex id " << material.surfaceShader->clearcoatRoughness.texture_id << "\n";
-            }
-            if (material.surfaceShader->opacityThreshold.is_texture()) {
-                ss << "    material[" << pScene->mNumMaterials << "]: opacityThreshold tex id " << material.surfaceShader->opacityThreshold.texture_id << "\n";
-            }
-            if (material.surfaceShader->ior.is_texture()) {
-                ss << "    material[" << pScene->mNumMaterials << "]: ior tex id " << material.surfaceShader->ior.texture_id << "\n";
-            }
-        } // if (material.surfaceShader.has_value())
+        const bool haveShader = material.surfaceShader.has_value();
+        const auto *shPtr = haveShader ? &(*material.surfaceShader) : nullptr;
 #else
-        mat->AddProperty(
-                reinterpret_cast<const aiColor3D *>(material.surfaceShader.diffuseColor.value.data()),
-                1, AI_MATKEY_COLOR_DIFFUSE);
-        mat->AddProperty(
-                reinterpret_cast<const aiColor3D *>(material.surfaceShader.specularColor.value.data()),
-                1, AI_MATKEY_COLOR_SPECULAR);
-        mat->AddProperty(
-                reinterpret_cast<const aiColor3D *>(material.surfaceShader.emissiveColor.value.data()),
-                1, AI_MATKEY_COLOR_EMISSIVE);
-
+        const bool haveShader = true;
+        const auto *shPtr = &material.surfaceShader;
+#endif
         ss.str("");
-        if (material.surfaceShader.diffuseColor.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.diffuseColor.texture_id, aiTextureType_DIFFUSE);
-            ss << "    material[" << pScene->mNumMaterials << "]: diff tex id " << material.surfaceShader.diffuseColor.texture_id << "\n";
+        if (haveShader && shPtr != nullptr) {
+            if (shPtr->diffuseColor.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->diffuseColor.texture_id, aiTextureType_DIFFUSE);
+                ss << "    material[" << pScene->mNumMaterials << "]: diff tex id " << shPtr->diffuseColor.texture_id << "\n";
+            }
+            if (shPtr->specularColor.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->specularColor.texture_id, aiTextureType_SPECULAR);
+                ss << "    material[" << pScene->mNumMaterials << "]: spec tex id " << shPtr->specularColor.texture_id << "\n";
+            }
+            if (shPtr->normal.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->normal.texture_id, aiTextureType_NORMALS);
+                ss << "    material[" << pScene->mNumMaterials << "]: normal tex id " << shPtr->normal.texture_id << "\n";
+            }
+            if (shPtr->emissiveColor.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->emissiveColor.texture_id, aiTextureType_EMISSIVE);
+                ss << "    material[" << pScene->mNumMaterials << "]: emissive tex id " << shPtr->emissiveColor.texture_id << "\n";
+            }
+            if (shPtr->occlusion.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->occlusion.texture_id, aiTextureType_LIGHTMAP);
+                ss << "    material[" << pScene->mNumMaterials << "]: lightmap (occlusion) tex id " << shPtr->occlusion.texture_id << "\n";
+            }
+            if (shPtr->metallic.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->metallic.texture_id, aiTextureType_METALNESS);
+                ss << "    material[" << pScene->mNumMaterials << "]: metallic tex id " << shPtr->metallic.texture_id << "\n";
+            }
+            if (shPtr->roughness.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->roughness.texture_id, aiTextureType_DIFFUSE_ROUGHNESS);
+                ss << "    material[" << pScene->mNumMaterials << "]: roughness tex id " << shPtr->roughness.texture_id << "\n";
+            }
+            if (shPtr->clearcoat.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->clearcoat.texture_id, aiTextureType_CLEARCOAT);
+                ss << "    material[" << pScene->mNumMaterials << "]: clearcoat tex id " << shPtr->clearcoat.texture_id << "\n";
+            }
+            if (shPtr->opacity.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->opacity.texture_id, aiTextureType_OPACITY);
+                ss << "    material[" << pScene->mNumMaterials << "]: opacity tex id " << shPtr->opacity.texture_id << "\n";
+            }
+            if (shPtr->displacement.is_texture()) {
+                assignTexture(render_scene, material, mat, shPtr->displacement.texture_id, aiTextureType_DISPLACEMENT);
+                ss << "    material[" << pScene->mNumMaterials << "]: displacement tex id " << shPtr->displacement.texture_id << "\n";
+            }
         }
-        if (material.surfaceShader.specularColor.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.specularColor.texture_id, aiTextureType_SPECULAR);
-            ss << "    material[" << pScene->mNumMaterials << "]: spec tex id " << material.surfaceShader.specularColor.texture_id << "\n";
-        }
-        if (material.surfaceShader.normal.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.normal.texture_id, aiTextureType_NORMALS);
-            ss << "    material[" << pScene->mNumMaterials << "]: normal tex id " << material.surfaceShader.normal.texture_id << "\n";
-        }
-        if (material.surfaceShader.emissiveColor.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.emissiveColor.texture_id, aiTextureType_EMISSIVE);
-            ss << "    material[" << pScene->mNumMaterials << "]: emissive tex id " << material.surfaceShader.emissiveColor.texture_id << "\n";
-        }
-        if (material.surfaceShader.occlusion.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.occlusion.texture_id, aiTextureType_LIGHTMAP);
-            ss << "    material[" << pScene->mNumMaterials << "]: lightmap (occlusion) tex id " << material.surfaceShader.occlusion.texture_id << "\n";
-        }
-        if (material.surfaceShader.metallic.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.metallic.texture_id, aiTextureType_METALNESS);
-            ss << "    material[" << pScene->mNumMaterials << "]: metallic tex id " << material.surfaceShader.metallic.texture_id << "\n";
-        }
-        if (material.surfaceShader.roughness.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.roughness.texture_id, aiTextureType_DIFFUSE_ROUGHNESS);
-            ss << "    material[" << pScene->mNumMaterials << "]: roughness tex id " << material.surfaceShader.roughness.texture_id << "\n";
-        }
-        if (material.surfaceShader.clearcoat.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.clearcoat.texture_id, aiTextureType_CLEARCOAT);
-            ss << "    material[" << pScene->mNumMaterials << "]: clearcoat tex id " << material.surfaceShader.clearcoat.texture_id << "\n";
-        }
-        if (material.surfaceShader.opacity.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.opacity.texture_id, aiTextureType_OPACITY);
-            ss << "    material[" << pScene->mNumMaterials << "]: opacity tex id " << material.surfaceShader.opacity.texture_id << "\n";
-        }
-        if (material.surfaceShader.displacement.is_texture()) {
-            assignTexture(render_scene, material, mat, material.surfaceShader.displacement.texture_id, aiTextureType_DISPLACEMENT);
-            ss << "    material[" << pScene->mNumMaterials << "]: displacement tex id " << material.surfaceShader.displacement.texture_id << "\n";
-        }
-        if (material.surfaceShader.clearcoatRoughness.is_texture()) {
-            ss << "    material[" << pScene->mNumMaterials << "]: clearcoatRoughness tex id " << material.surfaceShader.clearcoatRoughness.texture_id << "\n";
-        }
-        if (material.surfaceShader.opacityThreshold.is_texture()) {
-            ss << "    material[" << pScene->mNumMaterials << "]: opacityThreshold tex id " << material.surfaceShader.opacityThreshold.texture_id << "\n";
-        }
-        if (material.surfaceShader.ior.is_texture()) {
-            ss << "    material[" << pScene->mNumMaterials << "]: ior tex id " << material.surfaceShader.ior.texture_id << "\n";
-        }
-#endif //#if defined(ASSIMP_BUILD_USD_BETA)
         if (!ss.str().empty()) {
             TINYUSDZLOGD(TAG, "%s", ss.str().c_str());
         }
@@ -1105,7 +1271,7 @@ aiNode *USDImporterImplTinyusdz::nodesRecursive(aiNode *pNodeParent, const light
         return cNode;
     }
 
-    cNode->mChildren = new aiNode *[cNode->mNumChildren];
+    cNode->mChildren = new aiNode *[cNode->mNumChildren]();
 
     size_t i{ 0 };
     for (const auto &childNode : node.children) {
@@ -1135,7 +1301,7 @@ aiNode *USDImporterImplTinyusdz::skeletonNodesRecursive(
     }
 
     cNode->mNumChildren = static_cast<unsigned int>(joint.children.size());
-    cNode->mChildren = new aiNode *[cNode->mNumChildren];
+    cNode->mChildren = new aiNode *[cNode->mNumChildren]();
 
     for (unsigned i = 0; i < cNode->mNumChildren; ++i) {
         const SkelNode &childJoint = joint.children[i];

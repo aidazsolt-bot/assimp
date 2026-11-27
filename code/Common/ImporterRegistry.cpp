@@ -79,11 +79,26 @@ corresponding preprocessor flag to selectively disable formats.
 #ifndef ASSIMP_BUILD_NO_PLY_IMPORTER
 #include "AssetLib/Ply/PlyLoader.h"
 #endif
+#ifndef ASSIMP_BUILD_NO_SPZ_IMPORTER
+#include "AssetLib/SPZ/SPZLoader.h"
+#endif
+#ifndef ASSIMP_BUILD_NO_SPLAT_IMPORTER
+#include "AssetLib/SPLAT/SPLATLoader.h"
+#endif
+#ifndef ASSIMP_BUILD_NO_SOG_IMPORTER
+#include "AssetLib/SOG/SOGLoader.h"
+#endif
+#ifndef ASSIMP_BUILD_NO_KSPLAT_IMPORTER
+#include "AssetLib/KSPLAT/KSplatLoader.h"
+#endif
 #ifndef ASSIMP_BUILD_NO_ASE_IMPORTER
 #include "AssetLib/ASE/ASELoader.h"
 #endif
 #ifndef ASSIMP_BUILD_NO_OBJ_IMPORTER
 #include "AssetLib/Obj/ObjFileImporter.h"
+#endif
+#ifndef ASSIMP_BUILD_NO_GEO_IMPORTER
+#include "AssetLib/GEO/GEOLoader.h"
 #endif
 #ifndef ASSIMP_BUILD_NO_HMP_IMPORTER
 #include "AssetLib/HMP/HMPLoader.h"
@@ -242,6 +257,9 @@ void GetImporterInstanceList(std::vector<BaseImporter *> &out) {
 #if (!defined ASSIMP_BUILD_NO_OBJ_IMPORTER)
     out.push_back(new ObjFileImporter());
 #endif
+#if (!defined ASSIMP_BUILD_NO_GEO_IMPORTER)
+    out.push_back(new GEOImporter());
+#endif
 #ifndef ASSIMP_BUILD_NO_AMF_IMPORTER
     out.push_back(new AMFImporter());
 #endif
@@ -259,6 +277,18 @@ void GetImporterInstanceList(std::vector<BaseImporter *> &out) {
 #endif
 #if (!defined ASSIMP_BUILD_NO_PLY_IMPORTER)
     out.push_back(new PLYImporter());
+#endif
+#if (!defined ASSIMP_BUILD_NO_SPZ_IMPORTER)
+    out.push_back(new SPZImporter());
+#endif
+#if (!defined ASSIMP_BUILD_NO_SPLAT_IMPORTER)
+    out.push_back(new SPLATImporter());
+#endif
+#if (!defined ASSIMP_BUILD_NO_SOG_IMPORTER)
+    out.push_back(new SOGImporter());
+#endif
+#if (!defined ASSIMP_BUILD_NO_KSPLAT_IMPORTER)
+    out.push_back(new KSPLATImporter());
 #endif
 #if (!defined ASSIMP_BUILD_NO_MDL_IMPORTER)
     out.push_back(new MDLImporter());

@@ -37,6 +37,29 @@ cmake CMakeLists.txt
 ```
 This will generate the project files for the visual studio. All dependencies used to build Asset-Importer-Lib shall be part of the repo. If you want to use you own zlib installation this is possible as well. Check the options for it.
 
+### Build instructions for Windows with VS2022 Build Tools (Ninja)
+
+**Decommissioned (2026-11-24):** no repo helper pins `vcvars64 -vcvars_ver=…`, hardcodes
+`VSINSTALLDIR` / `CUDA_PATH`, or forces `-DCMAKE_C_COMPILER` / `-DCMAKE_CXX_COMPILER`.
+`build-msvc-14.44.cmd` removed.
+
+Use an **x64 Native Tools / Developer Command Prompt** (environment already has matching
+`cl` + STL), then configure without compiler path overrides:
+
+```bat
+cmake -G Ninja -S . -B build-msvc -DCMAKE_BUILD_TYPE=Release ^
+  -DASSIMP_WARNINGS_AS_ERRORS=OFF -DASSIMP_BUILD_USD_IMPORTER=ON ^
+  -DASSIMP_BUILD_TESTS=OFF -DASSIMP_BUILD_ASSIMP_TOOLS=ON ^
+  -DASSIMP_BUILD_SAMPLES=OFF -DASSIMP_BUILD_DRACO_STATIC=ON -DBUILD_SHARED_LIBS=ON
+cmake --build build-msvc
+```
+
+Or `ZsoltTechMatemsvc.cmd` (same idea: cmake only; no vcvars pin).
+
+If you switch MSVC toolsets, wipe `build-msvc` and reconfigure so Ninja/`cl` stay consistent.
+USD: TinyUSDZ patches via CMake `git apply`; if configure fails on `kilogramsPerUnit`, delete
+`build-msvc\_deps\tinyusdz_repo-{src,subbuild}` and reconfigure.
+
 ### Build instructions for Windows on ARM64
 Install the *MSVC ARM64 build tools* component of Visual Studio. On an ARM64 machine you can build natively from an *ARM64 Native Tools Command Prompt*:
 ```bash

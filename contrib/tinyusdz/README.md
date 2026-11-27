@@ -8,6 +8,15 @@ won't be burdened with the extra download volume.
 To update the git commit hash pulled down, modify `TINYUSDZ_GIT_TAG` in file
     `code/CMakeLists.txt`
 
+## Patches (`contrib/tinyusdz/patches/`)
+
+Applied at FetchContent time via `apply-tinyusdz-patches.sh`:
+
+1. `tinyusdz.patch` - armeabi-v7a stb stub (Android NDK)
+2. `tinyusdz-unknown-metas.patch` - accept UsdPhysics `kilogramsPerUnit` +
+   `Physics*API` tokens; **ignore** other unknown stage/prim metas (no Assimp
+   ASCII strip). Apple `Preliminary_Physics*API` remains a separate schema family.
+
 ## Notes
 Couldn't leverage tinyusdz CMakeLists.txt.  Fell back to compiling source files specified in
 "android" example.

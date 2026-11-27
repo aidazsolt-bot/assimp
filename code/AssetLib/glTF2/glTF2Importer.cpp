@@ -57,16 +57,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/commonMetaData.h>
 #include <assimp/importerdesc.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
+#include <assimp/gaussian.h>
+#include <assimp/metadata.h>
 #include <assimp/DefaultLogger.hpp>
 #include <assimp/Importer.hpp>
 
+#include "Common/ScenePrivate.h"
+
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <memory>
+#include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <rapidjson/document.h>
-#include <rapidjson/rapidjson.h>
 #include <rapidjson/error/en.h>
+#include <rapidjson/rapidjson.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 
 using namespace Assimp;
 using namespace glTF2;
@@ -78,6 +91,708 @@ namespace {
         aiVector3D xyz;
         ai_real w;
     };
+
+    rapidjson::Value SidecarCustomExtensionToJson(const CustomExtension &ext, rapidjson::Document::AllocatorType &al) {
+        if (ext.mStringValue.isPresent) {
+            return rapidjson::Value(ext.mStringValue.value.c_str(), al);
+        }
+        if (ext.mDoubleValue.isPresent) {
+            return rapidjson::Value(ext.mDoubleValue.value);
+        }
+        if (ext.mUint64Value.isPresent) {
+            return rapidjson::Value(ext.mUint64Value.value);
+        }
+        if (ext.mInt64Value.isPresent) {
+            return rapidjson::Value(ext.mInt64Value.value);
+        }
+        if (ext.mBoolValue.isPresent) {
+            return rapidjson::Value(ext.mBoolValue.value);
+        }
+        if (ext.mValues.isPresent) {
+            bool asArray = !ext.mValues.value.empty();
+            for (const CustomExtension &child : ext.mValues.value) {
+                if (child.name != ext.name) {
+                    asArray = false;
+                    break;
+                }
+            }
+            if (asArray) {
+                rapidjson::Value arr(rapidjson::kArrayType);
+                for (const CustomExtension &child : ext.mValues.value) {
+                    arr.PushBack(SidecarCustomExtensionToJson(child, al), al);
+                }
+                return arr;
+            }
+            rapidjson::Value obj(rapidjson::kObjectType);
+            for (const CustomExtension &child : ext.mValues.value) {
+                rapidjson::Value key(child.name.c_str(), al);
+                obj.AddMember(key, SidecarCustomExtensionToJson(child, al), al);
+            }
+            return obj;
+        }
+        return rapidjson::Value(rapidjson::kNullType);
+    }
+
+    void SidecarAddExtrasToObject(rapidjson::Value &obj, const Extras &extras, rapidjson::Document::AllocatorType &al) {
+        for (const CustomExtension &ext : extras.mValues) {
+            rapidjson::Value::MemberIterator it = obj.FindMember(ext.name.c_str());
+            if (it != obj.MemberEnd()) {
+                obj.RemoveMember(it);
+            }
+            rapidjson::Value key(ext.name.c_str(), al);
+            obj.AddMember(key, SidecarCustomExtensionToJson(ext, al), al);
+        }
+    }
+
+    void SidecarAddExtensionsToObject(rapidjson::Value &obj, const CustomExtension &extensionsRoot, rapidjson::Document::AllocatorType &al) {
+        if (!extensionsRoot.mValues.isPresent) {
+            return;
+        }
+        for (const CustomExtension &ext : extensionsRoot.mValues.value) {
+            rapidjson::Value::MemberIterator it = obj.FindMember(ext.name.c_str());
+            if (it != obj.MemberEnd()) {
+                obj.RemoveMember(it);
+            }
+            rapidjson::Value key(ext.name.c_str(), al);
+            obj.AddMember(key, SidecarCustomExtensionToJson(ext, al), al);
+        }
+    }
+
+    char *SidecarDupJson(const std::string &json, size_t &outLength) {
+        if (json.empty() || json == "{}") {
+            outLength = 0;
+            return nullptr;
+        }
+        outLength = json.size();
+        char *copy = new char[outLength + 1];
+        memcpy(copy, json.c_str(), outLength + 1);
+        return copy;
+    }
+
+    std::string SidecarSerializeMergedExtras(const Extras &meshExtras, const Extras &primExtras) {
+        if (!meshExtras.HasExtras() && !primExtras.HasExtras()) {
+            return {};
+        }
+        rapidjson::Document doc;
+        doc.SetObject();
+        SidecarAddExtrasToObject(doc, meshExtras, doc.GetAllocator());
+        SidecarAddExtrasToObject(doc, primExtras, doc.GetAllocator());
+        rapidjson::StringBuffer buffer;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+        doc.Accept(writer);
+        return buffer.GetString();
+    }
+
+    std::string SidecarSerializeMergedExtensions(const CustomExtension &meshExt, const CustomExtension &primExt) {
+        if (!meshExt.mValues.isPresent && !primExt.mValues.isPresent) {
+            return {};
+        }
+        if (meshExt.Size() == 0 && primExt.Size() == 0) {
+            return {};
+        }
+        rapidjson::Document doc;
+        doc.SetObject();
+        SidecarAddExtensionsToObject(doc, meshExt, doc.GetAllocator());
+        SidecarAddExtensionsToObject(doc, primExt, doc.GetAllocator());
+        if (doc.ObjectEmpty()) {
+            return {};
+        }
+        rapidjson::StringBuffer buffer;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+        doc.Accept(writer);
+        return buffer.GetString();
+    }
+
+    uint8_t *SidecarExtractAccessorBytes(Accessor &acc, const std::vector<unsigned int> *remappingIndices,
+            size_t &outElements, size_t &outByteLength) {
+        uint8_t *data = acc.GetPointer();
+        if (data == nullptr) {
+            throw DeadlyImportError("GLTF2: data is null when extracting sidecar attribute from ",
+                    getContextForErrorMessages(acc.id, acc.name));
+        }
+        const size_t usedCount = (remappingIndices != nullptr) ? remappingIndices->size() : acc.count;
+        const size_t elemSize = acc.GetElementSize();
+        const size_t stride = acc.GetStride();
+        uint8_t *outData = new uint8_t[usedCount * elemSize];
+        if (remappingIndices != nullptr) {
+            for (size_t i = 0; i < usedCount; ++i) {
+                const size_t srcIdx = (*remappingIndices)[i];
+                if (srcIdx >= acc.count) {
+                    delete[] outData;
+                    throw DeadlyImportError("GLTF: sidecar index ", srcIdx, " >= count ", acc.count, " in ",
+                            getContextForErrorMessages(acc.id, acc.name));
+                }
+                memcpy(outData + i * elemSize, data + srcIdx * stride, elemSize);
+            }
+        } else if (stride == elemSize) {
+            memcpy(outData, data, usedCount * elemSize);
+        } else {
+            for (size_t i = 0; i < usedCount; ++i) {
+                memcpy(outData + i * elemSize, data + i * stride, elemSize);
+            }
+        }
+        outElements = usedCount;
+        outByteLength = usedCount * elemSize;
+        return outData;
+    }
+
+    void SidecarTryAttachForPrimitive(aiScene *scene, unsigned int meshIndex, Mesh &mesh, Mesh::Primitive &prim,
+            const std::vector<unsigned int> *vertexRemappingTable) {
+        const bool hasCustomAttrs = !prim.attributes.custom.empty();
+        const bool hasExtras = mesh.extras.HasExtras() || prim.extras.HasExtras();
+        const bool hasExtensions = (mesh.customExtensions.Size() != 0) || (prim.customExtensions.Size() != 0);
+        if (!hasCustomAttrs && !hasExtras && !hasExtensions) {
+            return;
+        }
+
+        std::unique_ptr<aiMeshSidecar> sidecar(new aiMeshSidecar());
+
+        if (hasCustomAttrs) {
+            unsigned int validCount = 0;
+            for (const std::pair<std::string, Ref<Accessor>> &entry : prim.attributes.custom) {
+                if (entry.second) {
+                    ++validCount;
+                }
+            }
+            if (validCount > 0) {
+                sidecar->mNumBuffers = validCount;
+                sidecar->mBuffers = new aiSidecarBuffer[validCount];
+                unsigned int out = 0;
+                for (const std::pair<std::string, Ref<Accessor>> &entry : prim.attributes.custom) {
+                    Ref<Accessor> accessor = entry.second;
+                    if (!accessor) {
+                        ASSIMP_LOG_WARN("GLTF: Skipping null sidecar attribute \"", entry.first, "\"");
+                        continue;
+                    }
+                    size_t numElements = 0;
+                    size_t byteLength = 0;
+                    uint8_t *bytes = SidecarExtractAccessorBytes(*accessor, vertexRemappingTable, numElements, byteLength);
+                    aiSidecarBuffer &buf = sidecar->mBuffers[out++];
+                    buf.mName.Set(entry.first);
+                    buf.mNumElements = static_cast<unsigned int>(numElements);
+                    buf.mNumComponents = accessor->GetNumComponents();
+                    buf.mComponentType = static_cast<unsigned int>(accessor->componentType);
+                    buf.mData = bytes;
+                    buf.mByteLength = byteLength;
+                }
+            }
+        }
+
+        const std::string extrasJson = SidecarSerializeMergedExtras(mesh.extras, prim.extras);
+        sidecar->mExtrasJson = SidecarDupJson(extrasJson, sidecar->mExtrasJsonLength);
+
+        const std::string extensionsJson = SidecarSerializeMergedExtensions(mesh.customExtensions, prim.customExtensions);
+        sidecar->mExtensionsJson = SidecarDupJson(extensionsJson, sidecar->mExtensionsJsonLength);
+
+        AttachMeshSidecar(scene, meshIndex, sidecar.release());
+    }
+
+    static bool IsMappedMaterialExtension(const std::string &name) {
+        return name == "KHR_materials_pbrSpecularGlossiness" ||
+               name == "KHR_materials_specular" ||
+               name == "KHR_materials_sheen" ||
+               name == "KHR_materials_clearcoat" ||
+               name == "KHR_materials_transmission" ||
+               name == "KHR_materials_volume" ||
+               name == "KHR_materials_ior" ||
+               name == "KHR_materials_emissive_strength" ||
+               name == "KHR_materials_anisotropy" ||
+               name == "KHR_materials_unlit";
+    }
+
+    static const CustomExtension *FindCustomExtensionChild(const CustomExtension &root, const char *name) {
+        if (!root.mValues.isPresent) {
+            return nullptr;
+        }
+        for (const CustomExtension &child : root.mValues.value) {
+            if (child.name == name) {
+                return &child;
+            }
+        }
+        return nullptr;
+    }
+
+    static bool FindCustomExtensionString(const CustomExtension &obj, const char *key, std::string &out) {
+        const CustomExtension *child = FindCustomExtensionChild(obj, key);
+        if (child == nullptr || !child->mStringValue.isPresent) {
+            return false;
+        }
+        out = child->mStringValue.value;
+        return true;
+    }
+
+    static Ref<Accessor> FindCustomAttribute(Mesh::Primitive &prim, const char *semantic) {
+        for (const std::pair<std::string, Ref<Accessor>> &entry : prim.attributes.custom) {
+            if (entry.first == semantic) {
+                return entry.second;
+            }
+        }
+        return Ref<Accessor>();
+    }
+
+    /** Extract accessor as tightly packed floats (handles normalized ints per glTF). */
+    static bool ExtractAccessorFloatsRemapped(Accessor &acc, const std::vector<unsigned int> *remappingIndices,
+            std::vector<float> &outFloats, unsigned int &numElements, unsigned int &numComponents) {
+        numComponents = acc.GetNumComponents();
+        if (numComponents == 0 || acc.count == 0) {
+            return false;
+        }
+        const size_t usedCount = (remappingIndices != nullptr) ? remappingIndices->size() : acc.count;
+        numElements = static_cast<unsigned int>(usedCount);
+        if (numElements == 0) {
+            return false;
+        }
+
+        uint8_t *data = acc.GetPointer();
+        if (data == nullptr) {
+            return false;
+        }
+        const size_t elemSize = acc.GetElementSize();
+        const size_t stride = acc.GetStride();
+        std::unique_ptr<uint8_t[]> bytes(new uint8_t[usedCount * elemSize]);
+        if (remappingIndices != nullptr) {
+            for (size_t i = 0; i < usedCount; ++i) {
+                const size_t srcIdx = (*remappingIndices)[i];
+                if (srcIdx >= acc.count) {
+                    return false;
+                }
+                memcpy(bytes.get() + i * elemSize, data + srcIdx * stride, elemSize);
+            }
+        } else if (stride == elemSize) {
+            memcpy(bytes.get(), data, usedCount * elemSize);
+        } else {
+            for (size_t i = 0; i < usedCount; ++i) {
+                memcpy(bytes.get() + i * elemSize, data + i * stride, elemSize);
+            }
+        }
+
+        outFloats.resize(static_cast<size_t>(numElements) * static_cast<size_t>(numComponents));
+        if (acc.componentType == ComponentType_FLOAT && !acc.normalized) {
+            memcpy(outFloats.data(), bytes.get(), usedCount * elemSize);
+            return true;
+        }
+
+        const size_t totalComps = outFloats.size();
+        const unsigned int bytesPerComp = acc.GetBytesPerComponent();
+        for (size_t i = 0; i < totalComps; ++i) {
+            const uint8_t *p = bytes.get() + i * bytesPerComp;
+            float v = 0.f;
+            switch (acc.componentType) {
+                case ComponentType_BYTE: {
+                    const int8_t s = *reinterpret_cast<const int8_t *>(p);
+                    v = acc.normalized ? (std::max(s / 127.f, -1.f)) : static_cast<float>(s);
+                    break;
+                }
+                case ComponentType_UNSIGNED_BYTE: {
+                    const uint8_t u = *p;
+                    v = acc.normalized ? (u / 255.f) : static_cast<float>(u);
+                    break;
+                }
+                case ComponentType_SHORT: {
+                    const int16_t s = *reinterpret_cast<const int16_t *>(p);
+                    v = acc.normalized ? (std::max(s / 32767.f, -1.f)) : static_cast<float>(s);
+                    break;
+                }
+                case ComponentType_UNSIGNED_SHORT: {
+                    const uint16_t u = *reinterpret_cast<const uint16_t *>(p);
+                    v = acc.normalized ? (u / 65535.f) : static_cast<float>(u);
+                    break;
+                }
+                case ComponentType_UNSIGNED_INT: {
+                    const uint32_t u = *reinterpret_cast<const uint32_t *>(p);
+                    v = static_cast<float>(u);
+                    break;
+                }
+                case ComponentType_FLOAT: {
+                    v = *reinterpret_cast<const float *>(p);
+                    break;
+                }
+                default:
+                    return false;
+            }
+            outFloats[i] = v;
+        }
+        return true;
+    }
+
+    static void StripPromotedGaussianAttributes(Mesh::Primitive &prim) {
+        auto &custom = prim.attributes.custom;
+        custom.erase(std::remove_if(custom.begin(), custom.end(),
+                             [](const std::pair<std::string, Ref<Accessor>> &e) {
+                                 return e.first.rfind("KHR_gaussian_splatting:", 0) == 0;
+                             }),
+                custom.end());
+    }
+
+    static bool TryAttachGaussianSplatForPrimitive(aiScene *scene, unsigned int meshIndex, Mesh::Primitive &prim,
+            const std::vector<unsigned int> *vertexRemappingTable) {
+        const CustomExtension *gsExt = FindCustomExtensionChild(prim.customExtensions, "KHR_gaussian_splatting");
+        if (gsExt == nullptr) {
+            return false;
+        }
+
+        std::string kernel, colorSpace, projection, sortingMethod;
+        if (!FindCustomExtensionString(*gsExt, "kernel", kernel) ||
+                !FindCustomExtensionString(*gsExt, "colorSpace", colorSpace)) {
+            ASSIMP_LOG_WARN("GLTF: KHR_gaussian_splatting missing required kernel/colorSpace; skipping typed splat");
+            return false;
+        }
+        FindCustomExtensionString(*gsExt, "projection", projection);
+        FindCustomExtensionString(*gsExt, "sortingMethod", sortingMethod);
+
+        // Nested compression drafts are not decoded here; require decoded attrs.
+        if (FindCustomExtensionChild(*gsExt, "extensions") != nullptr) {
+            ASSIMP_LOG_DEBUG("GLTF: KHR_gaussian_splatting has nested extensions (e.g. compression); "
+                             "typed import uses decoded attributes only");
+        }
+
+        Ref<Accessor> rotAcc = FindCustomAttribute(prim, "KHR_gaussian_splatting:ROTATION");
+        Ref<Accessor> scaleAcc = FindCustomAttribute(prim, "KHR_gaussian_splatting:SCALE");
+        Ref<Accessor> opacityAcc = FindCustomAttribute(prim, "KHR_gaussian_splatting:OPACITY");
+        Ref<Accessor> sh0Acc = FindCustomAttribute(prim, "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0");
+        if (!rotAcc || !scaleAcc || !opacityAcc || !sh0Acc) {
+            ASSIMP_LOG_WARN("GLTF: KHR_gaussian_splatting missing required attributes; skipping typed splat");
+            return false;
+        }
+
+        std::vector<float> rotF, scaleF, opacityF, sh0F;
+        unsigned int nRot = 0, cRot = 0, nScale = 0, cScale = 0, nOp = 0, cOp = 0, nSh0 = 0, cSh0 = 0;
+        if (!ExtractAccessorFloatsRemapped(*rotAcc, vertexRemappingTable, rotF, nRot, cRot) || cRot != 4 ||
+                !ExtractAccessorFloatsRemapped(*scaleAcc, vertexRemappingTable, scaleF, nScale, cScale) || cScale != 3 ||
+                !ExtractAccessorFloatsRemapped(*opacityAcc, vertexRemappingTable, opacityF, nOp, cOp) || cOp != 1 ||
+                !ExtractAccessorFloatsRemapped(*sh0Acc, vertexRemappingTable, sh0F, nSh0, cSh0) || cSh0 != 3) {
+            ASSIMP_LOG_WARN("GLTF: KHR_gaussian_splatting attribute extract failed; skipping typed splat");
+            return false;
+        }
+        if (nRot != nScale || nRot != nOp || nRot != nSh0 || nRot == 0) {
+            ASSIMP_LOG_WARN("GLTF: KHR_gaussian_splatting attribute counts disagree; skipping typed splat");
+            return false;
+        }
+        const unsigned int numPoints = nRot;
+
+        // Higher SH degrees: complete bands only (KHR rule).
+        static const char *deg1Names[] = {
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_0",
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_1",
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_2"
+        };
+        static const char *deg2Names[] = {
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_0",
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_1",
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_2",
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_3",
+                "KHR_gaussian_splatting:SH_DEGREE_2_COEF_4"
+        };
+        static const char *deg3Names[] = {
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_0",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_1",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_2",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_3",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_4",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_5",
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_6"
+        };
+
+        auto loadDegree = [&](const char *const *names, size_t nameCount, std::vector<float> &outBand,
+                                   bool &present) -> bool {
+            present = false;
+            for (size_t i = 0; i < nameCount; ++i) {
+                if (FindCustomAttribute(prim, names[i])) {
+                    present = true;
+                    break;
+                }
+            }
+            if (!present) {
+                return true;
+            }
+            outBand.clear();
+            for (size_t i = 0; i < nameCount; ++i) {
+                Ref<Accessor> a = FindCustomAttribute(prim, names[i]);
+                if (!a) {
+                    ASSIMP_LOG_WARN("GLTF: incomplete SH degree band for ", names[i], "; skipping typed splat");
+                    return false;
+                }
+                std::vector<float> tmp;
+                unsigned int n = 0, c = 0;
+                if (!ExtractAccessorFloatsRemapped(*a, vertexRemappingTable, tmp, n, c) || c != 3 || n != numPoints) {
+                    ASSIMP_LOG_WARN("GLTF: bad SH accessor ", names[i], "; skipping typed splat");
+                    return false;
+                }
+                outBand.insert(outBand.end(), tmp.begin(), tmp.end());
+            }
+            return true;
+        };
+
+        std::vector<float> deg1, deg2, deg3;
+        bool has1 = false, has2 = false, has3 = false;
+        if (!loadDegree(deg1Names, 3, deg1, has1) || !loadDegree(deg2Names, 5, deg2, has2) ||
+                !loadDegree(deg3Names, 7, deg3, has3)) {
+            return false;
+        }
+        if (has2 && !has1) {
+            ASSIMP_LOG_WARN("GLTF: SH degree 2 without degree 1; skipping typed splat");
+            return false;
+        }
+        if (has3 && (!has1 || !has2)) {
+            ASSIMP_LOG_WARN("GLTF: SH degree 3 without lower degrees; skipping typed splat");
+            return false;
+        }
+
+        unsigned int restScalars = 0;
+        if (has1) {
+            restScalars += 9;
+        }
+        if (has2) {
+            restScalars += 15;
+        }
+        if (has3) {
+            restScalars += 21;
+        }
+
+        std::unique_ptr<aiGaussianSplat> splat(new aiGaussianSplat());
+        splat->mNumPoints = numPoints;
+        splat->mNumRestCoeffs = restScalars;
+        splat->mDC = new aiVector3D[numPoints];
+        splat->mScale = new aiVector3D[numPoints];
+        splat->mRotation = new aiColor4D[numPoints];
+        splat->mOpacity = new ai_real[numPoints];
+        if (restScalars > 0) {
+            splat->mRest = new ai_real[static_cast<size_t>(numPoints) * static_cast<size_t>(restScalars)];
+        }
+        splat->mKernel.Set(kernel);
+        splat->mColorSpace.Set(colorSpace);
+        if (!projection.empty()) {
+            splat->mProjection.Set(projection);
+        }
+        if (!sortingMethod.empty()) {
+            splat->mSortingMethod.Set(sortingMethod);
+        }
+
+        for (unsigned int i = 0; i < numPoints; ++i) {
+            splat->mDC[i].x = sh0F[i * 3 + 0];
+            splat->mDC[i].y = sh0F[i * 3 + 1];
+            splat->mDC[i].z = sh0F[i * 3 + 2];
+
+            float sx = scaleF[i * 3 + 0];
+            float sy = scaleF[i * 3 + 1];
+            float sz = scaleF[i * 3 + 2];
+            if (sx < 0.f) {
+                sx = 0.f;
+            }
+            if (sy < 0.f) {
+                sy = 0.f;
+            }
+            if (sz < 0.f) {
+                sz = 0.f;
+            }
+            splat->mScale[i].x = sx;
+            splat->mScale[i].y = sy;
+            splat->mScale[i].z = sz;
+
+            float qx = rotF[i * 4 + 0];
+            float qy = rotF[i * 4 + 1];
+            float qz = rotF[i * 4 + 2];
+            float qw = rotF[i * 4 + 3];
+            const double qlen = std::sqrt(static_cast<double>(qx) * qx + static_cast<double>(qy) * qy +
+                                          static_cast<double>(qz) * qz + static_cast<double>(qw) * qw);
+            if (qlen > 0.0) {
+                const float inv = static_cast<float>(1.0 / qlen);
+                qx *= inv;
+                qy *= inv;
+                qz *= inv;
+                qw *= inv;
+            } else {
+                qx = qy = qz = 0.f;
+                qw = 1.f;
+            }
+            splat->mRotation[i].r = qx;
+            splat->mRotation[i].g = qy;
+            splat->mRotation[i].b = qz;
+            splat->mRotation[i].a = qw;
+
+            float op = opacityF[i];
+            if (op < 0.f) {
+                op = 0.f;
+            } else if (op > 1.f) {
+                op = 1.f;
+            }
+            splat->mOpacity[i] = op;
+
+            if (restScalars > 0 && splat->mRest != nullptr) {
+                ai_real *dst = splat->mRest + static_cast<size_t>(i) * static_cast<size_t>(restScalars);
+                unsigned int o = 0;
+                if (has1) {
+                    for (unsigned int k = 0; k < 3; ++k) {
+                        dst[o++] = deg1[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 0];
+                        dst[o++] = deg1[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 1];
+                        dst[o++] = deg1[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 2];
+                    }
+                }
+                if (has2) {
+                    for (unsigned int k = 0; k < 5; ++k) {
+                        dst[o++] = deg2[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 0];
+                        dst[o++] = deg2[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 1];
+                        dst[o++] = deg2[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 2];
+                    }
+                }
+                if (has3) {
+                    for (unsigned int k = 0; k < 7; ++k) {
+                        dst[o++] = deg3[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 0];
+                        dst[o++] = deg3[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 1];
+                        dst[o++] = deg3[static_cast<size_t>(k) * numPoints * 3 + i * 3 + 2];
+                    }
+                }
+            }
+        }
+
+        AttachGaussianSplat(scene, meshIndex, splat.release());
+        StripPromotedGaussianAttributes(prim);
+
+        ASSIMP_LOG_DEBUG("GLTF: Attached KHR_gaussian_splatting typed side data for mesh ", meshIndex,
+                " (", numPoints, " points, restCoeffs=", restScalars, ")");
+        return true;
+    }
+
+    static Ref<Accessor> FindTargetCustomAttribute(Mesh::Primitive::Target &target, const char *semantic) {
+        for (const std::pair<std::string, Ref<Accessor>> &entry : target.custom) {
+            if (entry.first == semantic) {
+                return entry.second;
+            }
+        }
+        return Ref<Accessor>();
+    }
+
+    /**
+     * Promote morph-target KHR_gaussian_splatting:* attrs into aiGaussianAnimSplat[].
+     * Index-aligned with aiMesh::mAnimMeshes. POSITION morph stays on aiAnimMesh.
+     * Requires bind-pose aiGaussianSplat already attached.
+     */
+    static void TryAttachGaussianAnimSplatsForPrimitive(aiScene *scene, unsigned int meshIndex,
+            Mesh &mesh, Mesh::Primitive &prim, const std::vector<unsigned int> *vertexRemappingTable) {
+        // ImportMeshes attaches before CopyVector -> mNumMeshes is still 0; do not use
+        // aiGetGaussianSplat (it gates on mNumMeshes). Read private storage directly.
+        const ScenePrivateData *priv = ScenePriv(scene);
+        const aiGaussianSplat *bind = nullptr;
+        if (priv != nullptr && meshIndex < priv->mGaussianSplats.size()) {
+            bind = priv->mGaussianSplats[meshIndex];
+        }
+        if (bind == nullptr || bind->mNumPoints == 0 || prim.targets.empty()) {
+            return;
+        }
+
+        bool anyGsMorph = false;
+        for (Mesh::Primitive::Target &t : prim.targets) {
+            for (const std::pair<std::string, Ref<Accessor>> &e : t.custom) {
+                if (e.first.rfind("KHR_gaussian_splatting:", 0) == 0) {
+                    anyGsMorph = true;
+                    break;
+                }
+            }
+            if (anyGsMorph) {
+                break;
+            }
+        }
+        if (!anyGsMorph) {
+            return;
+        }
+
+        const unsigned int numPoints = bind->mNumPoints;
+        const unsigned int nTargets = static_cast<unsigned int>(prim.targets.size());
+        // Keep ownership until AttachGaussianAnimSplats succeeds (then release).
+        std::vector<std::unique_ptr<aiGaussianAnimSplat>> animOwned(nTargets);
+
+        for (unsigned int ti = 0; ti < nTargets; ++ti) {
+            Mesh::Primitive::Target &target = prim.targets[ti];
+            std::unique_ptr<aiGaussianAnimSplat> anim(new aiGaussianAnimSplat());
+            anim->mNumPoints = numPoints;
+            if (mesh.weights.size() > ti) {
+                anim->mWeight = mesh.weights[ti];
+            }
+            if (mesh.targetNames.size() > ti && !mesh.targetNames[ti].empty()) {
+                anim->mName.Set(mesh.targetNames[ti]);
+            }
+
+            Ref<Accessor> scaleAcc = FindTargetCustomAttribute(target, "KHR_gaussian_splatting:SCALE");
+            if (scaleAcc) {
+                std::vector<float> scaleF;
+                unsigned int n = 0, c = 0;
+                if (ExtractAccessorFloatsRemapped(*scaleAcc, vertexRemappingTable, scaleF, n, c) &&
+                        c == 3 && n == numPoints) {
+                    anim->mScale = new aiVector3D[numPoints];
+                    for (unsigned int i = 0; i < numPoints; ++i) {
+                        anim->mScale[i].x = scaleF[i * 3 + 0];
+                        anim->mScale[i].y = scaleF[i * 3 + 1];
+                        anim->mScale[i].z = scaleF[i * 3 + 2];
+                    }
+                } else {
+                    ASSIMP_LOG_WARN("GLTF: morph KHR_gaussian_splatting:SCALE extract failed for target ", ti);
+                }
+            }
+
+            Ref<Accessor> rotAcc = FindTargetCustomAttribute(target, "KHR_gaussian_splatting:ROTATION");
+            if (rotAcc) {
+                std::vector<float> rotF;
+                unsigned int n = 0, c = 0;
+                if (ExtractAccessorFloatsRemapped(*rotAcc, vertexRemappingTable, rotF, n, c) &&
+                        c == 4 && n == numPoints) {
+                    anim->mRotation = new aiColor4D[numPoints];
+                    for (unsigned int i = 0; i < numPoints; ++i) {
+                        anim->mRotation[i].r = rotF[i * 4 + 0];
+                        anim->mRotation[i].g = rotF[i * 4 + 1];
+                        anim->mRotation[i].b = rotF[i * 4 + 2];
+                        anim->mRotation[i].a = rotF[i * 4 + 3];
+                    }
+                } else {
+                    ASSIMP_LOG_WARN("GLTF: morph KHR_gaussian_splatting:ROTATION extract failed for target ", ti);
+                }
+            }
+
+            Ref<Accessor> opacityAcc = FindTargetCustomAttribute(target, "KHR_gaussian_splatting:OPACITY");
+            if (opacityAcc) {
+                std::vector<float> opacityF;
+                unsigned int n = 0, c = 0;
+                if (ExtractAccessorFloatsRemapped(*opacityAcc, vertexRemappingTable, opacityF, n, c) &&
+                        c == 1 && n == numPoints) {
+                    anim->mOpacity = new ai_real[numPoints];
+                    for (unsigned int i = 0; i < numPoints; ++i) {
+                        anim->mOpacity[i] = opacityF[i];
+                    }
+                } else {
+                    ASSIMP_LOG_WARN("GLTF: morph KHR_gaussian_splatting:OPACITY extract failed for target ", ti);
+                }
+            }
+
+            Ref<Accessor> sh0Acc = FindTargetCustomAttribute(target, "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0");
+            if (sh0Acc) {
+                std::vector<float> sh0F;
+                unsigned int n = 0, c = 0;
+                if (ExtractAccessorFloatsRemapped(*sh0Acc, vertexRemappingTable, sh0F, n, c) &&
+                        c == 3 && n == numPoints) {
+                    anim->mDC = new aiVector3D[numPoints];
+                    for (unsigned int i = 0; i < numPoints; ++i) {
+                        anim->mDC[i].x = sh0F[i * 3 + 0];
+                        anim->mDC[i].y = sh0F[i * 3 + 1];
+                        anim->mDC[i].z = sh0F[i * 3 + 2];
+                    }
+                } else {
+                    ASSIMP_LOG_WARN("GLTF: morph KHR_gaussian_splatting:SH_DEGREE_0_COEF_0 extract failed for target ", ti);
+                }
+            }
+
+            animOwned[ti] = std::move(anim);
+        }
+
+        std::vector<aiGaussianAnimSplat *> anims(nTargets, nullptr);
+        for (unsigned int ti = 0; ti < nTargets; ++ti) {
+            anims[ti] = animOwned[ti].get();
+        }
+        AttachGaussianAnimSplats(scene, meshIndex, anims.data(), nTargets);
+        for (unsigned int ti = 0; ti < nTargets; ++ti) {
+            animOwned[ti].release();
+        }
+        ASSIMP_LOG_DEBUG("GLTF: Attached ", nTargets, " KHR_gaussian_splatting morph target(s) for mesh ",
+                meshIndex);
+    }
 } // namespace
 
 //
@@ -390,11 +1105,189 @@ static aiMaterial *ImportMaterial(std::vector<int> &embeddedTexIdxs, Asset &r, M
             SetMaterialTextureProperty(embeddedTexIdxs, r, anisotropy.anisotropyTexture, aimat, AI_MATKEY_ANISOTROPY_TEXTURE);
         }
 
+        // KHR_materials_iridescence: no typed MATKEYs yet - material sidecar JSON only.
+
         return aimat;
     } catch (...) {
         delete aimat;
         throw;
     }
+}
+
+static bool SidecarResolveTexturePath(const std::vector<int> &embeddedTexIdxs, TextureInfo prop, std::string &outPath) {
+    if (!prop.texture) {
+        return false;
+    }
+    Texture &tex = *prop.texture;
+    if (!tex.source) {
+        return false;
+    }
+    const unsigned int imageIndex = tex.source.GetIndex();
+    if (imageIndex < embeddedTexIdxs.size() && embeddedTexIdxs[imageIndex] != -1) {
+        outPath = "*";
+        outPath += ai_to_string(embeddedTexIdxs[imageIndex]);
+        return true;
+    }
+    outPath = tex.source->uri;
+    return !outPath.empty();
+}
+
+static void SidecarAddTextureJson(rapidjson::Value &parent, rapidjson::Document::AllocatorType &al,
+        const char *key, TextureInfo prop, bool hasTexCoord, bool hasTransformScale,
+        const std::vector<int> &embeddedTexIdxs) {
+    if (!prop.texture) {
+        return;
+    }
+    std::string path;
+    if (!SidecarResolveTexturePath(embeddedTexIdxs, prop, path)) {
+        ASSIMP_LOG_WARN("GLTF: Skipping material sidecar texture \"", key, "\" without resolvable path");
+        return;
+    }
+
+    rapidjson::Value texObj(rapidjson::kObjectType);
+    texObj.AddMember("index", prop.texture.GetIndex(), al);
+    if (hasTexCoord) {
+        texObj.AddMember("texCoord", prop.texCoord, al);
+    }
+    rapidjson::Value pathVal(path.c_str(), al);
+    texObj.AddMember("path", pathVal, al);
+    if (hasTransformScale && prop.textureTransformSupported) {
+        // Scalar convenience: first transform scale component (glTF transform scale is VEC2).
+        const float sx = prop.TextureTransformExt_t.scale[0];
+        if (std::isfinite(sx)) {
+            texObj.AddMember("scale", sx, al);
+        }
+    }
+    rapidjson::Value keyVal(key, al);
+    parent.AddMember(keyVal, texObj, al);
+}
+
+static void SidecarTryAttachMaterialUnmapped(aiScene *scene, unsigned int materialIndex,
+        const std::vector<int> &embeddedTexIdxs, const Material &mat) {
+    rapidjson::Document doc;
+    doc.SetObject();
+    rapidjson::Document::AllocatorType &al = doc.GetAllocator();
+    bool any = false;
+
+    if (mat.materialIridescence.isPresent) {
+        const MaterialIridescence &iri = mat.materialIridescence.value;
+        rapidjson::Value iriObj(rapidjson::kObjectType);
+        bool anyField = false;
+        auto addFloat = [&](const char *key, const Nullable<float> &v) {
+            if (!v.isPresent || !std::isfinite(v.value)) {
+                return;
+            }
+            iriObj.AddMember(rapidjson::Value(key, al).Move(), v.value, al);
+            anyField = true;
+        };
+        addFloat("iridescenceFactor", iri.iridescenceFactor);
+        addFloat("iridescenceIor", iri.iridescenceIor);
+        addFloat("iridescenceThicknessMinimum", iri.iridescenceThicknessMinimum);
+        addFloat("iridescenceThicknessMaximum", iri.iridescenceThicknessMaximum);
+        if (iri.hasIridescenceTexture) {
+            const size_t before = iriObj.MemberCount();
+            SidecarAddTextureJson(iriObj, al, "iridescenceTexture", iri.iridescenceTexture,
+                    iri.hasIridescenceTexCoord, iri.hasIridescenceTransformScale, embeddedTexIdxs);
+            if (iriObj.MemberCount() > before) {
+                anyField = true;
+            }
+        }
+        if (iri.hasThicknessTexture) {
+            const size_t before = iriObj.MemberCount();
+            SidecarAddTextureJson(iriObj, al, "iridescenceThicknessTexture", iri.iridescenceThicknessTexture,
+                    iri.hasThicknessTexCoord, iri.hasThicknessTransformScale, embeddedTexIdxs);
+            if (iriObj.MemberCount() > before) {
+                anyField = true;
+            }
+        }
+        if (anyField) {
+            doc.AddMember("KHR_materials_iridescence", iriObj, al);
+            any = true;
+        }
+    }
+
+    if (mat.materialDispersion.isPresent && mat.materialDispersion.value.dispersion.isPresent &&
+            std::isfinite(mat.materialDispersion.value.dispersion.value)) {
+        rapidjson::Value dispObj(rapidjson::kObjectType);
+        dispObj.AddMember("dispersion", mat.materialDispersion.value.dispersion.value, al);
+        doc.AddMember("KHR_materials_dispersion", dispObj, al);
+        any = true;
+    }
+
+    if (mat.materialDiffuseTransmission.isPresent) {
+        const MaterialDiffuseTransmission &dtx = mat.materialDiffuseTransmission.value;
+        rapidjson::Value dtxObj(rapidjson::kObjectType);
+        bool anyField = false;
+        if (dtx.diffuseTransmissionFactor.isPresent && std::isfinite(dtx.diffuseTransmissionFactor.value)) {
+            dtxObj.AddMember("diffuseTransmissionFactor", dtx.diffuseTransmissionFactor.value, al);
+            anyField = true;
+        }
+        if (dtx.hasColorFactor) {
+            rapidjson::Value arr(rapidjson::kArrayType);
+            arr.PushBack(dtx.diffuseTransmissionColorFactor[0], al);
+            arr.PushBack(dtx.diffuseTransmissionColorFactor[1], al);
+            arr.PushBack(dtx.diffuseTransmissionColorFactor[2], al);
+            dtxObj.AddMember("diffuseTransmissionColorFactor", arr, al);
+            anyField = true;
+        }
+        if (dtx.hasDiffuseTransmissionTexture) {
+            const size_t before = dtxObj.MemberCount();
+            SidecarAddTextureJson(dtxObj, al, "diffuseTransmissionTexture", dtx.diffuseTransmissionTexture,
+                    dtx.hasDiffuseTransmissionTexCoord, dtx.hasDiffuseTransmissionTransformScale, embeddedTexIdxs);
+            if (dtxObj.MemberCount() > before) {
+                anyField = true;
+            }
+        }
+        if (dtx.hasColorTexture) {
+            const size_t before = dtxObj.MemberCount();
+            SidecarAddTextureJson(dtxObj, al, "diffuseTransmissionColorTexture", dtx.diffuseTransmissionColorTexture,
+                    dtx.hasColorTexCoord, dtx.hasColorTransformScale, embeddedTexIdxs);
+            if (dtxObj.MemberCount() > before) {
+                anyField = true;
+            }
+        }
+        if (anyField) {
+            doc.AddMember("KHR_materials_diffuse_transmission", dtxObj, al);
+            any = true;
+        }
+    }
+
+    // Remaining unmapped authored extensions (e.g. volume_scatter, retroreflectivity):
+    // copy JSON as authored. Skip keys already mapped to MATKEY or handled above.
+    if (mat.customExtensions.mValues.isPresent) {
+        for (const CustomExtension &ext : mat.customExtensions.mValues.value) {
+            if (IsMappedMaterialExtension(ext.name) ||
+                    ext.name == "KHR_materials_iridescence" ||
+                    ext.name == "KHR_materials_dispersion" ||
+                    ext.name == "KHR_materials_diffuse_transmission") {
+                continue;
+            }
+            if (doc.HasMember(ext.name.c_str())) {
+                continue;
+            }
+            rapidjson::Value key(ext.name.c_str(), al);
+            doc.AddMember(key, SidecarCustomExtensionToJson(ext, al), al);
+            any = true;
+        }
+    }
+
+    if (!any) {
+        return;
+    }
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    doc.Accept(writer);
+    const std::string json = buffer.GetString();
+    if (json.empty() || json == "{}") {
+        return;
+    }
+
+    std::unique_ptr<aiMaterialSidecar> sidecar(new aiMaterialSidecar());
+    sidecar->mExtensionsJsonLength = json.size();
+    sidecar->mExtensionsJson = new char[json.size() + 1];
+    memcpy(sidecar->mExtensionsJson, json.c_str(), json.size() + 1);
+    AttachMaterialSidecar(scene, materialIndex, sidecar.release());
 }
 
 void glTF2Importer::ImportMaterials(Asset &r) {
@@ -410,6 +1303,7 @@ void glTF2Importer::ImportMaterials(Asset &r) {
 
     for (unsigned int i = 0; i < numImportedMaterials; ++i) {
         mScene->mMaterials[i] = ImportMaterial(mEmbeddedTexIdxs, r, r.materials[i]);
+        SidecarTryAttachMaterialUnmapped(mScene, i, mEmbeddedTexIdxs, r.materials[i]);
     }
 }
 
@@ -970,6 +1864,11 @@ void glTF2Importer::ImportMeshes(glTF2::Asset &r) {
             } else {
                 aim->mMaterialIndex = mScene->mNumMaterials - 1;
             }
+
+            const unsigned int meshIndex = static_cast<unsigned int>(meshes.size() - 1u);
+            TryAttachGaussianSplatForPrimitive(mScene, meshIndex, prim, vertexRemappingTable);
+            TryAttachGaussianAnimSplatsForPrimitive(mScene, meshIndex, mesh, prim, vertexRemappingTable);
+            SidecarTryAttachForPrimitive(mScene, meshIndex, mesh, prim, vertexRemappingTable);
         }
     }
 
@@ -1703,47 +2602,336 @@ aiMeshMorphAnim *CreateMeshMorphAnim(glTF2::Asset &, Node &node, AnimationSample
     }
 }
 
+static bool AnimationSamplerUsable(Animation &anim, Animation::Channel &channel) {
+    if (channel.sampler < 0 || channel.sampler >= static_cast<int>(anim.samplers.size())) {
+        return false;
+    }
+    Animation::Sampler &animsampler = anim.samplers[static_cast<size_t>(channel.sampler)];
+    if (!animsampler.input || !animsampler.output) {
+        ASSIMP_LOG_WARN("Animation ", anim.name, ": Missing sampler input/output. Skipping.");
+        return false;
+    }
+    const size_t inCount = (*animsampler.input).count;
+    const size_t outCount = (*animsampler.output).count;
+    if (inCount > outCount) {
+        ASSIMP_LOG_WARN("Animation ", anim.name, ": Number of keyframes in sampler input ", inCount,
+                " exceeds number of keyframes in sampler output ", outCount);
+        return false;
+    }
+    return true;
+}
+
+/** Map /nodes/N/translation|rotation|scale|weights -> classic node anim path. */
+static bool TryParseNodePropertyPointer(const std::string &pointer, unsigned int &nodeIndex, AnimationPath &path) {
+    static const char kPrefix[] = "/nodes/";
+    if (pointer.size() < sizeof(kPrefix) || pointer.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0) {
+        return false;
+    }
+    size_t i = sizeof(kPrefix) - 1;
+    if (i >= pointer.size() || pointer[i] < '0' || pointer[i] > '9') {
+        return false;
+    }
+    unsigned int idx = 0;
+    while (i < pointer.size() && pointer[i] >= '0' && pointer[i] <= '9') {
+        idx = idx * 10u + static_cast<unsigned int>(pointer[i] - '0');
+        ++i;
+    }
+    if (i >= pointer.size() || pointer[i] != '/') {
+        return false;
+    }
+    const char *rest = pointer.c_str() + i + 1;
+    if (std::strcmp(rest, "translation") == 0) {
+        path = AnimationPath_TRANSLATION;
+    } else if (std::strcmp(rest, "rotation") == 0) {
+        path = AnimationPath_ROTATION;
+    } else if (std::strcmp(rest, "scale") == 0) {
+        path = AnimationPath_SCALE;
+    } else if (std::strcmp(rest, "weights") == 0) {
+        path = AnimationPath_WEIGHTS;
+    } else {
+        return false;
+    }
+    nodeIndex = idx;
+    return true;
+}
+
+static void AssignNodeAnimSampler(AnimationSamplers &sampler, AnimationPath path, Animation::Sampler *animSampler) {
+    if (path == AnimationPath_TRANSLATION) {
+        if (sampler.translation != nullptr) {
+            ASSIMP_LOG_WARN("GLTF: Duplicate translation sampler for node; keeping first.");
+            return;
+        }
+        sampler.translation = animSampler;
+    } else if (path == AnimationPath_ROTATION) {
+        if (sampler.rotation != nullptr) {
+            ASSIMP_LOG_WARN("GLTF: Duplicate rotation sampler for node; keeping first.");
+            return;
+        }
+        sampler.rotation = animSampler;
+    } else if (path == AnimationPath_SCALE) {
+        if (sampler.scale != nullptr) {
+            ASSIMP_LOG_WARN("GLTF: Duplicate scale sampler for node; keeping first.");
+            return;
+        }
+        sampler.scale = animSampler;
+    } else if (path == AnimationPath_WEIGHTS) {
+        if (sampler.weight != nullptr) {
+            ASSIMP_LOG_WARN("GLTF: Duplicate weights sampler for node; keeping first.");
+            return;
+        }
+        sampler.weight = animSampler;
+    }
+}
+
 std::unordered_map<unsigned int, AnimationSamplers> GatherSamplers(Animation &anim) {
     std::unordered_map<unsigned int, AnimationSamplers> samplers;
     for (unsigned int c = 0; c < anim.channels.size(); ++c) {
         Animation::Channel &channel = anim.channels[c];
-        if (channel.sampler < 0 || channel.sampler >= static_cast<int>(anim.samplers.size())) {
+        if (!AnimationSamplerUsable(anim, channel)) {
             continue;
         }
 
-        auto &animsampler = anim.samplers[channel.sampler];
-
-        if (!animsampler.input) {
-            ASSIMP_LOG_WARN("Animation ", anim.name, ": Missing sampler input. Skipping.");
+        // Classic node channels require a valid node ref.
+        if (channel.target.path == AnimationPath_POINTER) {
+            unsigned int nodeIndex = 0;
+            AnimationPath mappedPath = AnimationPath_TRANSLATION;
+            if (TryParseNodePropertyPointer(channel.target.pointer, nodeIndex, mappedPath)) {
+                AssignNodeAnimSampler(samplers[nodeIndex], mappedPath, &anim.samplers[static_cast<size_t>(channel.sampler)]);
+            }
+            // Non-node pointers are handled by the animation sidecar.
             continue;
         }
 
-        if (!animsampler.output) {
-            ASSIMP_LOG_WARN("Animation ", anim.name, ": Missing sampler output. Skipping.");
-            continue;
-        }
-
-        if (animsampler.input->count > animsampler.output->count) {
-            ASSIMP_LOG_WARN("Animation ", anim.name, ": Number of keyframes in sampler input ", animsampler.input->count,
-                            " exceeds number of keyframes in sampler output ", animsampler.output->count);
+        if (!channel.target.node) {
+            ASSIMP_LOG_WARN("Animation ", anim.name, ": Channel missing target node. Skipping.");
             continue;
         }
 
         const unsigned int node_index = channel.target.node.GetIndex();
-
-        AnimationSamplers &sampler = samplers[node_index];
-        if (channel.target.path == AnimationPath_TRANSLATION) {
-            sampler.translation = &anim.samplers[channel.sampler];
-        } else if (channel.target.path == AnimationPath_ROTATION) {
-            sampler.rotation = &anim.samplers[channel.sampler];
-        } else if (channel.target.path == AnimationPath_SCALE) {
-            sampler.scale = &anim.samplers[channel.sampler];
-        } else if (channel.target.path == AnimationPath_WEIGHTS) {
-            sampler.weight = &anim.samplers[channel.sampler];
-        }
+        AssignNodeAnimSampler(samplers[node_index], channel.target.path, &anim.samplers[static_cast<size_t>(channel.sampler)]);
     }
 
     return samplers;
+}
+
+static const char *InterpolationToString(Interpolation interp) {
+    switch (interp) {
+        case Interpolation_STEP:
+            return "STEP";
+        case Interpolation_CUBICSPLINE:
+            return "CUBICSPLINE";
+        default:
+            return "LINEAR";
+    }
+}
+
+/** Extract accessor as tightly packed float components (KHR_animation_pointer conversion). */
+static bool SidecarExtractAccessorFloats(Accessor &acc, std::vector<float> &outFloats,
+        unsigned int &numElements, unsigned int &numComponents) {
+    numComponents = acc.GetNumComponents();
+    numElements = static_cast<unsigned int>(acc.count);
+    if (numComponents == 0 || numElements == 0) {
+        return false;
+    }
+
+    uint8_t *data = acc.GetPointer();
+    if (data == nullptr) {
+        return false;
+    }
+    const size_t elemSize = acc.GetElementSize();
+    const size_t stride = acc.GetStride();
+    const size_t usedCount = acc.count;
+    const size_t byteLength = usedCount * elemSize;
+    std::unique_ptr<uint8_t[]> bytes(new uint8_t[byteLength]);
+    if (stride == elemSize) {
+        memcpy(bytes.get(), data, byteLength);
+    } else {
+        for (size_t i = 0; i < usedCount; ++i) {
+            memcpy(bytes.get() + i * elemSize, data + i * stride, elemSize);
+        }
+    }
+
+    outFloats.resize(static_cast<size_t>(numElements) * static_cast<size_t>(numComponents));
+    if (acc.componentType == ComponentType_FLOAT && !acc.normalized) {
+        memcpy(outFloats.data(), bytes.get(), byteLength);
+        return true;
+    }
+
+    const size_t totalComps = outFloats.size();
+    const unsigned int bytesPerComp = acc.GetBytesPerComponent();
+    for (size_t i = 0; i < totalComps; ++i) {
+        const uint8_t *p = bytes.get() + i * bytesPerComp;
+        float v = 0.f;
+        switch (acc.componentType) {
+            case ComponentType_BYTE: {
+                const int8_t s = *reinterpret_cast<const int8_t *>(p);
+                v = acc.normalized ? (std::max(s / 127.f, -1.f)) : static_cast<float>(s);
+                break;
+            }
+            case ComponentType_UNSIGNED_BYTE: {
+                const uint8_t u = *p;
+                v = acc.normalized ? (u / 255.f) : static_cast<float>(u);
+                break;
+            }
+            case ComponentType_SHORT: {
+                const int16_t s = *reinterpret_cast<const int16_t *>(p);
+                v = acc.normalized ? (std::max(s / 32767.f, -1.f)) : static_cast<float>(s);
+                break;
+            }
+            case ComponentType_UNSIGNED_SHORT: {
+                const uint16_t u = *reinterpret_cast<const uint16_t *>(p);
+                v = acc.normalized ? (u / 65535.f) : static_cast<float>(u);
+                break;
+            }
+            case ComponentType_UNSIGNED_INT: {
+                const uint32_t u = *reinterpret_cast<const uint32_t *>(p);
+                v = static_cast<float>(u);
+                break;
+            }
+            default:
+                return false;
+        }
+        outFloats[i] = v;
+    }
+    return true;
+}
+
+static void SidecarTryAttachAnimationPointer(aiScene *scene, unsigned int animIndex, Animation &anim) {
+    struct PendingChannel {
+        int samplerIndex;
+        std::string pointer;
+        Interpolation interpolation;
+        unsigned int outputComponents;
+        std::string inputName;
+        std::string outputName;
+    };
+    std::vector<PendingChannel> pending;
+    std::unordered_map<int, std::pair<std::string, std::string>> samplerBufferNames;
+
+    for (unsigned int c = 0; c < anim.channels.size(); ++c) {
+        Animation::Channel &channel = anim.channels[c];
+        if (channel.target.path != AnimationPath_POINTER) {
+            continue;
+        }
+        if (channel.target.pointer.empty()) {
+            ASSIMP_LOG_WARN("Animation ", anim.name, ": pointer channel missing KHR_animation_pointer.pointer. Skipping.");
+            continue;
+        }
+        unsigned int nodeIndex = 0;
+        AnimationPath mappedPath = AnimationPath_TRANSLATION;
+        if (TryParseNodePropertyPointer(channel.target.pointer, nodeIndex, mappedPath)) {
+            // Already folded into aiNodeAnim / morph channels.
+            continue;
+        }
+        if (!AnimationSamplerUsable(anim, channel)) {
+            continue;
+        }
+
+        auto namesIt = samplerBufferNames.find(channel.sampler);
+        if (namesIt == samplerBufferNames.end()) {
+            const std::string inName = "sampler_" + ai_to_string(channel.sampler) + "_input";
+            const std::string outName = "sampler_" + ai_to_string(channel.sampler) + "_output";
+            namesIt = samplerBufferNames.emplace(channel.sampler, std::make_pair(inName, outName)).first;
+        }
+
+        Animation::Sampler &samp = anim.samplers[static_cast<size_t>(channel.sampler)];
+        PendingChannel pc;
+        pc.samplerIndex = channel.sampler;
+        pc.pointer = channel.target.pointer;
+        pc.interpolation = samp.interpolation;
+        pc.outputComponents = samp.output->GetNumComponents();
+        pc.inputName = namesIt->second.first;
+        pc.outputName = namesIt->second.second;
+        pending.push_back(std::move(pc));
+    }
+
+    if (pending.empty()) {
+        return;
+    }
+
+    // Build unique float buffers for referenced samplers.
+    struct BuiltBuffer {
+        std::string name;
+        std::vector<float> data;
+        unsigned int numElements;
+        unsigned int numComponents;
+    };
+    std::vector<BuiltBuffer> built;
+    std::unordered_map<std::string, size_t> builtByName;
+
+    auto ensureBuffer = [&](const std::string &name, Accessor &acc, bool forceScalarTime) -> bool {
+        if (builtByName.find(name) != builtByName.end()) {
+            return true;
+        }
+        BuiltBuffer bb;
+        bb.name = name;
+        if (!SidecarExtractAccessorFloats(acc, bb.data, bb.numElements, bb.numComponents)) {
+            ASSIMP_LOG_WARN("Animation ", anim.name, ": Failed to extract sampler buffer \"", name, "\".");
+            return false;
+        }
+        if (forceScalarTime) {
+            bb.numComponents = 1;
+        }
+        builtByName[name] = built.size();
+        built.push_back(std::move(bb));
+        return true;
+    };
+
+    for (const PendingChannel &pc : pending) {
+        Animation::Sampler &samp = anim.samplers[static_cast<size_t>(pc.samplerIndex)];
+        if (!ensureBuffer(pc.inputName, *samp.input, true) || !ensureBuffer(pc.outputName, *samp.output, false)) {
+            return;
+        }
+    }
+
+    rapidjson::Document doc;
+    doc.SetObject();
+    rapidjson::Document::AllocatorType &al = doc.GetAllocator();
+    rapidjson::Value channelsArr(rapidjson::kArrayType);
+    for (const PendingChannel &pc : pending) {
+        rapidjson::Value ch(rapidjson::kObjectType);
+        ch.AddMember("sampler", pc.samplerIndex, al);
+        ch.AddMember("pointer", rapidjson::Value(pc.pointer.c_str(), al).Move(), al);
+        ch.AddMember("interpolation", rapidjson::Value(InterpolationToString(pc.interpolation), al).Move(), al);
+        ch.AddMember("inputBuffer", rapidjson::Value(pc.inputName.c_str(), al).Move(), al);
+        ch.AddMember("outputBuffer", rapidjson::Value(pc.outputName.c_str(), al).Move(), al);
+        ch.AddMember("outputComponents", pc.outputComponents, al);
+        channelsArr.PushBack(ch, al);
+    }
+    rapidjson::Value kap(rapidjson::kObjectType);
+    kap.AddMember("channels", channelsArr, al);
+    doc.AddMember("KHR_animation_pointer", kap, al);
+
+    rapidjson::StringBuffer sbuf;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(sbuf);
+    doc.Accept(writer);
+    const std::string json = sbuf.GetString();
+    if (json.empty() || json == "{}") {
+        return;
+    }
+
+    std::unique_ptr<aiAnimationSidecar> sidecar(new aiAnimationSidecar());
+    sidecar->mExtensionsJsonLength = json.size();
+    sidecar->mExtensionsJson = new char[json.size() + 1];
+    memcpy(sidecar->mExtensionsJson, json.c_str(), json.size() + 1);
+
+    sidecar->mNumBuffers = static_cast<unsigned int>(built.size());
+    sidecar->mBuffers = new aiSidecarBuffer[sidecar->mNumBuffers];
+    for (unsigned int i = 0; i < sidecar->mNumBuffers; ++i) {
+        BuiltBuffer &bb = built[i];
+        aiSidecarBuffer &dst = sidecar->mBuffers[i];
+        dst.mName.Set(bb.name);
+        dst.mNumElements = bb.numElements;
+        dst.mNumComponents = bb.numComponents;
+        dst.mComponentType = static_cast<unsigned int>(aiSidecarComponentType_Float);
+        dst.mByteLength = bb.data.size() * sizeof(float);
+        dst.mData = new uint8_t[dst.mByteLength];
+        memcpy(dst.mData, bb.data.data(), dst.mByteLength);
+    }
+
+    AttachAnimationSidecar(scene, animIndex, sidecar.release());
+    ASSIMP_LOG_DEBUG("GLTF: Attached animation sidecar with ", pending.size(),
+            " KHR_animation_pointer channel(s) for animation index ", animIndex);
 }
 
 void glTF2Importer::ImportAnimations(glTF2::Asset &r) {
@@ -1862,6 +3050,30 @@ void glTF2Importer::ImportAnimations(glTF2::Asset &r) {
             }
         }
 
+        // Pointer channels that are not node TRS/weights -> animation sidecar.
+        SidecarTryAttachAnimationPointer(mScene, i, anim);
+
+        // Duration may also come from sidecar input times (seconds -> ms).
+        if (const aiAnimationSidecar *asc = aiGetAnimationSidecar(mScene, i)) {
+            for (unsigned int b = 0; b < asc->mNumBuffers; ++b) {
+                const aiSidecarBuffer &buf = asc->mBuffers[b];
+                if (buf.mNumComponents != 1 || buf.mData == nullptr || buf.mNumElements == 0) {
+                    continue;
+                }
+                // Input buffers are named sampler_N_input
+                const char *name = buf.mName.C_Str();
+                if (name == nullptr || std::strstr(name, "_input") == nullptr) {
+                    continue;
+                }
+                const float *times = reinterpret_cast<const float *>(buf.mData);
+                const double lastMs = static_cast<double>(times[buf.mNumElements - 1]) * 1000.0;
+                if (lastMs > maxDuration) {
+                    maxDuration = lastMs;
+                }
+                maxNumberOfKeys = std::max(maxNumberOfKeys, buf.mNumElements);
+            }
+        }
+
         ai_anim->mDuration = maxDuration;
         ai_anim->mTicksPerSecond = 1000.0;
     }
@@ -1942,7 +3154,13 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
     const bool hasCopyright = !a.asset.copyright.empty();
     const bool hasSceneMetadata = a.scene->customExtensions;
     const bool hasSceneExtras = a.scene->extras.HasExtras();
-    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras) {
+    const bool hasMeshSidecar = aiSceneHasMeshSidecar(mScene) != 0;
+    const bool hasMaterialSidecar = aiSceneHasMaterialSidecar(mScene) != 0;
+    const bool hasAnimationSidecar = aiSceneHasAnimationSidecar(mScene) != 0;
+    const bool hasPhysicsSidecar = aiSceneHasPhysicsSidecar(mScene) != 0;
+    const bool hasGaussianSplat = aiSceneHasGaussianSplat(mScene) != 0;
+    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMeshSidecar ||
+            hasMaterialSidecar || hasAnimationSidecar || hasPhysicsSidecar || hasGaussianSplat) {
         mScene->mMetaData = new aiMetadata;
         if (hasVersion) {
             mScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(a.asset.version));
@@ -1958,6 +3176,34 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
         }
         if (hasSceneExtras) {
             ParseExtras(mScene->mMetaData, a.scene->extras);
+        }
+        if (hasMeshSidecar) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_MESH_SIDECAR, flag);
+        }
+        if (hasMaterialSidecar) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_MATERIAL_SIDECAR, flag);
+        }
+        if (hasAnimationSidecar) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_ANIMATION_SIDECAR, flag);
+        }
+        if (hasPhysicsSidecar) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_PHYSICS_SIDECAR, flag);
+        }
+        if (hasGaussianSplat) {
+            const bool flag = true;
+            mScene->mMetaData->Add(AI_METADATA_GAUSSIAN_SPLAT, flag);
+            int32_t maxRest = 0;
+            for (unsigned int mi = 0; mi < mScene->mNumMeshes; ++mi) {
+                const aiGaussianSplat *gs = aiGetGaussianSplat(mScene, mi);
+                if (gs != nullptr) {
+                    maxRest = std::max(maxRest, static_cast<int32_t>(gs->mNumRestCoeffs));
+                }
+            }
+            mScene->mMetaData->Add(AI_METADATA_GAUSSIAN_SH_REST_COUNT, maxRest);
         }
     }
 }
@@ -1994,6 +3240,15 @@ void glTF2Importer::InternReadFile(const std::string &pFile, aiScene *pScene, IO
     ImportNodes(asset);
 
     ImportAnimations(asset);
+
+    if (!asset.physicsSidecarJson.empty()) {
+        std::unique_ptr<aiPhysicsSidecar> sc(new aiPhysicsSidecar());
+        sc->mExtensionsJsonLength = asset.physicsSidecarJson.size();
+        sc->mExtensionsJson = new char[sc->mExtensionsJsonLength + 1];
+        memcpy(sc->mExtensionsJson, asset.physicsSidecarJson.c_str(), sc->mExtensionsJsonLength + 1);
+        AttachPhysicsSidecar(mScene, sc.release());
+        ASSIMP_LOG_DEBUG("GLTF: Attached physics sidecar (", asset.physicsSidecarJson.size(), " bytes)");
+    }
 
     ImportCommonMetadata(asset);
 

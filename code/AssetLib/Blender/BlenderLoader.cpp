@@ -43,8 +43,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *  @brief Implementation of the Blender3D importer class.
  */
 
-//#define ASSIMP_BUILD_NO_COMPRESSED_BLEND
-// Uncomment this to disable support for (gzip/zstd)compressed .BLEND files
+// #define ASSIMP_BUILD_NO_COMPRESSED_BLEND
+//  Uncomment this to disable support for (gzip/zstd)compressed .BLEND files
 
 #ifndef ASSIMP_BUILD_NO_BLEND_IMPORTER
 
@@ -53,15 +53,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "BlenderIntermediate.h"
 #include "BlenderMeshAttributes.h"
 #include "BlenderModifier.h"
+#include "BlenderParticleDistribute.h"
 #include <assimp/StringUtils.h>
+#include <assimp/commonMetaData.h>
 #include <assimp/importerdesc.h>
+#include <assimp/metadata.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 
+#include <assimp/DefaultIOSystem.h>
 #include <assimp/MemoryIOWrapper.h>
 #include <assimp/StreamReader.h>
 #include <assimp/StringComparison.h>
 #include <assimp/anim.h>
 #include <assimp/camera.h>
+#include <assimp/commonMetaData.h>
+#include <assimp/metadata.h>
 
 #include <algorithm>
 #include <cctype>
@@ -73,6 +80,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -83,16 +91,43 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 namespace {
+char *BlendDupJson(const std::string &s, size_t &outLen) {
+    outLen = s.size();
+    char *p = new char[outLen + 1];
+    std::memcpy(p, s.c_str(), outLen + 1);
+    return p;
+}
+
+std::string BlendJsonEscape(const std::string &in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) {
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+// Legacy DNA node type ints (BKE_node_legacy_types.hh) - used when idname is absent.
 enum BlendShaderNodeType : short {
     kSH_NODE_OUTPUT_MATERIAL = 124,
+    kSH_NODE_OUTPUT_WORLD = 125,
     kSH_NODE_MIX_SHADER = 128,
+    kSH_NODE_BACKGROUND = 130,
     kSH_NODE_BSDF_GLOSSY = 131,
     kSH_NODE_BSDF_DIFFUSE = 132,
     kSH_NODE_BSDF_GLOSSY_LEGACY = 133,
     kSH_NODE_BSDF_GLASS = 134,
     kSH_NODE_EMISSION = 140,
     kSH_NODE_TEX_IMAGE = 143,
+    kSH_NODE_ADD_SHADER = 156,
+    kSH_NODE_TEX_ENVIRONMENT = 157,
+    kSH_NODE_TEX_BRICK = 169,
+    kSH_NODE_VALTORGB = 104,
     kSH_NODE_BSDF_PRINCIPLED = 193,
+    kSH_NODE_VOLUME_PRINCIPLED = 200,
     kSH_NODE_NORMAL_MAP = 175,
     kSH_NODE_BUMP = 170,
     kSH_NODE_INVERT = 119,
@@ -114,6 +149,7 @@ struct BlendTexMap {
 struct BlendShaderFlat {
     bool ok{ false };
     bool mixedGraph{ false };
+    bool addShader{ false };
     const char *output{ nullptr };
     // Presence: only emit typed keys that were resolved from DNA default_value
     // or a linked constant / node-type-fixed factor (never invent ns zeros).
@@ -127,6 +163,15 @@ struct BlendShaderFlat {
     bool hasEmissionStrength{ false };
     bool hasCoatWeight{ false };
     bool hasCoatRoughness{ false };
+    bool hasVolumeColor{ false };
+    bool hasVolumeDensity{ false };
+    bool hasVolumeDensityDefault{ false };
+    bool hasVolumeDensityLinked{ false };
+    bool hasVolumeDensityAttribute{ false };
+    bool hasVolumeAnisotropy{ false };
+    bool hasVolumeAbsorptionColor{ false };
+    bool hasVolumeEmissionColor{ false };
+    bool hasVolumeEmissionStrength{ false };
     float baseColor[4]{};
     float metallic{ 0.f };
     float roughness{ 0.f };
@@ -137,6 +182,14 @@ struct BlendShaderFlat {
     float emissionStrength{ 0.f };
     float coatWeight{ 0.f };
     float coatRoughness{ 0.f };
+    float volumeColor[4]{};
+    float volumeDensity{ 0.f };
+    float volumeDensityDefault{ 0.f };
+    float volumeAnisotropy{ 0.f };
+    float volumeAbsorptionColor[4]{};
+    float volumeEmissionColor[4]{};
+    float volumeEmissionStrength{ 0.f };
+    std::string volumeDensityAttribute;
     BlendTexMap mapBaseColor;
     BlendTexMap mapRoughness;
     BlendTexMap mapNormal;
@@ -200,6 +253,30 @@ bool BlendReadSocketColor(const Assimp::Blender::bNodeSocket &sock, float out[4]
     return false;
 }
 
+/** Presence: Vector socket default_value (SOCK_VECTOR / bNodeSocketValueVector). */
+bool BlendReadSocketVector(const Assimp::Blender::bNodeSocket &sock, float out[3]) {
+    using namespace Assimp::Blender;
+    if (!sock.default_value || sock.default_value->dna_type == nullptr) {
+        return false;
+    }
+    if (std::strcmp(sock.default_value->dna_type, "bNodeSocketValueVector") == 0) {
+        const auto *vec = static_cast<const bNodeSocketValueVector *>(sock.default_value.get());
+        out[0] = vec->value[0];
+        out[1] = vec->value[1];
+        out[2] = vec->value[2];
+        return true;
+    }
+    return false;
+}
+
+bool BlendNodeIsMapping(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeMapping") == 0) {
+        return true;
+    }
+    // SH_NODE_MAPPING legacy type id (BKE_node_legacy_types.hh).
+    return n.type == 109;
+}
+
 const Assimp::Blender::bNode *BlendCastNode(const Assimp::Blender::ElemBase *e) {
     using namespace Assimp::Blender;
     if (e == nullptr) {
@@ -227,6 +304,13 @@ bool BlendNodeIsPrincipled(const Assimp::Blender::bNode &n) {
         return true;
     }
     return n.type == kSH_NODE_BSDF_PRINCIPLED;
+}
+
+bool BlendNodeIsVolumePrincipled(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeVolumePrincipled") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_VOLUME_PRINCIPLED;
 }
 
 bool BlendNodeIsGlass(const Assimp::Blender::bNode &n) {
@@ -257,6 +341,34 @@ bool BlendNodeIsOutput(const Assimp::Blender::bNode &n) {
     return n.type == kSH_NODE_OUTPUT_MATERIAL;
 }
 
+bool BlendNodeIsOutputWorld(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeOutputWorld") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_OUTPUT_WORLD;
+}
+
+bool BlendNodeIsBackground(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeBackground") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_BACKGROUND;
+}
+
+bool BlendNodeIsTexEnvironment(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexEnvironment") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_TEX_ENVIRONMENT;
+}
+
+bool BlendNodeIsAddShader(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeAddShader") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_ADD_SHADER;
+}
+
 bool BlendNodeIsEmission(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeEmission") == 0) {
         return true;
@@ -269,6 +381,48 @@ bool BlendNodeIsTexImage(const Assimp::Blender::bNode &n) {
         return true;
     }
     return n.type == kSH_NODE_TEX_IMAGE;
+}
+
+bool BlendNodeIsTexBrick(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexBrick") == 0) {
+        return true;
+    }
+    return n.type == kSH_NODE_TEX_BRICK;
+}
+
+bool BlendNodeIsTexNoise(const Assimp::Blender::bNode &n) {
+    return n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexNoise") == 0;
+}
+
+bool BlendNodeIsTexMusgrave(const Assimp::Blender::bNode &n) {
+    return n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeTexMusgrave") == 0;
+}
+
+/** SHD_MUSGRAVE_* / SHD_NOISE_* alias; nullptr if unknown (do not invent). */
+const char *BlendMusgraveTypeAlias(int type) {
+    switch (type) {
+    case 0:
+        return "MULTIFRACTAL";
+    case 1:
+        return "FBM";
+    case 2:
+        return "HYBRID_MULTIFRACTAL";
+    case 3:
+        return "RIDGED_MULTIFRACTAL";
+    case 4:
+        return "HETERO_TERRAIN";
+    default:
+        return nullptr;
+    }
+}
+
+bool BlendNodeIsColorRamp(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0' &&
+            (std::strcmp(n.idname, "ShaderNodeValToRGB") == 0 ||
+                    std::strcmp(n.idname, "ShaderNodeRGBCurve") == 0)) {
+        return true;
+    }
+    return n.type == kSH_NODE_VALTORGB;
 }
 
 bool BlendNodeIsUVMap(const Assimp::Blender::bNode &n) {
@@ -322,6 +476,14 @@ bool BlendNodeIsBump(const Assimp::Blender::bNode &n) {
         return true;
     }
     return n.type == kSH_NODE_BUMP;
+}
+
+bool BlendNodeIsDisplacement(const Assimp::Blender::bNode &n) {
+    if (n.idname[0] != '\0') {
+        return std::strcmp(n.idname, "ShaderNodeDisplacement") == 0 ||
+               std::strcmp(n.idname, "ShaderNodeVectorDisplacement") == 0;
+    }
+    return false;
 }
 
 bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
@@ -383,15 +545,16 @@ bool BlendNodeIsFlattenable(const Assimp::Blender::bNode &n) {
 
 /** Nodes that end a Tex-Image upstream walk (shader roots / mix), not image filters. */
 bool BlendNodeIsTexWalkBarrier(const Assimp::Blender::bNode &n) {
-    return BlendNodeIsFlattenable(n) || BlendNodeIsOutput(n) || BlendNodeIsMixShader(n);
+    return BlendNodeIsFlattenable(n) || BlendNodeIsOutput(n) || BlendNodeIsMixShader(n) ||
+           BlendNodeIsAddShader(n) || BlendNodeIsOutputWorld(n) || BlendNodeIsBackground(n);
 }
 
 /** Higher = try first when several inputs are linked (Fac/Scale last). */
 int BlendSockTexWalkPriority(const Assimp::Blender::bNodeSocket &sock) {
     if (BlendSockNameIsAny(sock, { "Fac", "Factor", "Scale", "Strength", "Distance",
-                "Epsilon", "Weight", "Roughness", "Detail", "Dimension", "Lacunarity",
-                "Offset", "Gain", "Gamma", "From Max", "From Min", "To Max", "To Min",
-                "Steps", "Interpolation Type" })) {
+                                         "Epsilon", "Weight", "Roughness", "Detail", "Dimension", "Lacunarity",
+                                         "Offset", "Gain", "Gamma", "From Max", "From Min", "To Max", "To Min",
+                                         "Steps", "Interpolation Type" })) {
         return 0;
     }
     if (BlendSockNameIsAny(sock, { "Color", "Image", "Height", "Normal" })) {
@@ -551,6 +714,179 @@ const Assimp::Blender::FCurve *BlendCastFCurve(const Assimp::Blender::ElemBase *
     return static_cast<const FCurve *>(e);
 }
 
+const Assimp::Blender::DriverVar *BlendCastDriverVar(const Assimp::Blender::ElemBase *e) {
+    using namespace Assimp::Blender;
+    if (e == nullptr) {
+        return nullptr;
+    }
+    if (e->dna_type != nullptr && std::strcmp(e->dna_type, "DriverVar") != 0) {
+        return nullptr;
+    }
+    return static_cast<const DriverVar *>(e);
+}
+
+/** Map DNA eDriver_Types -> stable name (label only; always also emit numeric type). */
+const char *BlendDriverTypeName(int type) {
+    switch (type) {
+    case 0:
+        return "AVERAGE";
+    case 1:
+        return "PYTHON";
+    case 2:
+        return "SUM";
+    case 3:
+        return "MIN";
+    case 4:
+        return "MAX";
+    default:
+        return nullptr;
+    }
+}
+
+/** Map DNA eDriverVar_Types. */
+const char *BlendDriverVarTypeName(short type) {
+    switch (type) {
+    case 0:
+        return "SINGLE_PROP";
+    case 1:
+        return "ROT_DIFF";
+    case 2:
+        return "LOC_DIFF";
+    case 3:
+        return "TRANSFORM_CHAN";
+    case 4:
+        return "CONTEXT_PROP";
+    default:
+        return nullptr;
+    }
+}
+
+/** Map DNA eDriverTarget_TransformChannels. */
+const char *BlendDriverTransChanName(short ch) {
+    switch (ch) {
+    case 0:
+        return "LOC_X";
+    case 1:
+        return "LOC_Y";
+    case 2:
+        return "LOC_Z";
+    case 3:
+        return "ROT_X";
+    case 4:
+        return "ROT_Y";
+    case 5:
+        return "ROT_Z";
+    case 6:
+        return "SCALE_X";
+    case 7:
+        return "SCALE_Y";
+    case 8:
+        return "SCALE_Z";
+    case 9:
+        return "SCALE_AVG";
+    case 10:
+        return "ROT_W";
+    default:
+        return nullptr;
+    }
+}
+
+void BlendCollectObjectDrivers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    if (obj == nullptr || !obj->adt) {
+        return;
+    }
+    const char *objName = (obj->id.name[0] != '\0') ? (obj->id.name + 2) : "";
+    for (std::shared_ptr<ElemBase> cur = obj->adt->drivers.first; cur;) {
+        const FCurve *fc = BlendCastFCurve(cur.get());
+        if (fc == nullptr) {
+            break;
+        }
+        cur = fc->next;
+        if (!fc->driver) {
+            continue;
+        }
+        const ChannelDriver &drv = *fc->driver;
+        ConversionData::DriverChannelEmit ch;
+        ch.ownerName = objName ? objName : "";
+        ch.ownerIdCode = "OB";
+        ch.rnaPath = fc->rna_path;
+        ch.arrayIndex = fc->array_index;
+        ch.type = drv.type;
+        ch.flag = drv.flag;
+        // influence defaults to 0 in DNA zero-init; Blender treats unset as 1.0 at runtime,
+        // but we only emit when the field is non-zero (Presence - no invent of 1.0).
+        if (drv.influence != 0.f) {
+            ch.influence = drv.influence;
+            ch.hasInfluence = true;
+        }
+        if (drv.expression[0] != '\0') {
+            ch.expression.assign(drv.expression);
+        }
+        for (std::shared_ptr<ElemBase> vcur = drv.variables.first; vcur;) {
+            const DriverVar *dv = BlendCastDriverVar(vcur.get());
+            if (dv == nullptr) {
+                break;
+            }
+            vcur = dv->next;
+            ConversionData::DriverVarEmit ve;
+            if (dv->name[0] != '\0') {
+                ve.name.assign(dv->name);
+            }
+            ve.type = dv->type;
+            ve.flag = dv->flag;
+            const int nTargets = (dv->num_targets > 0) ?
+                                         std::min(static_cast<int>(dv->num_targets), 8) :
+                                         0;
+            for (int ti = 0; ti < nTargets; ++ti) {
+                const DriverTarget &dt = dv->targets[ti];
+                ConversionData::DriverTargetEmit te;
+                te.idCode = dt.id_code;
+                te.idName = dt.id_name;
+                te.rnaPath = dt.rna_path;
+                if (dt.pchan_name[0] != '\0') {
+                    te.bone.assign(dt.pchan_name);
+                }
+                te.transChan = dt.transChan;
+                te.flag = dt.flag;
+                te.idtype = dt.idtype;
+                if (dt.options != 0) {
+                    te.options = dt.options;
+                    te.hasOptions = true;
+                }
+                if (dt.context_property != 0) {
+                    te.contextProperty = dt.context_property;
+                    te.hasContextProperty = true;
+                }
+                // DTAR_OPTION_USE_FALLBACK = 1 << 0
+                if ((dt.options & 1) != 0) {
+                    te.fallbackValue = dt.fallback_value;
+                    te.hasFallback = true;
+                }
+                if (dt.rotation_mode != 0) {
+                    te.rotationMode = dt.rotation_mode;
+                    te.hasRotationMode = true;
+                }
+                ve.targets.push_back(std::move(te));
+            }
+            ch.variables.push_back(std::move(ve));
+        }
+        if (!fc->bezt.empty()) {
+            ch.keyTimes.reserve(fc->bezt.size());
+            ch.keyValues.reserve(fc->bezt.size());
+            for (const BezTriple &bz : fc->bezt) {
+                ch.keyTimes.push_back(bz.vec[1][0]);
+                ch.keyValues.push_back(bz.vec[1][1]);
+            }
+        }
+        // Emit only when there is resolvable driver payload (expression and/or vars and/or keys).
+        if (ch.expression.empty() && ch.variables.empty() && ch.keyTimes.empty()) {
+            continue;
+        }
+        conv.driverChannels.push_back(std::move(ch));
+    }
+}
+
 /** Build aiNodeAnim TRS from Action FCurves (location / rotation_euler), Assimp-usual like MD5 camera. */
 aiNodeAnim *BlendBuildCameraNodeAnim(const Assimp::Blender::Object &obj, const Assimp::Blender::bAction &act) {
     using namespace Assimp::Blender;
@@ -668,11 +1004,13 @@ void BlendPushCameraActionAnim(std::vector<aiAnimation *> &anims, const Assimp::
 
 void BlendConvertCameraAnimations(std::vector<aiAnimation *> &anims, Assimp::Blender::ConversionData &conv_data) {
     using namespace Assimp::Blender;
-    if (conv_data.camera_objects.empty()) {
+    std::set<std::pair<const Object *, const bAction *>> seen;
+    std::vector<const Object *> objs = conv_data.camera_objects;
+    objs.insert(objs.end(), conv_data.camera_focus_objects.begin(), conv_data.camera_focus_objects.end());
+    if (objs.empty()) {
         return;
     }
-    std::set<std::pair<const Object *, const bAction *>> seen;
-    for (const Object *obj : conv_data.camera_objects) {
+    for (const Object *obj : objs) {
         if (obj == nullptr || !obj->adt) {
             continue;
         }
@@ -1178,6 +1516,22 @@ const Assimp::Blender::PackedFile *BlendImageGetPacked(const Assimp::Blender::Im
     return nullptr;
 }
 
+/** Blender relative file paths start with "//". Drop that prefix and map remaining '/' to the OS separator. */
+std::string BlendNormalizeRelativePath(const char *path) {
+    if (path == nullptr) {
+        return {};
+    }
+    std::string out(path);
+    if (out.size() >= 2 && out[0] == '/' && out[1] == '/') {
+        out.erase(0, 2);
+        const char sep = Assimp::DefaultIOSystem().getOsSeparator();
+        if (sep != '/') {
+            std::replace(out.begin(), out.end(), '/', sep);
+        }
+    }
+    return out;
+}
+
 /** Path for format hint / logging: Image.filepath|name, else ImagePackedFile.filepath, else ID name. */
 const char *BlendImageDisplayPath(const Assimp::Blender::Image *img) {
     using namespace Assimp::Blender;
@@ -1248,9 +1602,12 @@ bool BlendEnsureEmbeddedPackedTexture(const Assimp::Blender::Image *img,
     conv_data.db.reader->CopyAndAdvance(ch, curTex->mWidth);
     curTex->pcData = reinterpret_cast<aiTexel *>(ch);
     if (dispPath[0] != '\0') {
-        curTex->mFilename = aiString(dispPath);
+        const std::string filePath = BlendNormalizeRelativePath(dispPath);
+        if (!filePath.empty()) {
+            curTex->mFilename = aiString(filePath);
+        }
     }
-    ASSIMP_LOG_INFO("Reading embedded texture, original file was ", dispPath);
+    ASSIMP_LOG_INFO("Reading embedded texture, original file was ", curTex->mFilename.C_Str());
     if (outIndex) {
         *outIndex = texIndex;
     }
@@ -1750,7 +2107,8 @@ struct BlendNodeGraph {
         return sa >= sb ? a : b;
     }
 
-    const Assimp::Blender::bNode *ResolveSurface(const Assimp::Blender::bNode *n, bool &sawMix, int depth = 0) const {
+    const Assimp::Blender::bNode *ResolveSurface(const Assimp::Blender::bNode *n, bool &sawMix,
+            bool *sawAdd = nullptr, int depth = 0) const {
         using namespace Assimp::Blender;
         if (n == nullptr || depth > 10) {
             return nullptr;
@@ -1761,8 +2119,13 @@ struct BlendNodeGraph {
         if (BlendNodeIsEmission(*n)) {
             return n;
         }
-        if (BlendNodeIsMixShader(*n)) {
-            sawMix = true;
+        if (BlendNodeIsMixShader(*n) || BlendNodeIsAddShader(*n)) {
+            if (BlendNodeIsMixShader(*n)) {
+                sawMix = true;
+            }
+            if (BlendNodeIsAddShader(*n) && sawAdd != nullptr) {
+                *sawAdd = true;
+            }
             const bNode *best = nullptr;
             for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
                 const bNodeSocket *sock = BlendCastSocket(cur.get());
@@ -1773,19 +2136,48 @@ struct BlendNodeGraph {
                         BlendSockNameIs(*sock, "Shader")) {
                     const bNodeLink *l = FindLinkToSocket(*sock);
                     if (l) {
-                        best = PickBest(best, ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, depth + 1));
+                        best = PickBest(best,
+                                ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, sawAdd, depth + 1));
                     }
                 }
-                // Mix Shader inputs are often just named "Shader" twice - take every linked input.
+                // Mix/Add Shader inputs are often just named "Shader" twice - take every linked input.
                 const bNodeLink *l = FindLinkToSocket(*sock);
                 if (l && !BlendSockNameIs(*sock, "Fac")) {
-                    best = PickBest(best, ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, depth + 1));
+                    best = PickBest(best,
+                            ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix, sawAdd, depth + 1));
                 }
                 cur = sock->next;
             }
             return best;
         }
         return nullptr;
+    }
+
+    /** Walk Mix/Add chains and collect every Emission leaf (Presence merge later). */
+    void CollectEmissionLeaves(const Assimp::Blender::bNode *n,
+            std::vector<const Assimp::Blender::bNode *> &out, int depth = 0) const {
+        using namespace Assimp::Blender;
+        if (n == nullptr || depth > 10) {
+            return;
+        }
+        if (BlendNodeIsEmission(*n)) {
+            out.push_back(n);
+            return;
+        }
+        if (!BlendNodeIsMixShader(*n) && !BlendNodeIsAddShader(*n)) {
+            return;
+        }
+        for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            const bNodeLink *l = FindLinkToSocket(*sock);
+            if (l && !BlendSockNameIs(*sock, "Fac")) {
+                CollectEmissionLeaves(BlendCastNode(l->fromnode.get()), out, depth + 1);
+            }
+            cur = sock->next;
+        }
     }
 };
 
@@ -2145,21 +2537,51 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
         foreachInput([&](const bNodeSocket &sock) {
             if (BlendSockNameIs(sock, "Color")) {
                 float tmp[4]{};
-                if (BlendReadLinkedOrDefaultColor(g, sock, tmp, &flat.mapEmission)) {
+                const bNodeLink *l = g.FindLinkToSocket(sock);
+                if (l) {
+                    // Linked: only Image Tex or constant nodes count (no invent from unread Brick/Ramp).
+                    const bNode *src = BlendCastNode(l->fromnode.get());
+                    const bNode *tex = g.FollowToTexImage(src, 0, BlendCastSocket(l->fromsock.get()));
+                    if (tex) {
+                        BlendFillTexMap(g, tex, flat.mapEmission);
+                    }
+                    if (g.ReadConstantColor(src, tmp)) {
+                        flat.baseColor[0] = flat.emissionColor[0] = tmp[0];
+                        flat.baseColor[1] = flat.emissionColor[1] = tmp[1];
+                        flat.baseColor[2] = flat.emissionColor[2] = tmp[2];
+                        flat.baseColor[3] = tmp[3];
+                        flat.hasBaseColor = true;
+                        flat.hasEmissionColor = true;
+                    } else if (flat.mapEmission) {
+                        // Image-backed emission: no constant color key.
+                        flat.mapBaseColor = flat.mapEmission;
+                    }
+                } else if (BlendReadSocketColor(sock, tmp)) {
                     flat.baseColor[0] = flat.emissionColor[0] = tmp[0];
                     flat.baseColor[1] = flat.emissionColor[1] = tmp[1];
                     flat.baseColor[2] = flat.emissionColor[2] = tmp[2];
                     flat.baseColor[3] = tmp[3];
                     flat.hasBaseColor = true;
                     flat.hasEmissionColor = true;
+                }
+                if (flat.mapEmission && !flat.hasBaseColor) {
                     // Splash / toon Emission surfaces: same Image is the visible albedo.
-                    if (flat.mapEmission) {
-                        flat.mapBaseColor = flat.mapEmission;
-                    }
+                    flat.mapBaseColor = flat.mapEmission;
                 }
             } else if (BlendSockNameIs(sock, "Strength")) {
-                if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
-                    flat.hasEmissionStrength = true;
+                // Strength default is authored when unlinked; linked unread procedural => omit.
+                if (!g.FindLinkToSocket(sock)) {
+                    if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
+                        flat.hasEmissionStrength = true;
+                    }
+                } else {
+                    float linked = 0.f;
+                    const bNodeLink *l = g.FindLinkToSocket(sock);
+                    const bNode *src = l ? BlendCastNode(l->fromnode.get()) : nullptr;
+                    if (src && g.ReadConstantFloat(src, linked)) {
+                        flat.emissionStrength = linked;
+                        flat.hasEmissionStrength = true;
+                    }
                 }
             }
         });
@@ -2186,6 +2608,8 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
     }
 
     bool sawMix = false;
+    bool sawAdd = false;
+    const bNode *surfaceRoot = nullptr;
     const bNode *chosen = nullptr;
     if (outputNode != nullptr) {
         for (std::shared_ptr<ElemBase> cur = outputNode->inputs.first; cur;) {
@@ -2197,7 +2621,8 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
                 if (BlendSockNameIs(*sock, "Surface") || BlendSockNameIs(*sock, "surface")) {
                     const bNodeLink *l = g.FindLinkToSocket(*sock);
                     if (l) {
-                        chosen = g.ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix);
+                        surfaceRoot = BlendCastNode(l->fromnode.get());
+                        chosen = g.ResolveSurface(surfaceRoot, sawMix, &sawAdd);
                     }
                 }
             }
@@ -2207,7 +2632,8 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
         if (chosen == nullptr) {
             for (const bNodeLink *l : g.links) {
                 if (BlendCastNode(l->tonode.get()) == outputNode) {
-                    chosen = g.ResolveSurface(BlendCastNode(l->fromnode.get()), sawMix);
+                    surfaceRoot = BlendCastNode(l->fromnode.get());
+                    chosen = g.ResolveSurface(surfaceRoot, sawMix, &sawAdd);
                     if (chosen) {
                         break;
                     }
@@ -2225,6 +2651,160 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
     if (chosen != nullptr) {
         flat = BlendFlattenFromNode(g, *chosen);
         flat.mixedGraph = sawMix;
+        flat.addShader = sawAdd;
+    }
+
+    // C7 Phase 1: Presence-merge Emission siblings under Add/Mix (constants / Image only).
+    // Emission leaf wins over Principled socket defaults (do not keep invent-black Emission Color).
+    if (surfaceRoot != nullptr) {
+        std::vector<const bNode *> emitLeaves;
+        g.CollectEmissionLeaves(surfaceRoot, emitLeaves);
+        for (const bNode *en : emitLeaves) {
+            if (en == nullptr || en == chosen) {
+                continue;
+            }
+            const BlendShaderFlat emitFlat = BlendFlattenFromNode(g, *en);
+            bool merged = false;
+            if (emitFlat.hasEmissionColor) {
+                flat.emissionColor[0] = emitFlat.emissionColor[0];
+                flat.emissionColor[1] = emitFlat.emissionColor[1];
+                flat.emissionColor[2] = emitFlat.emissionColor[2];
+                flat.hasEmissionColor = true;
+                merged = true;
+            } else if (emitFlat.mapEmission || emitFlat.hasEmissionStrength) {
+                // Procedural Color link unread: drop Principled default emissionColor key.
+                flat.hasEmissionColor = false;
+                flat.emissionColor[0] = flat.emissionColor[1] = flat.emissionColor[2] = 0.f;
+            }
+            if (emitFlat.hasEmissionStrength) {
+                flat.emissionStrength = emitFlat.emissionStrength;
+                flat.hasEmissionStrength = true;
+                merged = true;
+            }
+            if (emitFlat.mapEmission) {
+                flat.mapEmission = emitFlat.mapEmission;
+                merged = true;
+            }
+            if (merged || emitFlat.hasEmissionStrength || emitFlat.mapEmission) {
+                flat.ok = true;
+                flat.addShader = true;
+            }
+        }
+    }
+
+    // Principled Volume on Material Output Volume socket (Water Caustics Material.002).
+    if (outputNode != nullptr) {
+        for (std::shared_ptr<ElemBase> cur = outputNode->inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            if (BlendSockNameIs(*sock, "Volume") || BlendSockNameIs(*sock, "volume")) {
+                const bNodeLink *l = g.FindLinkToSocket(*sock);
+                const bNode *vn = l ? BlendCastNode(l->fromnode.get()) : nullptr;
+                if (vn != nullptr &&
+                        ((vn->idname[0] != '\0' && std::strcmp(vn->idname, "NodeReroute") == 0) ||
+                                vn->type == kSH_NODE_REROUTE)) {
+                    for (const bNodeLink *rl : g.links) {
+                        if (BlendCastNode(rl->tonode.get()) == vn) {
+                            vn = BlendCastNode(rl->fromnode.get());
+                            break;
+                        }
+                    }
+                }
+                if (vn != nullptr && BlendNodeIsVolumePrincipled(*vn)) {
+                    flat.ok = true;
+                    if (flat.output == nullptr) {
+                        flat.output = "Principled Volume";
+                    }
+                    for (std::shared_ptr<ElemBase> sc = vn->inputs.first; sc;) {
+                        const bNodeSocket *vs = BlendCastSocket(sc.get());
+                        if (vs == nullptr) {
+                            break;
+                        }
+                        const bool linked = (g.FindLinkToSocket(*vs) != nullptr);
+                        if (BlendSockNameIs(*vs, "Color") || BlendSockNameIs(*vs, "color")) {
+                            if (!linked) {
+                                float rgba[4] = { 0, 0, 0, 0 };
+                                if (BlendReadSocketColor(*vs, rgba)) {
+                                    flat.hasVolumeColor = true;
+                                    flat.volumeColor[0] = rgba[0];
+                                    flat.volumeColor[1] = rgba[1];
+                                    flat.volumeColor[2] = rgba[2];
+                                    flat.volumeColor[3] = rgba[3];
+                                }
+                            }
+                        } else if (BlendSockNameIs(*vs, "Density") || BlendSockNameIs(*vs, "density")) {
+                            // Presence C12: unlinked -> density; linked -> densityLinked (+
+                            // densityDefault only when socket default_value is readable).
+                            float dens = 0.f;
+                            const bool gotDefault = BlendReadSocketFloat(*vs, dens);
+                            if (linked) {
+                                flat.hasVolumeDensityLinked = true;
+                                if (gotDefault) {
+                                    flat.hasVolumeDensityDefault = true;
+                                    flat.volumeDensityDefault = dens;
+                                }
+                            } else if (gotDefault) {
+                                flat.hasVolumeDensity = true;
+                                flat.volumeDensity = dens;
+                            }
+                        } else if (BlendSockNameIs(*vs, "Density Attribute") ||
+                                   BlendSockNameIs(*vs, "density_attribute")) {
+                            if (vs->default_value && vs->default_value->dna_type &&
+                                    std::strcmp(vs->default_value->dna_type, "bNodeSocketValueString") == 0) {
+                                const auto *sv = static_cast<const bNodeSocketValueString *>(
+                                        vs->default_value.get());
+                                if (sv->value[0] != '\0') {
+                                    flat.hasVolumeDensityAttribute = true;
+                                    flat.volumeDensityAttribute = sv->value;
+                                }
+                            }
+                        } else if ((BlendSockNameIs(*vs, "Anisotropy") ||
+                                           BlendSockNameIs(*vs, "anisotropy")) &&
+                                   !linked) {
+                            float a = 0.f;
+                            if (BlendReadSocketFloat(*vs, a)) {
+                                flat.hasVolumeAnisotropy = true;
+                                flat.volumeAnisotropy = a;
+                            }
+                        } else if ((BlendSockNameIs(*vs, "Absorption Color") ||
+                                           BlendSockNameIs(*vs, "absorption_color")) &&
+                                   !linked) {
+                            float rgba[4] = { 0, 0, 0, 0 };
+                            if (BlendReadSocketColor(*vs, rgba)) {
+                                flat.hasVolumeAbsorptionColor = true;
+                                flat.volumeAbsorptionColor[0] = rgba[0];
+                                flat.volumeAbsorptionColor[1] = rgba[1];
+                                flat.volumeAbsorptionColor[2] = rgba[2];
+                                flat.volumeAbsorptionColor[3] = rgba[3];
+                            }
+                        } else if ((BlendSockNameIs(*vs, "Emission Strength") ||
+                                           BlendSockNameIs(*vs, "emission_strength")) &&
+                                   !linked) {
+                            float s = 0.f;
+                            if (BlendReadSocketFloat(*vs, s)) {
+                                flat.hasVolumeEmissionStrength = true;
+                                flat.volumeEmissionStrength = s;
+                            }
+                        } else if ((BlendSockNameIs(*vs, "Emission Color") ||
+                                           BlendSockNameIs(*vs, "emission_color")) &&
+                                   !linked) {
+                            float rgba[4] = { 0, 0, 0, 0 };
+                            if (BlendReadSocketColor(*vs, rgba)) {
+                                flat.hasVolumeEmissionColor = true;
+                                flat.volumeEmissionColor[0] = rgba[0];
+                                flat.volumeEmissionColor[1] = rgba[1];
+                                flat.volumeEmissionColor[2] = rgba[2];
+                                flat.volumeEmissionColor[3] = rgba[3];
+                            }
+                        }
+                        sc = vs->next;
+                    }
+                }
+            }
+            cur = sock->next;
+        }
     }
 
     // Splash / toon setups: Principled often inside ShaderNodeGroup; flatten there with that graph.
@@ -2258,26 +2838,882 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
     return flat;
 }
 
+/** Embed packed Image into conv.textures (dedupe by Image*). Returns true when *N or filepath usable. */
+bool BlendEnsureEmbeddedImage(const Assimp::Blender::Image *img, Assimp::Blender::ConversionData &conv_data,
+        aiString &outName, int *outEmbedIndex = nullptr) {
+    using namespace Assimp::Blender;
+    if (img == nullptr) {
+        return false;
+    }
+    unsigned int texIndex = 0;
+    if (BlendEnsureEmbeddedPackedTexture(img, conv_data, &texIndex)) {
+        outName.data[0] = '*';
+        outName.length = 1 + Assimp::ASSIMP_itoa10(outName.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1),
+                                     static_cast<int32_t>(texIndex));
+        if (outEmbedIndex != nullptr) {
+            *outEmbedIndex = static_cast<int>(texIndex);
+        }
+        return true;
+    }
+    const char *dispPath = BlendImageDisplayPath(img);
+    if (dispPath == nullptr || dispPath[0] == '\0') {
+        return false;
+    }
+    outName = aiString(BlendNormalizeRelativePath(dispPath));
+    if (outEmbedIndex != nullptr) {
+        *outEmbedIndex = -1;
+    }
+    return true;
+}
+
 void BlendAttachNodeImage(aiMaterial *mout, const BlendTexMap &map, aiTextureType type,
-        Assimp::Blender::ConversionData &conv_data, unsigned matIndex) {
+        Assimp::Blender::ConversionData &conv_data, unsigned matIndex, const char *usage = nullptr) {
     using namespace Assimp::Blender;
     if (mout == nullptr || map.img == nullptr) {
         return;
     }
-    const Image *img = map.img;
     aiString name;
-    unsigned int texIndex = 0;
-    if (BlendEnsureEmbeddedPackedTexture(img, conv_data, &texIndex)) {
-        name.data[0] = '*';
-        name.length = 1 + Assimp::ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1),
-                static_cast<int32_t>(texIndex));
-    } else {
-        name = aiString(BlendImageDisplayPath(img));
+    if (!BlendEnsureEmbeddedImage(map.img, conv_data, name)) {
+        return;
     }
     const unsigned slot = conv_data.next_texture[type]++;
     mout->AddProperty(&name, AI_MATKEY_TEXTURE(type, slot));
     const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
     BlendEmitUvWsrc(mout, type, slot, uvIndex);
+    // Fully typed = $tex.file + usage meta (inventory decommission only then).
+    if (usage != nullptr && usage[0] != '\0') {
+        aiString u(usage);
+        mout->AddProperty(&u, "$tex.blend.usage", type, slot);
+    }
+}
+
+/** Inventory: every ShaderNodeTexImage (incl. nested groups), linked or not. */
+struct BlendMapInventoryEntry {
+    const Assimp::Blender::Image *img{ nullptr };
+    const Assimp::Blender::bNode *node{ nullptr };
+    bool linked{ false };
+    /** Set when emitted as typed $tex.* (+ usage meta) - drop from Sidecar inventory. */
+    bool typed{ false };
+};
+
+struct BlendTexUsageHit {
+    aiTextureType type{ aiTextureType_UNKNOWN };
+    const char *usage{ "unknown" }; // key=value meta ($tex.blend.usage)
+    char socket[64]{};
+};
+
+/** Map Principled/BSDF/Bump/Displacement/Mix socket name -> typed type + usage label. */
+bool BlendClassifySocketUsage(const char *sockName, const Assimp::Blender::bNode &toNode,
+        BlendTexUsageHit &out) {
+    using namespace Assimp::Blender;
+    if (sockName == nullptr || sockName[0] == '\0') {
+        return false;
+    }
+    out.socket[0] = '\0';
+    std::strncpy(out.socket, sockName, sizeof(out.socket) - 1);
+    out.socket[sizeof(out.socket) - 1] = '\0';
+
+    // Fac into Mix = mask Influence (caller must not walk through Mix Color).
+    // Fac into ColorRamp selects the ramp - not a terminal usage (keep walking).
+    if (std::strcmp(sockName, "Fac") == 0 || std::strcmp(sockName, "Factor") == 0) {
+        if (BlendNodeIsColorRamp(toNode)) {
+            return false;
+        }
+        out.type = aiTextureType_UNKNOWN;
+        out.usage = "mixFac";
+        return true;
+    }
+    // Mix Color1/Color2/A/B are pass-through operands - not a terminal usage.
+    if (BlendNodeIsMixColor(toNode) &&
+            (std::strcmp(sockName, "Color1") == 0 || std::strcmp(sockName, "Color2") == 0 ||
+                    std::strcmp(sockName, "Color") == 0 || std::strcmp(sockName, "A") == 0 ||
+                    std::strcmp(sockName, "B") == 0 || std::strcmp(sockName, "Result") == 0)) {
+        return false;
+    }
+    if (BlendNodeIsBump(toNode) || BlendNodeIsDisplacement(toNode)) {
+        if (std::strcmp(sockName, "Height") == 0 || std::strcmp(sockName, "height") == 0) {
+            out.type = aiTextureType_HEIGHT;
+            out.usage = "height";
+            return true;
+        }
+        if (std::strcmp(sockName, "Displacement") == 0) {
+            out.type = aiTextureType_DISPLACEMENT;
+            out.usage = "displacement";
+            return true;
+        }
+    }
+    if (BlendNodeIsNormalMap(toNode)) {
+        if (std::strcmp(sockName, "Color") == 0 || std::strcmp(sockName, "color") == 0) {
+            out.type = aiTextureType_NORMALS;
+            out.usage = "normal";
+            return true;
+        }
+    }
+    if (std::strcmp(sockName, "Base Color") == 0 || std::strcmp(sockName, "BaseColor") == 0) {
+        out.type = aiTextureType_BASE_COLOR;
+        out.usage = "baseColor";
+        return true;
+    }
+    // Color on Principled/Diffuse/Emission/Glass = base (not Mix - handled above).
+    if (std::strcmp(sockName, "Color") == 0 && BlendNodeIsFlattenable(toNode)) {
+        out.type = aiTextureType_BASE_COLOR;
+        out.usage = "baseColor";
+        return true;
+    }
+    if (std::strcmp(sockName, "Normal") == 0) {
+        out.type = aiTextureType_NORMALS;
+        out.usage = "normal";
+        return true;
+    }
+    if (std::strcmp(sockName, "Roughness") == 0) {
+        out.type = aiTextureType_DIFFUSE_ROUGHNESS;
+        out.usage = "roughness";
+        return true;
+    }
+    if (std::strcmp(sockName, "Metallic") == 0 || std::strcmp(sockName, "Metalness") == 0) {
+        out.type = aiTextureType_METALNESS;
+        out.usage = "metallic";
+        return true;
+    }
+    if (std::strcmp(sockName, "Emission Color") == 0 || std::strcmp(sockName, "Emission") == 0) {
+        out.type = aiTextureType_EMISSIVE;
+        out.usage = "emission";
+        return true;
+    }
+    if (std::strcmp(sockName, "Alpha") == 0) {
+        out.type = aiTextureType_OPACITY;
+        out.usage = "opacity";
+        return true;
+    }
+    if (std::strcmp(sockName, "Specular") == 0 || std::strcmp(sockName, "Specular IOR Level") == 0 ||
+            std::strcmp(sockName, "Specular Tint") == 0) {
+        out.type = aiTextureType_SPECULAR;
+        out.usage = "specular";
+        return true;
+    }
+    if (std::strcmp(sockName, "Height") == 0 || std::strcmp(sockName, "height") == 0) {
+        out.type = aiTextureType_HEIGHT;
+        out.usage = "height";
+        return true;
+    }
+    if (BlendNodeIsOutput(toNode) &&
+            (std::strcmp(sockName, "Displacement") == 0 || std::strcmp(sockName, "displacement") == 0)) {
+        out.type = aiTextureType_DISPLACEMENT;
+        out.usage = "displacement";
+        return true;
+    }
+    return false;
+}
+
+void BlendCollectTexImageInventory(const BlendNodeGraph &g, const BlendNodeGraph &rootLinks,
+        std::vector<BlendMapInventoryEntry> &out, int depth = 0) {
+    using namespace Assimp::Blender;
+    if (depth > 8) {
+        return;
+    }
+    auto nodeHasOutboundLink = [&](const bNode *n) -> bool {
+        for (const bNodeLink *l : rootLinks.links) {
+            if (BlendCastNode(l->fromnode.get()) == n) {
+                return true;
+            }
+        }
+        for (const bNodeLink *l : g.links) {
+            if (BlendCastNode(l->fromnode.get()) == n) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (const bNode *n : g.nodes) {
+        if (n == nullptr) {
+            continue;
+        }
+        if (BlendNodeIsTexImage(*n)) {
+            const Image *img = BlendNodeImage(*n);
+            if (img != nullptr) {
+                BlendMapInventoryEntry e;
+                e.img = img;
+                e.node = n;
+                e.linked = nodeHasOutboundLink(n);
+                out.push_back(e);
+            }
+        }
+        if (BlendNodeIsGroup(*n)) {
+            const bNodeTree *gt = BlendNodeGroupTree(*n);
+            if (gt != nullptr) {
+                const BlendNodeGraph sub = BlendBuildGraph(*gt);
+                BlendCollectTexImageInventory(sub, rootLinks, out, depth + 1);
+            }
+        }
+    }
+}
+
+/**
+ * Walk outbound DNA links from a TexImage (through Mix/Ramp/Reroute/NormalMap/Bump/
+ * Group Output) and collect usage hits. Presence only - no filename invent.
+ */
+void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::bNode *texNode,
+        std::vector<BlendTexUsageHit> &out, int depth = 0,
+        const BlendNodeGraph *hostGraph = nullptr, const Assimp::Blender::bNode *hostGroup = nullptr) {
+    using namespace Assimp::Blender;
+    if (texNode == nullptr || depth > 20) {
+        return;
+    }
+    auto sockLabel = [](const bNodeSocket *s) -> const char * {
+        if (s == nullptr) {
+            return "";
+        }
+        return s->identifier[0] != '\0' ? s->identifier : s->name;
+    };
+    auto already = [&](const BlendTexUsageHit &h) -> bool {
+        for (const BlendTexUsageHit &e : out) {
+            if (e.type == h.type && std::strcmp(e.usage, h.usage) == 0 &&
+                    std::strcmp(e.socket, h.socket) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (const bNodeLink *l : g.links) {
+        if (l == nullptr || BlendCastNode(l->fromnode.get()) != texNode) {
+            continue;
+        }
+        const bNode *to = BlendCastNode(l->tonode.get());
+        const bNodeSocket *ts = BlendCastSocket(l->tosock.get());
+        if (to == nullptr) {
+            continue;
+        }
+        const char *toSock = sockLabel(ts);
+        BlendTexUsageHit hit;
+        const bool classified = BlendClassifySocketUsage(toSock, *to, hit);
+        if (classified) {
+            if (!already(hit)) {
+                out.push_back(hit);
+            }
+            // Mix.Fac: Color comes from Color1/Color2 - do not attribute Mix Color to this map.
+            // ColorRamp.Fac: Fac selects ramp color - keep walking through the ramp.
+            if (std::strcmp(hit.usage, "mixFac") == 0 && BlendNodeIsMixColor(*to)) {
+                continue;
+            }
+        }
+        if (BlendNodeIsGroupOutput(*to)) {
+            // Cross into host ShaderNodeGroup outputs.
+            if (hostGraph != nullptr && hostGroup != nullptr) {
+                for (const bNodeLink *hl : hostGraph->links) {
+                    if (hl == nullptr || BlendCastNode(hl->fromnode.get()) != hostGroup) {
+                        continue;
+                    }
+                    const bNodeSocket *hos = BlendCastSocket(hl->fromsock.get());
+                    if (hos == nullptr || ts == nullptr) {
+                        continue;
+                    }
+                    const bool nameHit =
+                            (hos->identifier[0] && ts->identifier[0] &&
+                                    std::strcmp(hos->identifier, ts->identifier) == 0) ||
+                            BlendSockNameIs(*hos, ts->name) || BlendSockNameIs(*ts, hos->name);
+                    if (!nameHit) {
+                        continue;
+                    }
+                    const bNode *hnt = BlendCastNode(hl->tonode.get());
+                    if (hnt == nullptr) {
+                        continue;
+                    }
+                    const bNodeSocket *hts = BlendCastSocket(hl->tosock.get());
+                    BlendTexUsageHit hh;
+                    if (BlendClassifySocketUsage(sockLabel(hts), *hnt, hh) && !already(hh)) {
+                        out.push_back(hh);
+                    }
+                    if (!BlendNodeIsTexWalkBarrier(*hnt) || BlendNodeIsNormalMap(*hnt) ||
+                            BlendNodeIsBump(*hnt) || BlendNodeIsDisplacement(*hnt)) {
+                        BlendCollectTexImageUsages(*hostGraph, hnt, out, depth + 1, nullptr, nullptr);
+                    }
+                }
+            }
+            continue;
+        }
+        if (BlendNodeIsGroup(*to)) {
+            const bNodeTree *gt = BlendNodeGroupTree(*to);
+            if (gt == nullptr || ts == nullptr) {
+                continue;
+            }
+            const BlendNodeGraph sub = BlendBuildGraph(*gt);
+            // Enter only via Group Input outputs that match the fed group input socket.
+            for (const bNode *gin : sub.nodes) {
+                if (gin == nullptr || !BlendNodeIsGroupInput(*gin)) {
+                    continue;
+                }
+                for (const bNodeLink *il : sub.links) {
+                    if (il == nullptr || BlendCastNode(il->fromnode.get()) != gin) {
+                        continue;
+                    }
+                    const bNodeSocket *fos = BlendCastSocket(il->fromsock.get());
+                    if (fos == nullptr) {
+                        continue;
+                    }
+                    const bool nameHit =
+                            (fos->identifier[0] && ts->identifier[0] &&
+                                    std::strcmp(fos->identifier, ts->identifier) == 0) ||
+                            BlendSockNameIs(*fos, ts->name) || BlendSockNameIs(*ts, fos->name) ||
+                            (ts->identifier[0] && BlendSockNameIs(*fos, ts->identifier));
+                    if (!nameHit) {
+                        continue;
+                    }
+                    const bNode *inner = BlendCastNode(il->tonode.get());
+                    if (inner == nullptr) {
+                        continue;
+                    }
+                    BlendTexUsageHit ih;
+                    const bNodeSocket *its = BlendCastSocket(il->tosock.get());
+                    if (BlendClassifySocketUsage(sockLabel(its), *inner, ih) && !already(ih)) {
+                        out.push_back(ih);
+                        if (std::strcmp(ih.usage, "mixFac") == 0) {
+                            continue;
+                        }
+                    }
+                    if (!BlendNodeIsTexWalkBarrier(*inner) || BlendNodeIsNormalMap(*inner) ||
+                            BlendNodeIsBump(*inner) || BlendNodeIsDisplacement(*inner)) {
+                        BlendCollectTexImageUsages(sub, inner, out, depth + 1, &g, to);
+                    }
+                }
+            }
+            continue;
+        }
+        if (BlendNodeIsTexWalkBarrier(*to)) {
+            continue;
+        }
+        // Continue through filters / mix / ramp / reroute / normal / bump.
+        BlendCollectTexImageUsages(g, to, out, depth + 1, hostGraph, hostGroup);
+    }
+}
+
+bool BlendMatHasTextureFile(const aiMaterial *mout, aiTextureType type, const aiString &file) {
+    if (mout == nullptr || file.length == 0) {
+        return false;
+    }
+    const unsigned n = mout->GetTextureCount(type);
+    for (unsigned i = 0; i < n; ++i) {
+        aiString path;
+        if (mout->Get(AI_MATKEY_TEXTURE(type, i), path) == AI_SUCCESS &&
+                std::strcmp(path.C_Str(), file.C_Str()) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Fully typed = same $tex.file slot also has $tex.blend.usage (no invent). */
+bool BlendMatHasFullyTypedFile(const aiMaterial *mout, const aiString &file) {
+    if (mout == nullptr || file.length == 0) {
+        return false;
+    }
+    for (int ti = 1; ti <= static_cast<int>(aiTextureType_UNKNOWN); ++ti) {
+        const auto type = static_cast<aiTextureType>(ti);
+        const unsigned n = mout->GetTextureCount(type);
+        for (unsigned i = 0; i < n; ++i) {
+            aiString path;
+            if (mout->Get(AI_MATKEY_TEXTURE(type, i), path) != AI_SUCCESS ||
+                    std::strcmp(path.C_Str(), file.C_Str()) != 0) {
+                continue;
+            }
+            aiString usage;
+            if (mout->Get("$tex.blend.usage", type, i, usage) == AI_SUCCESS && usage.length > 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * Linked maps.inventory TexImages -> typed $tex.file + usage meta.
+ * typed=true only when $tex.file AND $tex.blend.usage Present (fully typed).
+ * Unlinked / usage-unresolved stay in inventory (honest leftover).
+ */
+void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
+        std::vector<BlendMapInventoryEntry> &inventory, Assimp::Blender::ConversionData &conv_data,
+        unsigned matIndex, const BlendNodeGraph &rootG) {
+    using namespace Assimp::Blender;
+    if (mout == nullptr) {
+        return;
+    }
+    (void)flat;
+
+    for (BlendMapInventoryEntry &e : inventory) {
+        // Unlinked Previz stay inventory-only (no usage invent).
+        if (e.img == nullptr || e.node == nullptr || !e.linked) {
+            continue;
+        }
+        // Resolve UV once for this TexImage node.
+        BlendTexMap map;
+        BlendFillTexMap(rootG, e.node, map);
+        if (!map.img) {
+            map.img = e.img;
+        }
+        // Usages: search from node in root; if node lives in a nested group, walk each group.
+        std::vector<BlendTexUsageHit> hits;
+        BlendCollectTexImageUsages(rootG, e.node, hits);
+        if (hits.empty()) {
+            for (const bNode *gn : rootG.nodes) {
+                if (gn == nullptr || !BlendNodeIsGroup(*gn)) {
+                    continue;
+                }
+                const bNodeTree *gt = BlendNodeGroupTree(*gn);
+                if (gt == nullptr) {
+                    continue;
+                }
+                const BlendNodeGraph sub = BlendBuildGraph(*gt);
+                bool inSub = false;
+                for (const bNode *sn : sub.nodes) {
+                    if (sn == e.node) {
+                        inSub = true;
+                        break;
+                    }
+                }
+                if (!inSub) {
+                    // deeper nesting: one more level
+                    for (const bNode *sn : sub.nodes) {
+                        if (sn == nullptr || !BlendNodeIsGroup(*sn)) {
+                            continue;
+                        }
+                        const bNodeTree *gt2 = BlendNodeGroupTree(*sn);
+                        if (gt2 == nullptr) {
+                            continue;
+                        }
+                        const BlendNodeGraph sub2 = BlendBuildGraph(*gt2);
+                        for (const bNode *sn2 : sub2.nodes) {
+                            if (sn2 == e.node) {
+                                BlendCollectTexImageUsages(sub2, e.node, hits, 0, &sub, sn);
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                BlendCollectTexImageUsages(sub, e.node, hits, 0, &rootG, gn);
+            }
+        }
+        // UV for nested nodes: BlendFillTexMap on root may miss; try again with empty uv ok.
+        if (map.uvname[0] == '\0') {
+            BlendFillTexMap(rootG, e.node, map);
+            if (!map.img) {
+                map.img = e.img;
+            }
+        }
+
+        if (hits.empty()) {
+            // Linked but usage unresolved - keep inventory (teilresolved / honest).
+            continue;
+        }
+        aiString embedName;
+        if (!BlendEnsureEmbeddedImage(e.img, conv_data, embedName)) {
+            // No file/embed Presence - keep inventory, do not invent typed slot.
+            continue;
+        }
+        for (const BlendTexUsageHit &h : hits) {
+            if (h.usage == nullptr || h.usage[0] == '\0') {
+                continue;
+            }
+            // Already fully typed for this file - skip duplicate slot.
+            if (BlendMatHasFullyTypedFile(mout, embedName) &&
+                    BlendMatHasTextureFile(mout, h.type, embedName)) {
+                continue;
+            }
+            if (BlendMatHasTextureFile(mout, h.type, embedName)) {
+                // File present without usage (legacy flatten) - attach usage on existing slot.
+                const unsigned n = mout->GetTextureCount(h.type);
+                for (unsigned si = 0; si < n; ++si) {
+                    aiString path;
+                    if (mout->Get(AI_MATKEY_TEXTURE(h.type, si), path) != AI_SUCCESS ||
+                            std::strcmp(path.C_Str(), embedName.C_Str()) != 0) {
+                        continue;
+                    }
+                    aiString existing;
+                    if (mout->Get("$tex.blend.usage", h.type, si, existing) == AI_SUCCESS &&
+                            existing.length > 0) {
+                        break;
+                    }
+                    aiString usage(h.usage);
+                    mout->AddProperty(&usage, "$tex.blend.usage", h.type, si);
+                    if (h.socket[0] != '\0') {
+                        aiString sock(h.socket);
+                        mout->AddProperty(&sock, "$tex.blend.socket", h.type, si);
+                    }
+                    if (e.node->name[0] != '\0') {
+                        aiString nname(e.node->name);
+                        mout->AddProperty(&nname, "$tex.blend.node", h.type, si);
+                    }
+                    break;
+                }
+                continue;
+            }
+            const unsigned slot = conv_data.next_texture[h.type]++;
+            mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(h.type, slot));
+            const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
+            BlendEmitUvWsrc(mout, h.type, slot, uvIndex);
+            aiString usage(h.usage);
+            mout->AddProperty(&usage, "$tex.blend.usage", h.type, slot);
+            if (h.socket[0] != '\0') {
+                aiString sock(h.socket);
+                mout->AddProperty(&sock, "$tex.blend.socket", h.type, slot);
+            }
+            if (e.node->name[0] != '\0') {
+                aiString nname(e.node->name);
+                mout->AddProperty(&nname, "$tex.blend.node", h.type, slot);
+            }
+            // Mirror BASE onto DIFFUSE (Looks compat) with same usage meta.
+            if (h.type == aiTextureType_BASE_COLOR &&
+                    !BlendMatHasTextureFile(mout, aiTextureType_DIFFUSE, embedName)) {
+                const unsigned dslot = conv_data.next_texture[aiTextureType_DIFFUSE]++;
+                mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(aiTextureType_DIFFUSE, dslot));
+                BlendEmitUvWsrc(mout, aiTextureType_DIFFUSE, dslot, uvIndex);
+                mout->AddProperty(&usage, "$tex.blend.usage", aiTextureType_DIFFUSE, dslot);
+            }
+        }
+    }
+    // Reconcile: fully typed only when $tex.file + $tex.blend.usage Present.
+    for (BlendMapInventoryEntry &e : inventory) {
+        if (e.img == nullptr) {
+            e.typed = false;
+            continue;
+        }
+        aiString embedName;
+        if (!BlendEnsureEmbeddedImage(e.img, conv_data, embedName)) {
+            e.typed = false;
+            continue;
+        }
+        e.typed = BlendMatHasFullyTypedFile(mout, embedName);
+    }
+}
+
+struct BlendWorldEnvFlat {
+    const Assimp::Blender::Image *img{ nullptr };
+    bool hasStrength{ false };
+    float strength{ 0.f };
+};
+
+BlendWorldEnvFlat BlendFlattenWorldNodes(const Assimp::Blender::World &world) {
+    using namespace Assimp::Blender;
+    BlendWorldEnvFlat out;
+    if (!world.nodetree) {
+        return out;
+    }
+    const BlendNodeGraph g = BlendBuildGraph(*world.nodetree);
+    const bNode *outputNode = nullptr;
+    for (const bNode *n : g.nodes) {
+        if (n != nullptr && BlendNodeIsOutputWorld(*n)) {
+            outputNode = n;
+            break;
+        }
+    }
+    if (outputNode == nullptr) {
+        return out;
+    }
+    const bNode *bg = nullptr;
+    for (std::shared_ptr<ElemBase> cur = outputNode->inputs.first; cur;) {
+        const bNodeSocket *sock = BlendCastSocket(cur.get());
+        if (sock == nullptr) {
+            break;
+        }
+        if (BlendSockNameIs(*sock, "Surface") || BlendSockNameIs(*sock, "surface")) {
+            const bNodeLink *l = g.FindLinkToSocket(*sock);
+            if (l) {
+                bg = BlendCastNode(l->fromnode.get());
+            }
+        }
+        cur = sock->next;
+    }
+    if (bg == nullptr) {
+        return out;
+    }
+    // Peel single Reroute.
+    if ((bg->idname[0] != '\0' && std::strcmp(bg->idname, "NodeReroute") == 0) || bg->type == kSH_NODE_REROUTE) {
+        for (const bNodeLink *rl : g.links) {
+            if (BlendCastNode(rl->tonode.get()) == bg) {
+                bg = BlendCastNode(rl->fromnode.get());
+                break;
+            }
+        }
+    }
+    if (bg == nullptr || !BlendNodeIsBackground(*bg)) {
+        return out;
+    }
+    for (std::shared_ptr<ElemBase> cur = bg->inputs.first; cur;) {
+        const bNodeSocket *sock = BlendCastSocket(cur.get());
+        if (sock == nullptr) {
+            break;
+        }
+        if (BlendSockNameIs(*sock, "Color") || BlendSockNameIs(*sock, "color")) {
+            const bNodeLink *l = g.FindLinkToSocket(*sock);
+            if (l) {
+                const bNode *src = BlendCastNode(l->fromnode.get());
+                if (src != nullptr && (BlendNodeIsTexEnvironment(*src) || BlendNodeIsTexImage(*src))) {
+                    out.img = BlendNodeImage(*src);
+                }
+            }
+        } else if (BlendSockNameIs(*sock, "Strength") || BlendSockNameIs(*sock, "strength")) {
+            if (!g.FindLinkToSocket(*sock)) {
+                float s = 0.f;
+                if (BlendReadSocketFloat(*sock, s)) {
+                    out.hasStrength = true;
+                    out.strength = s;
+                }
+            }
+        }
+        cur = sock->next;
+    }
+    return out;
+}
+
+void BlendEmitWorldEnv(const Assimp::Blender::Scene &in, Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    conv.worldEnvJson.clear();
+    if (!in.world) {
+        return;
+    }
+    const BlendWorldEnvFlat flat = BlendFlattenWorldNodes(*in.world);
+    if (flat.img == nullptr) {
+        return;
+    }
+    aiString embedName;
+    int embedIndex = -1;
+    if (!BlendEnsureEmbeddedImage(flat.img, conv, embedName, &embedIndex)) {
+        return;
+    }
+    // Presence: only emit worldEnv when an Environment/Image Texture Image was resolved.
+    std::ostringstream wj;
+    wj << '{';
+    const char *disp = BlendImageDisplayPath(flat.img);
+    bool first = true;
+    auto sep = [&]() {
+        if (!first) {
+            wj << ',';
+        }
+        first = false;
+    };
+    if (flat.img->name[0] != '\0') {
+        sep();
+        wj << "\"image\":\"" << BlendJsonEscape(flat.img->name + 2) << '"';
+    }
+    if (disp != nullptr && disp[0] != '\0') {
+        sep();
+        wj << "\"path\":\"" << BlendJsonEscape(disp) << '"';
+    }
+    if (embedIndex >= 0) {
+        sep();
+        wj << "\"embed\":\"*" << embedIndex << '"';
+    }
+    sep();
+    wj << "\"projection\":\"equirectangular\"";
+    if (flat.hasStrength) {
+        sep();
+        wj << "\"strength\":" << flat.strength;
+    }
+    wj << '}';
+    conv.worldEnvJson = wj.str();
+}
+
+std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
+        Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    (void)conv;
+    if (!mat.nodetree) {
+        return {};
+    }
+    const BlendNodeGraph g = BlendBuildGraph(*mat.nodetree);
+    std::ostringstream nj;
+    // Host-eval policy: emit authored socket defaults + ColorBand + links so the
+    // renderer Look can implement Brick/Ramp (no Assimp bake; no invent).
+    nj << "{\"schemaVersion\":1,\"eval\":\"host\",\"assimpEval\":false,\"nodes\":[";
+    bool nfirst = true;
+    bool sawBrick = false;
+    bool sawRamp = false;
+    for (const bNode *n : g.nodes) {
+        if (n == nullptr) {
+            continue;
+        }
+        if (!nfirst) {
+            nj << ',';
+        }
+        nfirst = false;
+        nj << '{';
+        if (n->idname[0] != '\0') {
+            nj << "\"idname\":\"" << BlendJsonEscape(n->idname) << '"';
+        } else {
+            nj << "\"type\":" << n->type;
+        }
+        if (n->name[0] != '\0') {
+            nj << ",\"name\":\"" << BlendJsonEscape(n->name) << '"';
+        }
+        if (BlendNodeIsTexBrick(*n)) {
+            nj << ",\"procedural\":\"TexBrick\"";
+            sawBrick = true;
+        } else if (BlendNodeIsColorRamp(*n)) {
+            nj << ",\"procedural\":\"ColorRamp\"";
+            sawRamp = true;
+        } else if (BlendNodeIsTexNoise(*n)) {
+            nj << ",\"procedural\":\"TexNoise\"";
+        } else if (BlendNodeIsTexMusgrave(*n)) {
+            nj << ",\"procedural\":\"TexMusgrave\"";
+        } else if (BlendNodeIsMapping(*n)) {
+            // Host 0aj: Mapping Location/Rotation/Scale defaults for Image + procedural paths.
+            nj << ",\"kind\":\"Mapping\"";
+        } else if (BlendNodeIsAddShader(*n)) {
+            nj << ",\"kind\":\"AddShader\"";
+        } else if (BlendNodeIsEmission(*n)) {
+            nj << ",\"kind\":\"Emission\"";
+        } else if (BlendNodeIsMixColor(*n)) {
+            nj << ",\"kind\":\"Mix\"";
+        }
+
+        // Unlinked input socket defaults (Presence - omit linked / unread).
+        // Vector (SOCK_VECTOR): Mapping Location/Rotation/Scale and Tex Image Vector, etc.
+        nj << ",\"inputs\":[";
+        bool ifirst = true;
+        bool haveLoc = false, haveRot = false, haveScl = false;
+        for (std::shared_ptr<ElemBase> cur = n->inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            const bool linked = g.FindLinkToSocket(*sock) != nullptr;
+            float f = 0.f;
+            float rgba[4] = { 0, 0, 0, 0 };
+            float vec[3] = { 0, 0, 0 };
+            const bool gotF = !linked && BlendReadSocketFloat(*sock, f);
+            const bool gotC = !linked && BlendReadSocketColor(*sock, rgba);
+            const bool gotV = !linked && BlendReadSocketVector(*sock, vec);
+            if (gotF || gotC || gotV || linked) {
+                if (!ifirst) {
+                    nj << ',';
+                }
+                ifirst = false;
+                const char *sname = sock->identifier[0] != '\0' ? sock->identifier : sock->name;
+                nj << "{\"name\":\"" << BlendJsonEscape(sname) << '"';
+                if (linked) {
+                    nj << ",\"linked\":true";
+                } else if (gotC) {
+                    nj << ",\"rgba\":[" << rgba[0] << ',' << rgba[1] << ',' << rgba[2] << ',' << rgba[3] << ']';
+                } else if (gotV) {
+                    nj << ",\"vector\":[" << vec[0] << ',' << vec[1] << ',' << vec[2] << ']';
+                    if (BlendSockNameIsAny(*sock, { "Location" })) {
+                        haveLoc = true;
+                    } else if (BlendSockNameIsAny(*sock, { "Rotation" })) {
+                        haveRot = true;
+                    } else if (BlendSockNameIsAny(*sock, { "Scale" })) {
+                        haveScl = true;
+                    }
+                } else if (gotF) {
+                    nj << ",\"value\":" << f;
+                }
+                nj << '}';
+            }
+            cur = sock->next;
+        }
+        // Pre-2.81 Mapping: Location/Rotation/Scale lived in TexMapping storage, not sockets.
+        if (BlendNodeIsMapping(*n) && n->storage && n->storage->dna_type &&
+                std::strcmp(n->storage->dna_type, "TexMapping") == 0) {
+            const auto *tm = static_cast<const TexMapping *>(n->storage.get());
+            auto emitVec = [&](const char *name, const float v[3], bool &have) {
+                if (have) {
+                    return;
+                }
+                if (!ifirst) {
+                    nj << ',';
+                }
+                ifirst = false;
+                nj << "{\"name\":\"" << name << "\",\"vector\":[" << v[0] << ',' << v[1] << ',' << v[2]
+                   << "],\"source\":\"TexMapping\"}";
+                have = true;
+            };
+            emitVec("Location", tm->loc, haveLoc);
+            emitVec("Rotation", tm->rot, haveRot);
+            emitVec("Scale", tm->size, haveScl);
+        }
+        nj << ']';
+
+        // ColorRamp storage (ColorBand stops).
+        if (n->storage && n->storage->dna_type != nullptr &&
+                std::strcmp(n->storage->dna_type, "ColorBand") == 0) {
+            const auto *band = static_cast<const ColorBand *>(n->storage.get());
+            const int tot = std::max(0, std::min(static_cast<int>(band->tot), 32));
+            nj << ",\"colorBand\":{\"tot\":" << tot << ",\"ipotype\":" << static_cast<int>(band->ipotype)
+               << ",\"elements\":[";
+            for (int ei = 0; ei < tot; ++ei) {
+                if (ei) {
+                    nj << ',';
+                }
+                const CBData &e = band->data[ei];
+                nj << "{\"pos\":" << e.pos << ",\"rgba\":[" << e.r << ',' << e.g << ',' << e.b << ',' << e.a << "]}";
+            }
+            nj << "]}";
+        }
+        // Musgrave / Noise type Presence (SHD_MUSGRAVE_* == SHD_NOISE_*; omit if unread).
+        if (n->storage && n->storage->dna_type != nullptr) {
+            int musgraveType = -1;
+            if (std::strcmp(n->storage->dna_type, "NodeTexNoise") == 0) {
+                const auto *noise = static_cast<const NodeTexNoise *>(n->storage.get());
+                musgraveType = static_cast<int>(noise->type);
+            } else if (std::strcmp(n->storage->dna_type, "NodeTexMusgrave") == 0) {
+                const auto *mus = static_cast<const NodeTexMusgrave *>(n->storage.get());
+                musgraveType = mus->musgrave_type;
+            }
+            if (musgraveType >= 0) {
+                nj << ",\"musgraveType\":" << musgraveType;
+                if (const char *alias = BlendMusgraveTypeAlias(musgraveType)) {
+                    nj << ",\"musgraveTypeName\":\"" << alias << '"';
+                }
+            }
+        }
+        nj << '}';
+    }
+    nj << "],\"links\":[";
+    bool lfirst = true;
+    for (const bNodeLink *l : g.links) {
+        if (l == nullptr) {
+            continue;
+        }
+        const bNode *fn = BlendCastNode(l->fromnode.get());
+        const bNode *tn = BlendCastNode(l->tonode.get());
+        const bNodeSocket *fs = BlendCastSocket(l->fromsock.get());
+        const bNodeSocket *ts = BlendCastSocket(l->tosock.get());
+        if (fn == nullptr || tn == nullptr) {
+            continue;
+        }
+        if (!lfirst) {
+            nj << ',';
+        }
+        lfirst = false;
+        nj << "{\"from\":\"" << BlendJsonEscape(fn->name) << "\",\"to\":\"" << BlendJsonEscape(tn->name) << '"';
+        if (fs != nullptr) {
+            const char *sn = fs->identifier[0] != '\0' ? fs->identifier : fs->name;
+            nj << ",\"fromSock\":\"" << BlendJsonEscape(sn) << '"';
+        }
+        if (ts != nullptr) {
+            const char *sn = ts->identifier[0] != '\0' ? ts->identifier : ts->name;
+            nj << ",\"toSock\":\"" << BlendJsonEscape(sn) << '"';
+        }
+        nj << '}';
+    }
+    nj << ']';
+    if (sawBrick || sawRamp) {
+        nj << ",\"hostProcedural\":[";
+        bool pfirst = true;
+        if (sawBrick) {
+            nj << "\"TexBrick\"";
+            pfirst = false;
+        }
+        if (sawRamp) {
+            if (!pfirst) {
+                nj << ',';
+            }
+            nj << "\"ColorRamp\"";
+        }
+        nj << ']';
+    }
+    nj << '}';
+    // Honesty: Assimp does not CPU-eval the graph; Host Look may. Do not list
+    // TexBrick/ColorRamp under skipped[] when params were emitted for hostEval.
+    return nj.str();
 }
 
 void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
@@ -2315,16 +3751,2775 @@ void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
         aiColor3D emit(flat.emissionColor[0] * s, flat.emissionColor[1] * s, flat.emissionColor[2] * s);
         mout->AddProperty(&emit, 1, AI_MATKEY_COLOR_EMISSIVE);
     }
-    BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_BASE_COLOR, conv_data, matIndex);
+    BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_BASE_COLOR, conv_data, matIndex, "baseColor");
     if (flat.mapBaseColor) {
-        BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_DIFFUSE, conv_data, matIndex);
+        BlendAttachNodeImage(mout, flat.mapBaseColor, aiTextureType_DIFFUSE, conv_data, matIndex, "baseColor");
     }
-    BlendAttachNodeImage(mout, flat.mapRoughness, aiTextureType_DIFFUSE_ROUGHNESS, conv_data, matIndex);
-    BlendAttachNodeImage(mout, flat.mapMetallic, aiTextureType_METALNESS, conv_data, matIndex);
-    BlendAttachNodeImage(mout, flat.mapNormal, aiTextureType_NORMALS, conv_data, matIndex);
-    BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data, matIndex);
+    BlendAttachNodeImage(mout, flat.mapRoughness, aiTextureType_DIFFUSE_ROUGHNESS, conv_data, matIndex, "roughness");
+    BlendAttachNodeImage(mout, flat.mapMetallic, aiTextureType_METALNESS, conv_data, matIndex, "metallic");
+    BlendAttachNodeImage(mout, flat.mapNormal, aiTextureType_NORMALS, conv_data, matIndex, "normal");
+    BlendAttachNodeImage(mout, flat.mapEmission, aiTextureType_EMISSIVE, conv_data, matIndex, "emission");
 }
 
+static std::string BlendMapJson(const BlendTexMap &map) {
+    if (!map.img || map.img->name[0] == '\0') {
+        return "null";
+    }
+    // Prefer image datablock name; append uv layer when C6 UV Map resolved it.
+    if (map.uvname[0] != '\0') {
+        return std::string("{\"image\":\"") + BlendJsonEscape(map.img->name) + "\",\"uv\":\"" +
+               BlendJsonEscape(map.uvname) + "\"}";
+    }
+    return std::string("\"") + BlendJsonEscape(map.img->name) + '"';
+}
+
+std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, const BlendShaderFlat &flat,
+        Assimp::Blender::ConversionData &conv_data,
+        const std::vector<BlendMapInventoryEntry> &inventory) {
+    std::ostringstream mjson;
+    mjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"BLEND_shader\":{";
+    mjson << "\"name\":\"" << BlendJsonEscape(mat.id.name + 2) << '"';
+    if (mat.nodetree) {
+        mjson << ",\"use_nodes\":true,\"engine\":\"CYCLES|EEVEE\"";
+        if (flat.ok && flat.output != nullptr) {
+            mjson << ",\"output\":\"" << BlendJsonEscape(flat.output) << '"';
+        }
+        if (flat.mixedGraph) {
+            mjson << ",\"mixedGraph\":true";
+        }
+        if (flat.addShader) {
+            mjson << ",\"addShader\":true";
+        }
+    } else {
+        mjson << ",\"use_nodes\":false,\"engine\":\"INTERNAL\"";
+    }
+    mjson << '}';
+    if (flat.HasAnyFactor()) {
+        mjson << ",\"BLEND_shader_principled\":{";
+        bool first = true;
+        auto sep = [&]() {
+            if (!first) {
+                mjson << ',';
+            }
+            first = false;
+        };
+        if (flat.hasBaseColor) {
+            sep();
+            mjson << "\"baseColor\":[" << flat.baseColor[0] << ',' << flat.baseColor[1] << ','
+                  << flat.baseColor[2] << ',' << flat.baseColor[3] << ']';
+        }
+        if (flat.hasMetallic) {
+            sep();
+            mjson << "\"metallic\":" << flat.metallic;
+        }
+        if (flat.hasRoughness) {
+            sep();
+            mjson << "\"roughness\":" << flat.roughness;
+        }
+        if (flat.hasIor) {
+            sep();
+            mjson << "\"ior\":" << flat.ior;
+        }
+        if (flat.hasTransmission) {
+            sep();
+            mjson << "\"transmission\":" << flat.transmission;
+        }
+        if (flat.hasAlpha) {
+            sep();
+            mjson << "\"alpha\":" << flat.alpha;
+        }
+        if (flat.hasEmissionColor) {
+            sep();
+            mjson << "\"emissionColor\":[" << flat.emissionColor[0] << ',' << flat.emissionColor[1] << ','
+                  << flat.emissionColor[2] << ']';
+        }
+        if (flat.hasEmissionStrength) {
+            sep();
+            mjson << "\"emissionStrength\":" << flat.emissionStrength;
+        }
+        if (flat.hasCoatWeight) {
+            sep();
+            mjson << "\"coatWeight\":" << flat.coatWeight;
+        }
+        if (flat.hasCoatRoughness) {
+            sep();
+            mjson << "\"coatRoughness\":" << flat.coatRoughness;
+        }
+        if (flat.mapBaseColor || flat.mapRoughness || flat.mapMetallic || flat.mapNormal || flat.mapEmission) {
+            sep();
+            mjson << "\"maps\":{\"baseColor\":" << BlendMapJson(flat.mapBaseColor)
+                  << ",\"roughness\":" << BlendMapJson(flat.mapRoughness)
+                  << ",\"metallic\":" << BlendMapJson(flat.mapMetallic)
+                  << ",\"normal\":" << BlendMapJson(flat.mapNormal)
+                  << ",\"emission\":" << BlendMapJson(flat.mapEmission) << '}';
+        }
+        mjson << '}';
+    }
+    // Leftover only: unlinked / usage-unresolved / no file+usage. Omit key if empty.
+    bool anyInv = false;
+    for (const BlendMapInventoryEntry &e : inventory) {
+        if (e.img != nullptr && !e.typed) {
+            anyInv = true;
+            break;
+        }
+    }
+    if (anyInv) {
+        mjson << ",\"maps\":{\"inventory\":[";
+        bool ifirst = true;
+        for (const BlendMapInventoryEntry &e : inventory) {
+            if (e.img == nullptr || e.typed) {
+                continue;
+            }
+            aiString embedName;
+            int embedIndex = -1;
+            const bool hasFile = BlendEnsureEmbeddedImage(e.img, conv_data, embedName, &embedIndex);
+            if (!ifirst) {
+                mjson << ',';
+            }
+            ifirst = false;
+            mjson << '{';
+            if (e.img->name[0] != '\0') {
+                mjson << "\"image\":\"" << BlendJsonEscape(e.img->name + 2) << '"';
+            }
+            if (e.node != nullptr && e.node->name[0] != '\0') {
+                mjson << ",\"node\":\"" << BlendJsonEscape(e.node->name) << '"';
+            }
+            mjson << ",\"linked\":" << (e.linked ? "true" : "false");
+            mjson << ",\"hasEmbed\":" << ((hasFile && embedIndex >= 0) ? "true" : "false");
+            mjson << ",\"usageResolved\":false";
+            if (hasFile && embedIndex >= 0) {
+                mjson << ",\"embed\":\"*" << embedIndex << '"';
+            } else if (hasFile && embedName.length > 0) {
+                mjson << ",\"path\":\"" << BlendJsonEscape(embedName.C_Str()) << '"';
+            }
+            mjson << '}';
+        }
+        mjson << "]}";
+    }
+    if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityDefault ||
+            flat.hasVolumeDensityLinked || flat.hasVolumeDensityAttribute || flat.hasVolumeAnisotropy ||
+            flat.hasVolumeAbsorptionColor || flat.hasVolumeEmissionColor || flat.hasVolumeEmissionStrength) {
+        mjson << ",\"BLEND_shader_volume\":{";
+        bool vfirst = true;
+        auto vsep = [&]() {
+            if (!vfirst) {
+                mjson << ',';
+            }
+            vfirst = false;
+        };
+        vsep();
+        mjson << "\"output\":\"Principled Volume\"";
+        if (flat.hasVolumeColor) {
+            vsep();
+            mjson << "\"color\":[" << flat.volumeColor[0] << ',' << flat.volumeColor[1] << ','
+                  << flat.volumeColor[2] << ',' << flat.volumeColor[3] << ']';
+        }
+        if (flat.hasVolumeDensity) {
+            vsep();
+            mjson << "\"density\":" << flat.volumeDensity;
+        }
+        if (flat.hasVolumeDensityLinked) {
+            vsep();
+            mjson << "\"densityLinked\":true";
+        }
+        if (flat.hasVolumeDensityDefault) {
+            vsep();
+            mjson << "\"densityDefault\":" << flat.volumeDensityDefault;
+        }
+        if (flat.hasVolumeDensityAttribute) {
+            vsep();
+            mjson << "\"densityAttribute\":\"" << BlendJsonEscape(flat.volumeDensityAttribute) << '"';
+        }
+        if (flat.hasVolumeAnisotropy) {
+            vsep();
+            mjson << "\"anisotropy\":" << flat.volumeAnisotropy;
+        }
+        if (flat.hasVolumeAbsorptionColor) {
+            vsep();
+            mjson << "\"absorptionColor\":[" << flat.volumeAbsorptionColor[0] << ','
+                  << flat.volumeAbsorptionColor[1] << ',' << flat.volumeAbsorptionColor[2] << ','
+                  << flat.volumeAbsorptionColor[3] << ']';
+        }
+        if (flat.hasVolumeEmissionStrength) {
+            vsep();
+            mjson << "\"emissionStrength\":" << flat.volumeEmissionStrength;
+        }
+        if (flat.hasVolumeEmissionColor) {
+            vsep();
+            mjson << "\"emissionColor\":[" << flat.volumeEmissionColor[0] << ','
+                  << flat.volumeEmissionColor[1] << ',' << flat.volumeEmissionColor[2] << ','
+                  << flat.volumeEmissionColor[3] << ']';
+        }
+        mjson << '}';
+    }
+    {
+        const std::string net = BlendBuildShaderNetworkJson(mat, conv_data);
+        if (!net.empty()) {
+            mjson << ",\"BLEND_shader_network\":" << net;
+        }
+    }
+    mjson << '}';
+    return mjson.str();
+}
+
+std::string BuildBlendCustomDataLayersJson(const Assimp::Blender::Mesh *mesh) {
+    using namespace Assimp::Blender;
+    std::ostringstream json;
+    json << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"meshName\":\""
+         << BlendJsonEscape(mesh->id.name + 2) << "\",\"customDataLayers\":[";
+    bool first = true;
+    auto emitLayers = [&](const CustomData &cd, const char *domain) {
+        for (const auto &layer : cd.layers) {
+            if (!layer) {
+                continue;
+            }
+            if (!first) {
+                json << ',';
+            }
+            first = false;
+            json << "{\"domain\":\"" << domain << "\",\"type\":" << layer->type
+                 << ",\"name\":\"" << BlendJsonEscape(layer->name) << "\"}";
+        }
+    };
+    emitLayers(mesh->vdata, "vertex");
+    emitLayers(mesh->ldata, "loop");
+    json << "]}";
+    return json.str();
+}
+
+static const char *BlendRigidShapeName(short shape) {
+    using R = Assimp::Blender::RigidBodyOb;
+    switch (shape) {
+    case R::Shape_Box: return "box";
+    case R::Shape_Sphere: return "sphere";
+    case R::Shape_Capsule: return "capsule";
+    case R::Shape_Cylinder: return "cylinder";
+    case R::Shape_Cone: return "cone";
+    case R::Shape_ConvexH: return "convex";
+    case R::Shape_Trimesh: return "trimesh";
+    case R::Shape_Compound: return "compound";
+    default: return "box";
+    }
+}
+
+/** Emit one mesh triangle soup into KHR_physics_collider_meshes (Presence only). */
+static bool BlendAppendColliderMeshSoup(std::ostringstream &meshesJson, bool &first,
+        int meshIdx, const char *name, const aiMesh *mesh) {
+    if (mesh == nullptr || mesh->mVertices == nullptr || mesh->mNumVertices < 3 ||
+            mesh->mFaces == nullptr || mesh->mNumFaces == 0) {
+        return false;
+    }
+    if (!first) {
+        meshesJson << ',';
+    }
+    first = false;
+    meshesJson << "{\"index\":" << meshIdx << ",\"name\":\"" << BlendJsonEscape(name ? name : "")
+               << "\",\"positions\":[";
+    for (unsigned v = 0; v < mesh->mNumVertices; ++v) {
+        if (v) {
+            meshesJson << ',';
+        }
+        const aiVector3D &p = mesh->mVertices[v];
+        meshesJson << p.x << ',' << p.y << ',' << p.z;
+    }
+    meshesJson << "],\"indices\":[";
+    bool idxFirst = true;
+    for (unsigned f = 0; f < mesh->mNumFaces; ++f) {
+        const aiFace &face = mesh->mFaces[f];
+        if (face.mNumIndices < 3 || face.mIndices == nullptr) {
+            continue;
+        }
+        for (unsigned k = 1; k + 1 < face.mNumIndices; ++k) {
+            if (!idxFirst) {
+                meshesJson << ',';
+            }
+            idxFirst = false;
+            meshesJson << face.mIndices[0] << ',' << face.mIndices[k] << ',' << face.mIndices[k + 1];
+        }
+    }
+    meshesJson << "]}";
+    return !idxFirst;
+}
+
+// Append mesh indices + material bind for fluid/smoke domain/flow visual meshes.
+static void BlendAppendNodeMeshMaterialBind(std::ostringstream &os, const aiNode *node,
+        Assimp::Blender::ConversionData &conv) {
+    if (node == nullptr || node->mNumMeshes == 0) {
+        return;
+    }
+    os << ",\"meshes\":[";
+    for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+        if (i) {
+            os << ',';
+        }
+        os << node->mMeshes[i];
+    }
+    os << ']';
+
+    std::vector<unsigned int> mats;
+    mats.reserve(node->mNumMeshes);
+    for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+        const unsigned int mi = node->mMeshes[i];
+        if (mi >= conv.meshes->size()) {
+            continue;
+        }
+        const aiMesh *mesh = conv.meshes[mi];
+        if (mesh == nullptr || mesh->mMaterialIndex == static_cast<unsigned int>(-1)) {
+            continue;
+        }
+        if (std::find(mats.begin(), mats.end(), mesh->mMaterialIndex) == mats.end()) {
+            mats.push_back(mesh->mMaterialIndex);
+        }
+    }
+    if (mats.empty()) {
+        return;
+    }
+    os << ",\"materialIndex\":" << mats[0];
+    if (mats[0] < conv.materials_raw.size() && conv.materials_raw[mats[0]]) {
+        os << ",\"materialName\":\"" << BlendJsonEscape(conv.materials_raw[mats[0]]->id.name + 2) << '"';
+    }
+    os << ",\"materials\":[";
+    for (size_t i = 0; i < mats.size(); ++i) {
+        if (i) {
+            os << ',';
+        }
+        os << "{\"index\":" << mats[i];
+        if (mats[i] < conv.materials_raw.size() && conv.materials_raw[mats[i]]) {
+            os << ",\"name\":\"" << BlendJsonEscape(conv.materials_raw[mats[i]]->id.name + 2) << '"';
+        }
+        os << '}';
+    }
+    os << ']';
+}
+
+static void BlendPushPhysicsInv(std::vector<Assimp::Blender::ConversionData::PhysicsInvNode> &bag,
+        const char *name, const std::string &json) {
+    Assimp::Blender::ConversionData::PhysicsInvNode entry;
+    entry.name = name ? name : "";
+    entry.json = json;
+    bag.push_back(std::move(entry));
+}
+
+/** Collect sculpt Cloth brushes (Brush.sculpt_tool) into BLEND_physics_cloth Presence. */
+static void BlendCollectClothBrushPresence(Assimp::Blender::ConversionData &conv,
+        const Assimp::Blender::Scene *scene) {
+    using namespace Assimp::Blender;
+    const auto it = conv.db.dna.indices.find("Brush");
+    if (it == conv.db.dna.indices.end()) {
+        return;
+    }
+    const Structure &ss = conv.db.dna.structures[it->second];
+    DNA::FactoryPair builders = conv.db.dna.GetBlobToStructureConverter(ss, conv.db);
+    if (!builders.first || !builders.second) {
+        return;
+    }
+
+    auto deformKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::ClothDeform_Drag: return "drag";
+        case Brush::ClothDeform_Push: return "push";
+        case Brush::ClothDeform_Grab: return "grab";
+        case Brush::ClothDeform_PinchPoint: return "pinch_point";
+        case Brush::ClothDeform_PinchPerpendicular: return "pinch_perpendicular";
+        case Brush::ClothDeform_Inflate: return "inflate";
+        case Brush::ClothDeform_Expand: return "expand";
+        case Brush::ClothDeform_SnakeHook: return "snake_hook";
+        default: return nullptr;
+        }
+    };
+    auto falloffKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::ClothFalloff_Radial: return "radial";
+        case Brush::ClothFalloff_Plane: return "plane";
+        default: return nullptr;
+        }
+    };
+    auto areaKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::ClothArea_Local: return "local";
+        case Brush::ClothArea_Global: return "global";
+        case Brush::ClothArea_Dynamic: return "dynamic";
+        default: return nullptr;
+        }
+    };
+    auto boundaryDeformKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::BoundaryDeform_Bend: return "bend";
+        case Brush::BoundaryDeform_Expand: return "expand";
+        case Brush::BoundaryDeform_Inflate: return "inflate";
+        case Brush::BoundaryDeform_Grab: return "grab";
+        case Brush::BoundaryDeform_Twist: return "twist";
+        case Brush::BoundaryDeform_Smooth: return "smooth";
+        default: return nullptr;
+        }
+    };
+    auto boundaryFalloffKind = [](int t) -> const char * {
+        switch (t) {
+        case Brush::BoundaryFalloff_Constant: return "constant";
+        case Brush::BoundaryFalloff_Radius: return "radius";
+        case Brush::BoundaryFalloff_Loop: return "loop";
+        case Brush::BoundaryFalloff_LoopInvert: return "loop_invert";
+        default: return nullptr;
+        }
+    };
+
+    for (const FileBlockHead &bl : conv.db.entries) {
+        if (bl.dna_index != it->second) {
+            continue;
+        }
+        std::shared_ptr<Brush> brush;
+        conv.db.cache(brush).get(ss, brush, bl.address, 0);
+        if (!brush) {
+            const auto pold = conv.db.reader->GetCurrentPos();
+            const Pointer prevScope = conv.db.active_id_scope;
+            conv.db.reader->SetCurrentPos(bl.start);
+            conv.db.active_id_scope = bl.address;
+            std::shared_ptr<ElemBase> base = (ss.*builders.first)();
+            brush = std::static_pointer_cast<Brush>(base);
+            conv.db.cache(brush).set(ss, brush, bl.address, 0);
+            (ss.*builders.second)(base, conv.db);
+            base->dna_type = ss.name.c_str();
+            conv.db.active_id_scope = prevScope;
+            conv.db.reader->SetCurrentPos(pold);
+        }
+        if (!brush || !brush->hasSculptTool) {
+            continue;
+        }
+        const int tool = static_cast<unsigned char>(brush->sculpt_tool);
+        // DNA eBrushSculptType: SCULPT_BRUSH_TYPE_CLOTH=26, BOUNDARY=30.
+        const bool isClothTool = (tool == Brush::Sculpt_Cloth);
+        const bool isBoundaryCloth = (tool == Brush::Sculpt_Boundary);
+        if (!isClothTool && !isBoundaryCloth) {
+            continue;
+        }
+
+        const char *bname = brush->id.name[2] != '\0' ? brush->id.name + 2 : brush->id.name;
+        std::ostringstream cj;
+        cj << "{\"name\":\"" << BlendJsonEscape(bname)
+           << "\",\"type\":\"cloth\",\"settings\":{"
+           << "\"source\":\"Brush\""
+           << ",\"sculpt_tool\":" << tool
+           << ",\"sculpt_tool_kind\":\"" << (isClothTool ? "cloth" : "boundary") << '"';
+        if (brush->size != 0) {
+            cj << ",\"size\":" << brush->size;
+        }
+        cj << ",\"alpha\":" << brush->alpha;
+        if (brush->hasFlag2) {
+            cj << ",\"flag2\":" << brush->flag2
+               << ",\"cloth_pin_simulation_boundary\":"
+               << ((brush->flag2 & Brush::Flag2_ClothPinSimulationBoundary) ? "true" : "false")
+               << ",\"cloth_use_collision\":"
+               << ((brush->flag2 & Brush::Flag2_ClothUseCollision) ? "true" : "false");
+        }
+        if (brush->hasBoundaryDeform) {
+            cj << ",\"boundary_deform_type\":" << brush->boundary_deform_type;
+            if (const char *bk = boundaryDeformKind(brush->boundary_deform_type)) {
+                cj << ",\"boundary_deform_kind\":\"" << bk << '"';
+            }
+            cj << ",\"boundary_falloff_type\":" << brush->boundary_falloff_type;
+            if (const char *bf = boundaryFalloffKind(brush->boundary_falloff_type)) {
+                cj << ",\"boundary_falloff_kind\":\"" << bf << '"';
+            }
+            cj << ",\"boundary_offset\":" << brush->boundary_offset;
+        }
+        if (brush->hasClothParms) {
+            cj << ",\"cloth_deform_type\":" << brush->cloth_deform_type;
+            if (const char *dk = deformKind(brush->cloth_deform_type)) {
+                cj << ",\"cloth_deform_kind\":\"" << dk << '"';
+            }
+            cj << ",\"cloth_force_falloff_type\":" << brush->cloth_force_falloff_type;
+            if (const char *fk = falloffKind(brush->cloth_force_falloff_type)) {
+                cj << ",\"cloth_force_falloff_kind\":\"" << fk << '"';
+            }
+            cj << ",\"cloth_simulation_area_type\":" << brush->cloth_simulation_area_type;
+            if (const char *ak = areaKind(brush->cloth_simulation_area_type)) {
+                cj << ",\"cloth_simulation_area_kind\":\"" << ak << '"';
+            }
+            cj << ",\"cloth_mass\":" << brush->cloth_mass
+               << ",\"cloth_damping\":" << brush->cloth_damping
+               << ",\"cloth_sim_limit\":" << brush->cloth_sim_limit
+               << ",\"cloth_sim_falloff\":" << brush->cloth_sim_falloff
+               << ",\"cloth_constraint_softbody_strength\":" << brush->cloth_constraint_softbody_strength;
+        }
+        cj << "}}";
+        BlendPushPhysicsInv(conv.physicsClothNodes, bname, cj.str());
+    }
+
+    // Scene sculpt gravity Presence (DNA_scene_types.h Sculpt).
+    if (scene && scene->toolsettings && scene->toolsettings->sculpt) {
+        const Sculpt &sc = *scene->toolsettings->sculpt;
+        if (!sc.hasGravityFactor && !sc.gravity_object) {
+            return;
+        }
+        std::ostringstream gj;
+        gj << "{\"name\":\"Sculpt\",\"type\":\"cloth\",\"settings\":{"
+           << "\"source\":\"Sculpt\"";
+        if (sc.hasGravityFactor) {
+            gj << ",\"gravity_factor\":" << sc.gravity_factor;
+        }
+        if (sc.gravity_object) {
+            const char *gon = sc.gravity_object->id.name[2] != '\0' ?
+                                      sc.gravity_object->id.name + 2 :
+                                      sc.gravity_object->id.name;
+            gj << ",\"gravity_object\":\"" << BlendJsonEscape(gon) << '"';
+        }
+        gj << "}}";
+        BlendPushPhysicsInv(conv.physicsClothNodes, "Sculpt", gj.str());
+    }
+}
+
+// Pre-order DFS indices - same order as Host flattenSceneNodes / skinNodes.
+static void BlendBuildHierarchyIndexMap(const aiNode *node, std::unordered_map<std::string, int> &out, int &next) {
+    if (node == nullptr) {
+        return;
+    }
+    const int self = next++;
+    const char *nm = node->mName.C_Str();
+    if (out.find(nm) == out.end()) {
+        out.emplace(nm, self);
+    }
+    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+        BlendBuildHierarchyIndexMap(node->mChildren[i], out, next);
+    }
+}
+
+static void BlendEmitPhysicsInvBag(std::ostringstream &pjson, const char *key,
+        const std::vector<Assimp::Blender::ConversionData::PhysicsInvNode> &nodes,
+        const std::unordered_map<std::string, int> &nameToIndex) {
+    if (nodes.empty()) {
+        return;
+    }
+    pjson << ",\"" << key << "\":{\"nodes\":[";
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (i) {
+            pjson << ',';
+        }
+        int idx = -1;
+        const auto it = nameToIndex.find(nodes[i].name);
+        if (it != nameToIndex.end()) {
+            idx = it->second;
+        }
+        const std::string &j = nodes[i].json;
+        if (!j.empty() && j[0] == '{') {
+            pjson << "{\"index\":" << idx << ',' << j.substr(1);
+        } else {
+            pjson << j;
+        }
+    }
+    pjson << "]}";
+}
+
+static void BlendAppendLimit(std::ostringstream &limits, bool &first, const char *axesKey, int axis,
+        float mn, float mx) {
+    if (!first) {
+        limits << ',';
+    }
+    first = false;
+    limits << "{\"" << axesKey << "\":[" << axis << "],\"min\":" << mn << ",\"max\":" << mx << '}';
+}
+
+static void BlendEmitKhrPhysics(std::ostringstream &pjson, Assimp::Blender::ConversionData &conv,
+        const std::unordered_map<std::string, int> &nameToIndex, const aiScene *scene) {
+    using namespace Assimp::Blender;
+    if (conv.khrBodies.empty() && conv.khrJoints.empty()) {
+        return;
+    }
+
+    // Unique col_groups masks -> collisionFilters (System_N = bit N).
+    std::vector<int> filterMasks;
+    for (const auto &b : conv.khrBodies) {
+        if (std::find(filterMasks.begin(), filterMasks.end(), b.colGroups) == filterMasks.end()) {
+            filterMasks.push_back(b.colGroups);
+        }
+    }
+    std::ostringstream filters;
+    for (size_t fi = 0; fi < filterMasks.size(); ++fi) {
+        if (fi) {
+            filters << ',';
+        }
+        filters << "{\"collisionSystems\":[";
+        bool firstSys = true;
+        for (int bit = 0; bit < 20; ++bit) {
+            if ((filterMasks[fi] & (1 << bit)) == 0) {
+                continue;
+            }
+            if (!firstSys) {
+                filters << ',';
+            }
+            firstSys = false;
+            filters << "\"System_" << bit << '"';
+        }
+        filters << "],\"collideWithSystems\":[";
+        firstSys = true;
+        for (int bit = 0; bit < 20; ++bit) {
+            if ((filterMasks[fi] & (1 << bit)) == 0) {
+                continue;
+            }
+            if (!firstSys) {
+                filters << ',';
+            }
+            firstSys = false;
+            filters << "\"System_" << bit << '"';
+        }
+        filters << "]}";
+    }
+
+    std::ostringstream joints;
+    std::ostringstream jointNodes;
+    bool jointNodeFirst = true;
+    int emittedJointDefs = 0;
+    for (const ConversionData::KhrJointPending &jp : conv.khrJoints) {
+        if ((jp.flag & RigidBodyCon::Flag_Enabled) == 0) {
+            continue;
+        }
+        std::ostringstream limits;
+        bool limFirst = true;
+        if (jp.flag & RigidBodyCon::Flag_UseLimitLinX) {
+            BlendAppendLimit(limits, limFirst, "linearAxes", 0, jp.limit_lin_x_lower, jp.limit_lin_x_upper);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseLimitLinY) {
+            BlendAppendLimit(limits, limFirst, "linearAxes", 1, jp.limit_lin_y_lower, jp.limit_lin_y_upper);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseLimitLinZ) {
+            BlendAppendLimit(limits, limFirst, "linearAxes", 2, jp.limit_lin_z_lower, jp.limit_lin_z_upper);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseLimitAngX) {
+            BlendAppendLimit(limits, limFirst, "angularAxes", 0, jp.limit_ang_x_lower, jp.limit_ang_x_upper);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseLimitAngY) {
+            BlendAppendLimit(limits, limFirst, "angularAxes", 1, jp.limit_ang_y_lower, jp.limit_ang_y_upper);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseLimitAngZ) {
+            BlendAppendLimit(limits, limFirst, "angularAxes", 2, jp.limit_ang_z_lower, jp.limit_ang_z_upper);
+        }
+
+        std::ostringstream drives;
+        bool drvFirst = true;
+        auto appendSpringDrive = [&](const char *type, int axis, float stiffness, float damping) {
+            // Presence: only when spring flag is set (values may be 0).
+            if (!drvFirst) {
+                drives << ',';
+            }
+            drvFirst = false;
+            drives << "{\"type\":\"" << type << "\",\"mode\":\"force\",\"axis\":" << axis
+                   << ",\"positionTarget\":0,\"velocityTarget\":0"
+                   << ",\"stiffness\":" << stiffness
+                   << ",\"damping\":" << damping << '}';
+        };
+        if (jp.flag & RigidBodyCon::Flag_UseSpringX) {
+            appendSpringDrive("linear", 0, jp.spring_stiffness_x, jp.spring_damping_x);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringY) {
+            appendSpringDrive("linear", 1, jp.spring_stiffness_y, jp.spring_damping_y);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringZ) {
+            appendSpringDrive("linear", 2, jp.spring_stiffness_z, jp.spring_damping_z);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringAngX) {
+            appendSpringDrive("angular", 0, jp.spring_stiffness_ang_x, jp.spring_damping_ang_x);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringAngY) {
+            appendSpringDrive("angular", 1, jp.spring_stiffness_ang_y, jp.spring_damping_ang_y);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseSpringAngZ) {
+            appendSpringDrive("angular", 2, jp.spring_stiffness_ang_z, jp.spring_damping_ang_z);
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseMotorLin) {
+            if (!drvFirst) {
+                drives << ',';
+            }
+            drvFirst = false;
+            drives << "{\"type\":\"linear\",\"mode\":\"force\",\"axis\":0"
+                   << ",\"velocityTarget\":" << jp.motor_lin_target_velocity
+                   << ",\"maxForce\":" << jp.motor_lin_max_impulse << '}';
+        }
+        if (jp.flag & RigidBodyCon::Flag_UseMotorAng) {
+            if (!drvFirst) {
+                drives << ',';
+            }
+            drvFirst = false;
+            drives << "{\"type\":\"angular\",\"mode\":\"force\",\"axis\":0"
+                   << ",\"velocityTarget\":" << jp.motor_ang_target_velocity
+                   << ",\"maxForce\":" << jp.motor_ang_max_impulse << '}';
+        }
+
+        if (emittedJointDefs > 0) {
+            joints << ',';
+        }
+        const int defIdx = emittedJointDefs++;
+        const char *jointTypeName = "generic";
+        switch (jp.type) {
+        case RigidBodyCon::Type_Point: jointTypeName = "point"; break;
+        case RigidBodyCon::Type_Hinge: jointTypeName = "hinge"; break;
+        case RigidBodyCon::Type_Slider: jointTypeName = "slider"; break;
+        case RigidBodyCon::Type_6Dof: jointTypeName = "generic"; break; // limits encode free axes
+        case RigidBodyCon::Type_6DofSpring: jointTypeName = "generic"; break;
+        case RigidBodyCon::Type_Fixed: jointTypeName = "fixed"; break;
+        case RigidBodyCon::Type_Piston: jointTypeName = "slider"; break;
+        case RigidBodyCon::Type_Motor: jointTypeName = "generic"; break;
+        default: break;
+        }
+        // Hinge without explicit ang-limit flags: Blender hinge frees X rotation by default.
+        if (jp.type == RigidBodyCon::Type_Hinge && limFirst) {
+            BlendAppendLimit(limits, limFirst, "linearAxes", 0, 0.f, 0.f);
+            BlendAppendLimit(limits, limFirst, "linearAxes", 1, 0.f, 0.f);
+            BlendAppendLimit(limits, limFirst, "linearAxes", 2, 0.f, 0.f);
+            BlendAppendLimit(limits, limFirst, "angularAxes", 1, 0.f, 0.f);
+            BlendAppendLimit(limits, limFirst, "angularAxes", 2, 0.f, 0.f);
+        }
+        joints << "{\"limits\":[" << limits.str() << "],\"drives\":[" << drives.str() << ']'
+               << ",\"constraintType\":" << jp.type
+               << ",\"jointType\":\"" << jointTypeName << '"'
+               << ",\"breakingThreshold\":" << jp.breaking_threshold << '}';
+
+        // Attach joint on constraint Empty; connectedNode = ob2 (DFS index).
+        int selfIdx = -1;
+        int connectedIdx = -1;
+        const auto itSelf = nameToIndex.find(jp.constraintName);
+        if (itSelf != nameToIndex.end()) {
+            selfIdx = itSelf->second;
+        }
+        const auto itB = nameToIndex.find(jp.ob2Name);
+        if (itB != nameToIndex.end()) {
+            connectedIdx = itB->second;
+        }
+        if (selfIdx < 0 || connectedIdx < 0 || connectedIdx == selfIdx) {
+            continue;
+        }
+        const bool enableCol = (jp.flag & RigidBodyCon::Flag_DisableCollisions) == 0;
+        if (!jointNodeFirst) {
+            jointNodes << ',';
+        }
+        jointNodeFirst = false;
+        jointNodes << "{\"index\":" << selfIdx
+                   << ",\"name\":\"" << BlendJsonEscape(jp.constraintName)
+                   << "\",\"KHR_physics_rigid_bodies\":{\"joint\":{"
+                   << "\"connectedNode\":" << connectedIdx
+                   << ",\"joint\":" << defIdx
+                   << ",\"enableCollision\":" << (enableCol ? "true" : "false")
+                   << "}}}";
+    }
+
+    std::ostringstream nodes;
+    std::ostringstream colliderMeshes;
+    bool nodeFirst = true;
+    bool colliderMeshFirst = true;
+    std::set<int> emittedColliderMeshes;
+    for (const auto &b : conv.khrBodies) {
+        int idx = -1;
+        const auto it = nameToIndex.find(b.name);
+        if (it != nameToIndex.end()) {
+            idx = it->second;
+        }
+        int filterIdx = -1;
+        for (size_t fi = 0; fi < filterMasks.size(); ++fi) {
+            if (filterMasks[fi] == b.colGroups) {
+                filterIdx = static_cast<int>(fi);
+                break;
+            }
+        }
+        if (!nodeFirst) {
+            nodes << ',';
+        }
+        nodeFirst = false;
+        nodes << "{\"index\":" << idx << ",\"name\":\"" << BlendJsonEscape(b.name)
+              << "\",\"KHR_physics_rigid_bodies\":{";
+        if (b.isTrigger) {
+            // Disabled RBO -> trigger volume (KHR parity with Gravity* sensors).
+            nodes << "\"trigger\":{\"geometry\":{";
+            if (b.meshIdx >= 0) {
+                nodes << "\"mesh\":" << b.meshIdx;
+            } else {
+                nodes << "\"shape\":" << b.shapeIdx;
+            }
+            nodes << '}';
+            if (filterIdx >= 0) {
+                nodes << ",\"collisionFilter\":" << filterIdx;
+            }
+            nodes << '}';
+        } else {
+            if (!b.motionType.empty()) {
+                nodes << "\"motion\":{\"type\":\"" << b.motionType << "\",\"mass\":" << b.mass << "},";
+            }
+            nodes << "\"collider\":{\"geometry\":{";
+            if (b.meshIdx >= 0) {
+                nodes << "\"convexHull\":" << (b.convexHull ? "true" : "false")
+                      << ",\"mesh\":" << b.meshIdx;
+            } else {
+                nodes << "\"shape\":" << b.shapeIdx;
+            }
+            nodes << "},\"physicsMaterial\":" << b.matIdx;
+            if (filterIdx >= 0) {
+                nodes << ",\"collisionFilter\":" << filterIdx;
+            }
+            nodes << '}';
+        }
+        nodes << "}}";
+
+        // Meshes already moved to aiScene (conv.meshes dismissed) before emit.
+        if (b.meshIdx >= 0 && emittedColliderMeshes.insert(b.meshIdx).second && scene != nullptr &&
+                b.meshIdx < static_cast<int>(scene->mNumMeshes) && scene->mMeshes != nullptr) {
+            const aiMesh *am = scene->mMeshes[static_cast<unsigned int>(b.meshIdx)];
+            BlendAppendColliderMeshSoup(colliderMeshes, colliderMeshFirst, b.meshIdx, b.name.c_str(), am);
+        }
+    }
+    if (!jointNodeFirst) {
+        if (!nodeFirst) {
+            nodes << ',';
+        }
+        nodes << jointNodes.str();
+    }
+
+    if (!conv.khrShapeFirst) {
+        pjson << ",\"KHR_implicit_shapes\":{\"shapes\":[" << conv.khrShapes.str() << "]}";
+    }
+    pjson << ",\"KHR_physics_rigid_bodies\":{\"physicsMaterials\":[" << conv.khrMaterials.str()
+          << "],\"collisionFilters\":[" << filters.str()
+          << "],\"physicsJoints\":[" << joints.str() << "]}";
+    pjson << ",\"nodes\":[" << nodes.str() << ']';
+    if (!colliderMeshFirst) {
+        pjson << ",\"KHR_physics_collider_meshes\":{\"meshes\":[" << colliderMeshes.str() << "]}";
+    }
+}
+
+/** DNA Particle MTex mapto bits (eParticleTextureInfluence) - not material MAP_*. */
+enum BlendParticleMapto : int {
+    BlendPamap_Time = 1 << 0,
+    BlendPamap_Life = 1 << 1,
+    BlendPamap_Dens = 1 << 2,
+    BlendPamap_Size = 1 << 3,
+    BlendPamap_IVel = 1 << 4,
+    BlendPamap_Kink = 1 << 5,
+    BlendPamap_Length = 1 << 6,
+    BlendPamap_Clump = 1 << 7,
+    BlendPamap_Rough = 1 << 9,
+};
+
+/** DNA eMTex_TexCo - TEXCO_UV bit (makesdna DNA_material_types.h). */
+enum BlendMTexTexCo : int {
+    BlendTexco_UV = 1 << 4,
+};
+
+/** Build comma-separated PAMAP labels from DNA mapto bits (key=value meta; no JSON). */
+static std::string BlendParticleInfluenceLabels(int mapBits) {
+    std::string out;
+    auto add = [&](int bit, const char *name) {
+        if ((mapBits & bit) == 0) {
+            return;
+        }
+        if (!out.empty()) {
+            out += ',';
+        }
+        out += name;
+    };
+    add(BlendPamap_Time, "time");
+    add(BlendPamap_Life, "life");
+    add(BlendPamap_Dens, "density");
+    add(BlendPamap_Size, "size");
+    add(BlendPamap_IVel, "ivel");
+    add(BlendPamap_Kink, "kink");
+    add(BlendPamap_Length, "length");
+    add(BlendPamap_Clump, "clump");
+    add(BlendPamap_Rough, "rough");
+    return out;
+}
+
+/**
+ * 0al4: DNA ParticleSettings.mtex[] -> typed aiMaterial ($tex.file + key=value meta).
+ * Sidecar textures[] decommissioned - Host binds via typedMaterial / meta.
+ */
+static void BlendEmitParticleTypedMTexMaterials(Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    for (const ParticleSettings *part : conv.pendingParticleMtex) {
+        if (part == nullptr || part->id.name[2] == '\0') {
+            continue;
+        }
+        const std::string settingsName = part->id.name + 2;
+        // Dedupe by material name (shared ParticleSettings across systems).
+        bool already = false;
+        for (const aiMaterial *existing : conv.materials.get()) {
+            if (existing == nullptr) {
+                continue;
+            }
+            aiString en;
+            if (existing->Get(AI_MATKEY_NAME, en) == AI_SUCCESS &&
+                    std::strcmp(en.C_Str(), settingsName.c_str()) == 0) {
+                already = true;
+                break;
+            }
+        }
+        if (already) {
+            continue;
+        }
+
+        for (size_t i = 0; i < sizeof(conv.next_texture) / sizeof(conv.next_texture[0]); ++i) {
+            conv.next_texture[i] = 0;
+        }
+
+        aiMaterial *mout = new aiMaterial();
+        aiString matName(settingsName);
+        mout->AddProperty(&matName, AI_MATKEY_NAME);
+        {
+            // Presence marker: this mat carries Particle MTex maps (not Looks BASE/NORMAL).
+            const int isPs = 1;
+            mout->AddProperty(&isPs, 1, "$mat.blend.particleSettings", 0, 0);
+            aiString psName(settingsName);
+            mout->AddProperty(&psName, "$mat.blend.particleSettingsName", 0, 0);
+        }
+
+        const aiTextureType texType = aiTextureType_UNKNOWN;
+        unsigned emitted = 0;
+        for (size_t ti = 0; ti < sizeof(part->mtex) / sizeof(part->mtex[0]); ++ti) {
+            if (!part->mtex[ti] || !part->mtex[ti]->tex || !part->mtex[ti]->tex->ima) {
+                continue;
+            }
+            const MTex &mtx = *part->mtex[ti];
+            const Image *img = mtx.tex->ima.get();
+            aiString embedName;
+            if (!BlendEnsureEmbeddedImage(img, conv, embedName)) {
+                continue;
+            }
+            const unsigned slot = conv.next_texture[texType]++;
+            mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(texType, slot));
+
+            const int mapBits = static_cast<int>(mtx.mapto);
+            mout->AddProperty(&mapBits, 1, "$tex.blend.mapto", texType, slot);
+            {
+                const int dnaSlot = static_cast<int>(ti);
+                mout->AddProperty(&dnaSlot, 1, "$tex.blend.mtexSlot", texType, slot);
+            }
+            const std::string influences = BlendParticleInfluenceLabels(mapBits);
+            if (!influences.empty()) {
+                aiString inf(influences);
+                mout->AddProperty(&inf, "$tex.blend.particleInfluence", texType, slot);
+            }
+            if (mtx.hasPadensfac) {
+                mout->AddProperty(&mtx.padensfac, 1, "$tex.blend.densityFac", texType, slot);
+            }
+            if (mtx.hasLengthfac) {
+                mout->AddProperty(&mtx.lengthfac, 1, "$tex.blend.lengthFac", texType, slot);
+            }
+            if (mtx.hasTimefac) {
+                mout->AddProperty(&mtx.timefac, 1, "$tex.blend.timeFac", texType, slot);
+            }
+            if (mtx.hasLifefac) {
+                mout->AddProperty(&mtx.lifefac, 1, "$tex.blend.lifeFac", texType, slot);
+            }
+            if (mtx.hasSizefac) {
+                mout->AddProperty(&mtx.sizefac, 1, "$tex.blend.sizeFac", texType, slot);
+            }
+            // UVWSRC when DNA TEXCO_UV (named uvname or default/render UV after active_rnd).
+            // BlendFindUvIndex returns -1 if unresolved - never invent UV0 when missing.
+            {
+                bool resolveUv = false;
+                if (mtx.hasTexco) {
+                    resolveUv = (mtx.texco & BlendTexco_UV) != 0;
+                } else if (mtx.uvname[0] != '\0') {
+                    // Older DNA without texco: named UV still means UV mapping.
+                    resolveUv = true;
+                }
+                if (resolveUv) {
+                    const int uvIndex = BlendFindUvIndex(conv, 0u, mtx.uvname);
+                    BlendEmitUvWsrc(mout, texType, slot, uvIndex);
+                }
+            }
+            ++emitted;
+        }
+        if (emitted == 0) {
+            delete mout;
+            continue;
+        }
+        conv.materials->push_back(mout);
+        conv.materialSidecarJson.emplace_back();
+    }
+    conv.pendingParticleMtex.clear();
+}
+
+static const char *BlendParticleVgSlotName(int slot) {
+    using Assimp::Blender::ParticleSystem;
+    switch (slot) {
+    case ParticleSystem::VG_Density: return "density";
+    case ParticleSystem::VG_Vel: return "velocity";
+    case ParticleSystem::VG_Length: return "length";
+    case ParticleSystem::VG_Clump: return "clump";
+    case ParticleSystem::VG_Kink: return "kink";
+    case ParticleSystem::VG_Rough1: return "rough1";
+    case ParticleSystem::VG_Rough2: return "rough2";
+    case ParticleSystem::VG_RoughE: return "rough_end";
+    case ParticleSystem::VG_Size: return "size";
+    case ParticleSystem::VG_Tan: return "tangent";
+    case ParticleSystem::VG_Rot: return "rotation";
+    case ParticleSystem::VG_Effector: return "effector";
+    case ParticleSystem::VG_Twist: return "twist";
+    default: return nullptr;
+    }
+}
+
+/** Resolve deform-group names: Mesh.vertex_group_names preferred, else Object.defbase. */
+static void BlendCollectDeformGroupNames(const Assimp::Blender::Object *obj,
+        const Assimp::Blender::Mesh *mesh, std::vector<std::string> &out) {
+    out.clear();
+    auto walk = [&out](const Assimp::Blender::ListBase &lb) {
+        for (const Assimp::Blender::bDeformGroup *dg =
+                        static_cast<const Assimp::Blender::bDeformGroup *>(lb.first.get());
+                dg != nullptr;
+                dg = static_cast<const Assimp::Blender::bDeformGroup *>(dg->next.get())) {
+            out.emplace_back(dg->name[0] ? dg->name : "");
+        }
+    };
+    if (mesh != nullptr && mesh->vertex_group_names.first) {
+        walk(mesh->vertex_group_names);
+    }
+    if (out.empty() && obj != nullptr && obj->defbase.first) {
+        walk(obj->defbase);
+    }
+}
+
+static float BlendVertDeformWeight(const Assimp::Blender::Mesh &mesh, int vertIdx, int defNr) {
+    if (vertIdx < 0 || static_cast<size_t>(vertIdx) >= mesh.dvert.size() || defNr < 0) {
+        return 0.f;
+    }
+    const Assimp::Blender::MDeformVert &dv = mesh.dvert[static_cast<size_t>(vertIdx)];
+    for (size_t i = 0; i < dv.dw.size(); ++i) {
+        if (dv.dw[i].def_nr == defNr) {
+            return dv.dw[i].weight;
+        }
+    }
+    return 0.f;
+}
+
+/** Area-average poly/face density weight from DNA dvert (Presence; no invent). */
+static bool BlendFaceDensityFromVgroup(const Assimp::Blender::Mesh &mesh, int defNr, bool invert,
+        std::vector<int> &faceMask, std::vector<float> &faceDensity) {
+    faceMask.clear();
+    faceDensity.clear();
+    if (defNr < 0 || mesh.dvert.empty()) {
+        return false;
+    }
+    auto pushFace = [&](int faceIdx, const int *vids, int nvid) {
+        if (nvid <= 0) {
+            return;
+        }
+        float sum = 0.f;
+        for (int i = 0; i < nvid; ++i) {
+            float w = BlendVertDeformWeight(mesh, vids[i], defNr);
+            if (invert) {
+                w = 1.f - w;
+            }
+            sum += w;
+        }
+        const float avg = sum / static_cast<float>(nvid);
+        if (avg > 0.f) {
+            faceMask.push_back(faceIdx);
+            faceDensity.push_back(avg);
+        }
+    };
+    if (!mesh.mpoly.empty() && !mesh.mloop.empty()) {
+        for (size_t pi = 0; pi < mesh.mpoly.size(); ++pi) {
+            const Assimp::Blender::MPoly &p = mesh.mpoly[pi];
+            if (p.totloop < 3 || p.loopstart < 0) {
+                continue;
+            }
+            std::vector<int> vids;
+            vids.reserve(static_cast<size_t>(p.totloop));
+            for (int li = 0; li < p.totloop; ++li) {
+                const size_t lidx = static_cast<size_t>(p.loopstart + li);
+                if (lidx >= mesh.mloop.size()) {
+                    vids.clear();
+                    break;
+                }
+                vids.push_back(mesh.mloop[lidx].v);
+            }
+            if (!vids.empty()) {
+                pushFace(static_cast<int>(pi), vids.data(), static_cast<int>(vids.size()));
+            }
+        }
+    } else if (!mesh.mface.empty()) {
+        for (size_t fi = 0; fi < mesh.mface.size(); ++fi) {
+            const Assimp::Blender::MFace &f = mesh.mface[fi];
+            int vids[4] = { f.v1, f.v2, f.v3, f.v4 };
+            const int n = (f.v4 != 0) ? 4 : 3;
+            pushFace(static_cast<int>(fi), vids, n);
+        }
+    } else {
+        return false;
+    }
+    return !faceMask.empty();
+}
+
+/** DNA mesh-local average face normal (Presence for 0ak eye shells; no invent flip). */
+static bool BlendMeshRestAvgNormal(const Assimp::Blender::Mesh &mesh, float out[3]) {
+    out[0] = out[1] = out[2] = 0.f;
+    size_t count = 0;
+    auto accum = [&](float ax, float ay, float az, float bx, float by, float bz, float cx, float cy, float cz) {
+        const float abx = bx - ax, aby = by - ay, abz = bz - az;
+        const float acx = cx - ax, acy = cy - ay, acz = cz - az;
+        float nx = aby * acz - abz * acy;
+        float ny = abz * acx - abx * acz;
+        float nz = abx * acy - aby * acx;
+        const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+        if (len <= 1e-20f) {
+            return;
+        }
+        out[0] += nx / len;
+        out[1] += ny / len;
+        out[2] += nz / len;
+        ++count;
+    };
+    auto vert = [&](int i, float &x, float &y, float &z) -> bool {
+        if (i < 0 || static_cast<size_t>(i) >= mesh.mvert.size()) {
+            return false;
+        }
+        x = mesh.mvert[static_cast<size_t>(i)].co[0];
+        y = mesh.mvert[static_cast<size_t>(i)].co[1];
+        z = mesh.mvert[static_cast<size_t>(i)].co[2];
+        return true;
+    };
+    if (!mesh.mpoly.empty() && !mesh.mloop.empty()) {
+        for (const Assimp::Blender::MPoly &p : mesh.mpoly) {
+            if (p.totloop < 3 || p.loopstart < 0) {
+                continue;
+            }
+            float x0, y0, z0, x1, y1, z1, x2, y2, z2;
+            const size_t l0 = static_cast<size_t>(p.loopstart);
+            if (l0 + 2 >= mesh.mloop.size()) {
+                continue;
+            }
+            if (!vert(mesh.mloop[l0].v, x0, y0, z0) || !vert(mesh.mloop[l0 + 1].v, x1, y1, z1) ||
+                    !vert(mesh.mloop[l0 + 2].v, x2, y2, z2)) {
+                continue;
+            }
+            accum(x0, y0, z0, x1, y1, z1, x2, y2, z2);
+        }
+    } else {
+        for (const Assimp::Blender::MFace &f : mesh.mface) {
+            float x0, y0, z0, x1, y1, z1, x2, y2, z2;
+            if (!vert(f.v1, x0, y0, z0) || !vert(f.v2, x1, y1, z1) || !vert(f.v3, x2, y2, z2)) {
+                continue;
+            }
+            accum(x0, y0, z0, x1, y1, z1, x2, y2, z2);
+        }
+    }
+    if (count == 0) {
+        return false;
+    }
+    out[0] /= static_cast<float>(count);
+    out[1] /= static_cast<float>(count);
+    out[2] /= static_cast<float>(count);
+    const float len = std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+    if (len <= 1e-20f) {
+        return false;
+    }
+    out[0] /= len;
+    out[1] /= len;
+    out[2] /= len;
+    return true;
+}
+
+/** Map NodesModifier Input_* IDProperty values to group-socket labels (Presence). */
+static void BlendAppendNodesModifierParticlePresence(std::ostringstream &settings,
+        const Assimp::Blender::NodesModifierData &nmd) {
+    using Assimp::Blender::bNodeSocket;
+    using Assimp::Blender::bNodeTree;
+    using Assimp::Blender::ElemBase;
+    using Assimp::Blender::IDProperty;
+
+    const IDProperty *root = nmd.settings.properties.get();
+    if (root == nullptr) {
+        return;
+    }
+    const ElemBase *childFirst = nullptr;
+    if (root->type == IDProperty::Type_Group) {
+        childFirst = root->data.group.first.get();
+    } else if (std::strncmp(root->name, "Input_", 6) == 0) {
+        childFirst = root;
+    }
+    if (childFirst == nullptr) {
+        return;
+    }
+
+    // identifier (Input_N) -> socket display name from node_group.inputs
+    std::unordered_map<std::string, std::string> idToLabel;
+    if (nmd.node_group) {
+        const bNodeTree &tree = *nmd.node_group;
+        for (const ElemBase *e = tree.inputs.first.get(); e != nullptr;) {
+            const bNodeSocket *sock = static_cast<const bNodeSocket *>(e);
+            if (sock->identifier[0] != '\0' && sock->name[0] != '\0') {
+                idToLabel[sock->identifier] = sock->name;
+            }
+            e = sock->next.get();
+        }
+    }
+
+    struct NamedVal {
+        std::string label;
+        const IDProperty *prop;
+    };
+    std::vector<NamedVal> vals;
+    for (const ElemBase *e = childFirst; e != nullptr;) {
+        const IDProperty *prop = static_cast<const IDProperty *>(e);
+        const char *ident = prop->name;
+        if (std::strstr(ident, "_use_attribute") != nullptr ||
+                std::strstr(ident, "_attribute_name") != nullptr) {
+            e = prop->next.get();
+            continue;
+        }
+        if (std::strncmp(ident, "Input_", 6) != 0) {
+            e = prop->next.get();
+            continue;
+        }
+        NamedVal nv;
+        auto it = idToLabel.find(ident);
+        nv.label = (it != idToLabel.end()) ? it->second : std::string(ident);
+        nv.prop = prop;
+        vals.push_back(std::move(nv));
+        e = prop->next.get();
+    }
+    if (vals.empty()) {
+        return;
+    }
+
+    bool haveAttract = false;
+    float attractStrength = 0.f;
+    bool haveGravity = false;
+    float gravity[3] = { 0.f, 0.f, 0.f };
+    bool havePhysNewtonian = false;
+    bool haveTotpart = false;
+    int totpart = 0;
+    bool haveEmissionDensity = false;
+    float emissionDensity = 0.f;
+    bool haveLifetime = false;
+    int lifetime = 0;
+    std::ostringstream hostKeys;
+
+    settings << ",\"inputs\":{";
+    bool firstIn = true;
+    for (const NamedVal &nv : vals) {
+        const IDProperty &p = *nv.prop;
+        if (!firstIn) {
+            settings << ',';
+        }
+        firstIn = false;
+        const std::string key = BlendJsonEscape(nv.label.c_str());
+        settings << '"' << key << "\":";
+        if (p.type == IDProperty::Type_Int) {
+            settings << p.data.val;
+            // Partikelzahl only from sockets that literally mean count (no invent from Lifetime).
+            if (key == "Count" || key == "Amount" || key == "Number") {
+                haveTotpart = true;
+                totpart = p.data.val;
+            }
+            if (key == "Lifetime") {
+                haveLifetime = true;
+                lifetime = p.data.val;
+            }
+        } else if (p.type == IDProperty::Type_Float) {
+            float f = 0.f;
+            std::memcpy(&f, &p.data.val, sizeof(float));
+            settings << f;
+            if (key == "Attraction Strength") {
+                haveAttract = true;
+                attractStrength = f;
+            }
+            if (key == "Emission Density") {
+                haveEmissionDensity = true;
+                emissionDensity = f;
+            }
+            if (key == "Count" || key == "Amount" || key == "Number") {
+                haveTotpart = true;
+                totpart = static_cast<int>(f);
+            }
+            if (key == "Lifetime") {
+                haveLifetime = true;
+                lifetime = static_cast<int>(f);
+            }
+        } else if (p.type == IDProperty::Type_Array) {
+            settings << '[';
+            if (!p.floatArray.empty()) {
+                for (size_t i = 0; i < p.floatArray.size(); ++i) {
+                    if (i) {
+                        settings << ',';
+                    }
+                    settings << p.floatArray[i];
+                }
+                if (key == "Gravity" && p.floatArray.size() >= 3) {
+                    haveGravity = true;
+                    gravity[0] = p.floatArray[0];
+                    gravity[1] = p.floatArray[1];
+                    gravity[2] = p.floatArray[2];
+                    // Authored Gravity on particle GN => Newtonian Presence for Host Force-Step.
+                    havePhysNewtonian = true;
+                }
+            } else if (!p.intArray.empty()) {
+                for (size_t i = 0; i < p.intArray.size(); ++i) {
+                    if (i) {
+                        settings << ',';
+                    }
+                    settings << p.intArray[i];
+                }
+            }
+            settings << ']';
+        } else if (p.type == IDProperty::Type_String) {
+            settings << '"' << BlendJsonEscape(p.str.c_str()) << '"';
+        } else {
+            settings << "null";
+        }
+    }
+    settings << '}';
+    if (haveTotpart) {
+        hostKeys << ",\"totpart\":" << totpart;
+    }
+    if (haveEmissionDensity) {
+        hostKeys << ",\"emissionDensity\":" << emissionDensity;
+    }
+    if (haveLifetime) {
+        hostKeys << ",\"lifetime\":" << lifetime;
+    }
+    settings << hostKeys.str();
+    if (haveAttract) {
+        settings << ",\"attractionStrength\":" << attractStrength;
+        settings << ",\"forcefield_kind\":\"attraction\"";
+    }
+    if (haveGravity) {
+        settings << ",\"gravity\":[" << gravity[0] << ',' << gravity[1] << ',' << gravity[2] << ']';
+    }
+    if (havePhysNewtonian) {
+        settings << ",\"phys_kind\":\"newtonian\"";
+    }
+}
+
+void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv,
+        const aiNode *node) {
+    using namespace Assimp::Blender;
+    if (obj == nullptr) {
+        return;
+    }
+    const char *objName = obj->id.name + 2;
+
+    // Soft Body is commonly Object.soft (not Softbody modifier).
+    if (obj->soft) {
+        const SoftBody &sb = *obj->soft;
+        std::ostringstream softJson;
+        softJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                 << "\",\"type\":\"softbody\",\"settings\":{"
+                 << "\"source\":\"Object.soft\""
+                 << ",\"nodemass\":" << sb.nodemass
+                 << ",\"grav\":" << sb.grav
+                 << ",\"mediafrict\":" << sb.mediafrict
+                 << ",\"goalspring\":" << sb.goalspring
+                 << ",\"goalfrict\":" << sb.goalfrict
+                 << ",\"mingoal\":" << sb.mingoal
+                 << ",\"maxgoal\":" << sb.maxgoal
+                 << ",\"defgoal\":" << sb.defgoal
+                 << ",\"inspring\":" << sb.inspring
+                 << ",\"infrict\":" << sb.infrict
+                 << "}}";
+        BlendPushPhysicsInv(conv.physicsSoftNodes, objName, softJson.str());
+    }
+
+    // Collision / Force Field authored on Object.pd (PartDeflect) - Presence only.
+    if (obj->pd && (obj->pd->deflect != 0 || obj->pd->forcefield != 0)) {
+        const PartDeflect &pd = *obj->pd;
+        std::ostringstream colJson;
+        colJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                << "\",\"type\":\"collision\",\"settings\":{"
+                << "\"source\":\"Object.pd\""
+                << ",\"deflect\":" << static_cast<int>(pd.deflect)
+                << ",\"forcefield\":" << static_cast<int>(pd.forcefield)
+                << ",\"flag\":" << pd.flag
+                << ",\"falloff\":" << static_cast<int>(pd.falloff)
+                << ",\"shape\":" << static_cast<int>(pd.shape)
+                << ",\"f_strength\":" << pd.f_strength;
+        {
+            const char *ffKind = nullptr;
+            switch (pd.forcefield) {
+            case PartDeflect::Field_Force: ffKind = "force"; break;
+            case PartDeflect::Field_Vortex: ffKind = "vortex"; break;
+            case PartDeflect::Field_Magnetic: ffKind = "magnetic"; break;
+            case PartDeflect::Field_Wind: ffKind = "wind"; break;
+            case PartDeflect::Field_Guide: ffKind = "guide"; break;
+            case PartDeflect::Field_Texture: ffKind = "texture"; break;
+            case PartDeflect::Field_Harmonic: ffKind = "harmonic"; break;
+            case PartDeflect::Field_Charge: ffKind = "charge"; break;
+            case PartDeflect::Field_LennardJones: ffKind = "lennardjones"; break;
+            case PartDeflect::Field_Boid: ffKind = "boid"; break;
+            case PartDeflect::Field_Turbulence: ffKind = "turbulence"; break;
+            case PartDeflect::Field_Drag: ffKind = "drag"; break;
+            case PartDeflect::Field_FluidFlow: ffKind = "fluidflow"; break;
+            default: break;
+            }
+            if (ffKind != nullptr) {
+                colJson << ",\"forcefield_kind\":\"" << ffKind << '"';
+            }
+        }
+        colJson << ",\"pdef_damp\":" << pd.pdef_damp
+                << ",\"pdef_rdamp\":" << pd.pdef_rdamp
+                << ",\"pdef_perm\":" << pd.pdef_perm
+                << ",\"pdef_frict\":" << pd.pdef_frict
+                << ",\"pdef_rfrict\":" << pd.pdef_rfrict
+                << ",\"pdef_stickness\":" << pd.pdef_stickness
+                << ",\"pdef_sbdamp\":" << pd.pdef_sbdamp
+                << ",\"pdef_sbift\":" << pd.pdef_sbift
+                << ",\"pdef_sboft\":" << pd.pdef_sboft
+                << ",\"pdef_cfrict\":" << pd.pdef_cfrict
+                << "}}";
+        BlendPushPhysicsInv(conv.physicsCollisionNodes, objName, colJson.str());
+    }
+
+    // Rigid Body DNA -> BLEND bag + KHR-shaped nodes for Host Bullet/PhysX.
+    if (obj->rigidbody_object) {
+        const RigidBodyOb &rb = *obj->rigidbody_object;
+        const char *motionType = "dynamic";
+        if (rb.type == RigidBodyOb::Type_Passive) {
+            motionType = "static";
+        }
+        if (rb.flag & RigidBodyOb::Flag_Kinematic) {
+            motionType = "kinematic";
+        }
+        // Passive children under a parent motion root: collider-only so Host compounds.
+        const bool colliderOnly = (rb.type == RigidBodyOb::Type_Passive) && (obj->parent != nullptr) &&
+                                  ((rb.flag & RigidBodyOb::Flag_Kinematic) == 0);
+        const char *shapeName = BlendRigidShapeName(rb.shape);
+        std::ostringstream rigidJson;
+        rigidJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                  << "\",\"type\":\"rigidbody\",\"settings\":{"
+                  << "\"source\":\"Object.rigidbody_object\""
+                  << ",\"rbo_type\":" << rb.type
+                  << ",\"shape\":\"" << shapeName << '"'
+                  << ",\"shape_id\":" << rb.shape
+                  << ",\"flag\":" << rb.flag
+                  << ",\"col_groups\":" << rb.col_groups
+                  << ",\"mass\":" << rb.mass
+                  << ",\"friction\":" << rb.friction
+                  << ",\"restitution\":" << rb.restitution
+                  << ",\"margin\":" << rb.margin
+                  << ",\"lin_damping\":" << rb.lin_damping
+                  << ",\"ang_damping\":" << rb.ang_damping
+                  << ",\"motion\":\"" << motionType << '"'
+                  << ",\"collider_only\":" << (colliderOnly ? "true" : "false")
+                  << "}}";
+        BlendPushPhysicsInv(conv.physicsRigidNodes, objName, rigidJson.str());
+
+        // Mesh-based shapes: Host needs geometry.mesh (+ soup), not an empty implicit hull.
+        const bool meshShape = (rb.shape == RigidBodyOb::Shape_Trimesh) ||
+                               (rb.shape == RigidBodyOb::Shape_ConvexH);
+        int meshIdx = -1;
+        if (meshShape && node != nullptr && node->mNumMeshes > 0) {
+            meshIdx = static_cast<int>(node->mMeshes[0]);
+        }
+
+        int shapeIdx = -1;
+        if (!meshShape) {
+            if (!conv.khrShapeFirst) {
+                conv.khrShapes << ',';
+            }
+            conv.khrShapeFirst = false;
+            shapeIdx = conv.khrShapeCount++;
+            conv.khrShapes << "{\"type\":\"" << shapeName << "\"}";
+        }
+
+        if (!conv.khrMatFirst) {
+            conv.khrMaterials << ',';
+        }
+        conv.khrMatFirst = false;
+        const int matIdx = conv.khrMatCount++;
+        conv.khrMaterials << "{\"staticFriction\":" << rb.friction
+                          << ",\"dynamicFriction\":" << rb.friction
+                          << ",\"restitution\":" << rb.restitution << '}';
+
+        ConversionData::KhrBodyPending body;
+        body.name = objName ? objName : "";
+        // RBO_FLAG_DISABLED: not dynamically simulated -> KHR trigger volume.
+        body.isTrigger = (rb.flag & RigidBodyOb::Flag_Disabled) != 0;
+        body.motionType = (body.isTrigger || colliderOnly) ? std::string() : std::string(motionType);
+        body.mass = rb.mass;
+        body.shapeIdx = shapeIdx;
+        body.matIdx = matIdx;
+        body.colGroups = rb.col_groups;
+        body.meshIdx = meshIdx;
+        body.convexHull = (rb.shape == RigidBodyOb::Shape_ConvexH);
+        // Disabled + no shape/mesh: still need a shape for Host trigger geometry.
+        if (body.isTrigger && body.meshIdx < 0 && body.shapeIdx < 0) {
+            if (!conv.khrShapeFirst) {
+                conv.khrShapes << ',';
+            }
+            conv.khrShapeFirst = false;
+            body.shapeIdx = conv.khrShapeCount++;
+            conv.khrShapes << "{\"type\":\"" << shapeName << "\"}";
+        }
+        conv.khrBodies.push_back(std::move(body));
+    }
+
+    if (obj->rigidbody_constraint) {
+        const RigidBodyCon &jc = *obj->rigidbody_constraint;
+        std::ostringstream jointJson;
+        jointJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                  << "\",\"type\":\"rigidbody_constraint\",\"settings\":{"
+                  << "\"source\":\"Object.rigidbody_constraint\""
+                  << ",\"constraint_type\":" << jc.type
+                  << ",\"flag\":" << jc.flag
+                  << ",\"breaking_threshold\":" << jc.breaking_threshold;
+        if (jc.ob1 && jc.ob1->id.name[0] != '\0') {
+            jointJson << ",\"object1\":\"" << BlendJsonEscape(jc.ob1->id.name + 2) << '"';
+        }
+        if (jc.ob2 && jc.ob2->id.name[0] != '\0') {
+            jointJson << ",\"object2\":\"" << BlendJsonEscape(jc.ob2->id.name + 2) << '"';
+        }
+        jointJson << "}}";
+        BlendPushPhysicsInv(conv.physicsJointNodes, objName, jointJson.str());
+
+        ConversionData::KhrJointPending jp;
+        jp.constraintName = objName ? objName : "";
+        if (jc.ob1 && jc.ob1->id.name[0] != '\0') {
+            jp.ob1Name = jc.ob1->id.name + 2;
+        }
+        if (jc.ob2 && jc.ob2->id.name[0] != '\0') {
+            jp.ob2Name = jc.ob2->id.name + 2;
+        }
+        jp.type = jc.type;
+        jp.flag = jc.flag;
+        jp.breaking_threshold = jc.breaking_threshold;
+        jp.limit_lin_x_lower = jc.limit_lin_x_lower;
+        jp.limit_lin_x_upper = jc.limit_lin_x_upper;
+        jp.limit_lin_y_lower = jc.limit_lin_y_lower;
+        jp.limit_lin_y_upper = jc.limit_lin_y_upper;
+        jp.limit_lin_z_lower = jc.limit_lin_z_lower;
+        jp.limit_lin_z_upper = jc.limit_lin_z_upper;
+        jp.limit_ang_x_lower = jc.limit_ang_x_lower;
+        jp.limit_ang_x_upper = jc.limit_ang_x_upper;
+        jp.limit_ang_y_lower = jc.limit_ang_y_lower;
+        jp.limit_ang_y_upper = jc.limit_ang_y_upper;
+        jp.limit_ang_z_lower = jc.limit_ang_z_lower;
+        jp.limit_ang_z_upper = jc.limit_ang_z_upper;
+        jp.spring_stiffness_x = jc.spring_stiffness_x;
+        jp.spring_stiffness_y = jc.spring_stiffness_y;
+        jp.spring_stiffness_z = jc.spring_stiffness_z;
+        jp.spring_stiffness_ang_x = jc.spring_stiffness_ang_x;
+        jp.spring_stiffness_ang_y = jc.spring_stiffness_ang_y;
+        jp.spring_stiffness_ang_z = jc.spring_stiffness_ang_z;
+        jp.spring_damping_x = jc.spring_damping_x;
+        jp.spring_damping_y = jc.spring_damping_y;
+        jp.spring_damping_z = jc.spring_damping_z;
+        jp.spring_damping_ang_x = jc.spring_damping_ang_x;
+        jp.spring_damping_ang_y = jc.spring_damping_ang_y;
+        jp.spring_damping_ang_z = jc.spring_damping_ang_z;
+        jp.motor_lin_target_velocity = jc.motor_lin_target_velocity;
+        jp.motor_ang_target_velocity = jc.motor_ang_target_velocity;
+        jp.motor_lin_max_impulse = jc.motor_lin_max_impulse;
+        jp.motor_ang_max_impulse = jc.motor_ang_max_impulse;
+        conv.khrJoints.push_back(std::move(jp));
+    }
+
+    // Particle systems (Object.particlesystem ListBase)
+    for (const ParticleSystem *ps = static_cast<const ParticleSystem *>(obj->particlesystem.first.get());
+            ps != nullptr;
+            ps = static_cast<const ParticleSystem *>(ps->next.get())) {
+        const char *psName = (ps->name[0] != '\0') ? ps->name : objName;
+        std::ostringstream partJson;
+        partJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                 << "\",\"system\":\"" << BlendJsonEscape(psName)
+                 << "\",\"type\":\"particles\",\"settings\":{";
+        if (ps->part) {
+            const ParticleSettings &p = *ps->part;
+            partJson << "\"part_type\":" << p.type
+                     << ",\"totpart\":" << p.totpart
+                     << ",\"mass\":" << p.mass
+                     << ",\"size\":" << p.size
+                     << ",\"randsize\":" << p.randsize
+                     << ",\"ren_as\":" << p.ren_as
+                     << ",\"from\":" << p.from
+                     << ",\"distr\":" << p.distr
+                     << ",\"lifetime\":" << p.lifetime
+                     << ",\"frame_start\":" << p.sta
+                     << ",\"frame_end\":" << p.end
+                     << ",\"seed\":" << ps->seed
+                     << ",\"jitfac\":" << p.jitfac
+                     << ",\"flag\":" << p.flag;
+            // Presence: DNA eParticleType -> Host label (hair / fluid secondary / emitter).
+            {
+                const char *partKind = nullptr;
+                switch (p.type) {
+                case ParticleSettings::Type_Emitter: partKind = "emitter"; break;
+                case ParticleSettings::Type_Hair: partKind = "hair"; break;
+                case ParticleSettings::Type_Fluid: partKind = "fluid"; break;
+                case ParticleSettings::Type_FluidFlip: partKind = "fluid_flip"; break;
+                case ParticleSettings::Type_FluidSpray: partKind = "fluid_spray"; break;
+                case ParticleSettings::Type_FluidBubble: partKind = "fluid_bubble"; break;
+                case ParticleSettings::Type_FluidFoam: partKind = "fluid_foam"; break;
+                case ParticleSettings::Type_FluidTracer: partKind = "fluid_tracer"; break;
+                case ParticleSettings::Type_FluidSprayFoam: partKind = "fluid_sprayfoam"; break;
+                case ParticleSettings::Type_FluidSprayBubble: partKind = "fluid_spraybubble"; break;
+                case ParticleSettings::Type_FluidFoamBubble: partKind = "fluid_foambubble"; break;
+                case ParticleSettings::Type_FluidSprayFoamBubble: partKind = "fluid_sprayfoambubble"; break;
+                default: break;
+                }
+                if (partKind != nullptr) {
+                    partJson << ",\"part_kind\":\"" << partKind << '"';
+                }
+            }
+            if (p.ren_as == ParticleSettings::Draw_Path) {
+                partJson << ",\"ren_as_kind\":\"path\"";
+            } else if (p.ren_as == ParticleSettings::Draw_Object) {
+                partJson << ",\"ren_as_kind\":\"object\"";
+            } else if (p.ren_as == ParticleSettings::Draw_Collection) {
+                partJson << ",\"ren_as_kind\":\"collection\"";
+            } else if (p.ren_as == ParticleSettings::Draw_Halo) {
+                partJson << ",\"ren_as_kind\":\"halo\"";
+            } else if (p.ren_as == ParticleSettings::Draw_Line) {
+                partJson << ",\"ren_as_kind\":\"line\"";
+            } else if (p.ren_as == ParticleSettings::Draw_None) {
+                partJson << ",\"ren_as_kind\":\"none\"";
+            }
+            if (p.hasPhystype) {
+                partJson << ",\"phystype\":" << p.phystype;
+                const char *physKind = nullptr;
+                switch (p.phystype) {
+                case ParticleSettings::Phys_No: physKind = "no"; break;
+                case ParticleSettings::Phys_Newtonian: physKind = "newtonian"; break;
+                case ParticleSettings::Phys_Keyed: physKind = "keyed"; break;
+                case ParticleSettings::Phys_Boids: physKind = "boids"; break;
+                case ParticleSettings::Phys_Fluid: physKind = "fluid"; break;
+                default: break;
+                }
+                if (physKind != nullptr) {
+                    partJson << ",\"phys_kind\":\"" << physKind << '"';
+                }
+            }
+            if (p.hasDrawAs) {
+                partJson << ",\"draw_as\":" << p.draw_as;
+            }
+            if (p.hasDraw) {
+                partJson << ",\"draw\":" << p.draw;
+            }
+            if (p.hasUserjit) {
+                partJson << ",\"userjit\":" << p.userjit;
+            }
+            if (p.hasGridRes) {
+                partJson << ",\"grid_res\":" << p.grid_res;
+            }
+            if (p.hasGridRand) {
+                partJson << ",\"grid_rand\":" << p.grid_rand;
+            }
+            if (p.hasRandlife) {
+                partJson << ",\"randlife\":" << p.randlife;
+            }
+            if (p.hasRandlength) {
+                partJson << ",\"randlength\":" << p.randlength;
+            }
+            if (p.hasHairStep) {
+                partJson << ",\"hair_step\":" << p.hair_step;
+            }
+            // Presence: RNA hair_length = DNA normfac * 4 (rna_PartSetting_hairlength_get).
+            if (p.hasNormfac) {
+                partJson << ",\"normfac\":" << p.normfac
+                         << ",\"hair_length\":" << (p.normfac * 4.f);
+            }
+            if (p.hasPathStart) {
+                partJson << ",\"path_start\":" << p.path_start;
+            }
+            if (p.hasPathEnd) {
+                partJson << ",\"path_end\":" << p.path_end;
+            }
+            // Hair thickness DNA (Cycles: r=rad_scale*0.5, root/tip=r*rad_*). Not size.
+            if (p.hasShape) {
+                partJson << ",\"shape\":" << p.shape;
+            }
+            if (p.hasRadRoot) {
+                partJson << ",\"rad_root\":" << p.rad_root;
+            }
+            if (p.hasRadTip) {
+                partJson << ",\"rad_tip\":" << p.rad_tip;
+            }
+            if (p.hasRadScale) {
+                partJson << ",\"rad_scale\":" << p.rad_scale;
+            }
+            if (p.hasShapeFlag) {
+                partJson << ",\"shape_flag\":" << static_cast<int>(p.shape_flag);
+                if (p.shape_flag & ParticleSettings::Shape_CloseTip) {
+                    partJson << ",\"use_close_tip\":true";
+                }
+            }
+            // 0al5: Child-Distribution DNA factors (Host expands after parents; no invent).
+            if (p.hasChildtype) {
+                partJson << ",\"childtype\":" << static_cast<int>(p.childtype);
+                const char *childKind = nullptr;
+                switch (p.childtype) {
+                    case ParticleSettings::Child_None: childKind = "none"; break;
+                    case ParticleSettings::Child_Particles: childKind = "particles"; break;
+                    case ParticleSettings::Child_Faces: childKind = "faces"; break;
+                    default: break;
+                }
+                if (childKind != nullptr) {
+                    partJson << ",\"child_type\":\"" << childKind << '"';
+                }
+            }
+            if (p.hasChildFlag) {
+                partJson << ",\"child_flag\":" << p.child_flag;
+                if (p.child_flag & ParticleSettings::Child_UseClumpNoise) {
+                    partJson << ",\"use_clump_noise\":true";
+                }
+                if (p.child_flag & ParticleSettings::Child_UseClumpCurve) {
+                    partJson << ",\"use_clump_curve\":true";
+                }
+                if (p.child_flag & ParticleSettings::Child_UseRoughCurve) {
+                    partJson << ",\"use_rough_curve\":true";
+                }
+                if (p.child_flag & ParticleSettings::Child_UseTwistCurve) {
+                    partJson << ",\"use_twist_curve\":true";
+                }
+            }
+            // SDNA name honesty: emit only the count field that resolved.
+            if (p.hasChildNbr) {
+                partJson << ",\"child_nbr\":" << p.child_nbr;
+            }
+            if (p.hasRenChildNbr) {
+                partJson << ",\"ren_child_nbr\":" << p.ren_child_nbr;
+            }
+            if (p.hasChildPercent) {
+                partJson << ",\"child_percent\":" << p.child_percent;
+            }
+            if (p.hasChildRenderPercent) {
+                partJson << ",\"child_render_percent\":" << p.child_render_percent;
+            }
+            if (p.hasChildSeed) {
+                partJson << ",\"child_seed\":" << p.child_seed;
+            }
+            if (p.hasParents) {
+                partJson << ",\"parents\":" << p.parents;
+            }
+            if (p.hasChildsize) {
+                partJson << ",\"childsize\":" << p.childsize;
+            }
+            if (p.hasChildrandsize) {
+                partJson << ",\"childrandsize\":" << p.childrandsize;
+            }
+            if (p.hasChildrad) {
+                partJson << ",\"childrad\":" << p.childrad;
+            }
+            if (p.hasChildflat) {
+                partJson << ",\"childflat\":" << p.childflat;
+            }
+            if (p.hasClumpfac) {
+                partJson << ",\"clumpfac\":" << p.clumpfac;
+            }
+            if (p.hasClumppow) {
+                partJson << ",\"clumppow\":" << p.clumppow;
+            }
+            if (p.hasKink) {
+                partJson << ",\"kink\":" << static_cast<int>(p.kink);
+                const char *kinkKind = nullptr;
+                switch (p.kink) {
+                    case ParticleSettings::Kink_No: kinkKind = "none"; break;
+                    case ParticleSettings::Kink_Curl: kinkKind = "curl"; break;
+                    case ParticleSettings::Kink_Radial: kinkKind = "radial"; break;
+                    case ParticleSettings::Kink_Wave: kinkKind = "wave"; break;
+                    case ParticleSettings::Kink_Braid: kinkKind = "braid"; break;
+                    case ParticleSettings::Kink_Spiral: kinkKind = "spiral"; break;
+                    default: break;
+                }
+                if (kinkKind != nullptr) {
+                    partJson << ",\"kink_kind\":\"" << kinkKind << '"';
+                }
+            }
+            if (p.hasKinkAmp) {
+                partJson << ",\"kink_amp\":" << p.kink_amp;
+            }
+            if (p.hasKinkFreq) {
+                partJson << ",\"kink_freq\":" << p.kink_freq;
+            }
+            if (p.hasKinkShape) {
+                partJson << ",\"kink_shape\":" << p.kink_shape;
+            }
+            if (p.hasKinkFlat) {
+                partJson << ",\"kink_flat\":" << p.kink_flat;
+            }
+            if (p.hasKinkAmpClump) {
+                partJson << ",\"kink_amp_clump\":" << p.kink_amp_clump;
+            }
+            if (p.hasKinkExtraSteps) {
+                partJson << ",\"kink_extra_steps\":" << p.kink_extra_steps;
+            }
+            if (p.hasKinkAxisRandom) {
+                partJson << ",\"kink_axis_random\":" << p.kink_axis_random;
+            }
+            if (p.hasKinkAmpRandom) {
+                partJson << ",\"kink_amp_random\":" << p.kink_amp_random;
+            }
+            if (p.hasPartingFac) {
+                partJson << ",\"parting_fac\":" << p.parting_fac;
+            }
+            if (p.hasPartingMin) {
+                partJson << ",\"parting_min\":" << p.parting_min;
+            }
+            if (p.hasPartingMax) {
+                partJson << ",\"parting_max\":" << p.parting_max;
+            }
+            if (p.hasBranchThres) {
+                partJson << ",\"branch_thres\":" << p.branch_thres;
+            }
+            if (p.hasClength) {
+                partJson << ",\"clength\":" << p.clength;
+            }
+            if (p.hasClengthThres) {
+                partJson << ",\"clength_thres\":" << p.clength_thres;
+            }
+            // ParticleSettings.flag child bits - emit true only when bit set (no false invent).
+            if ((p.flag & ParticleSettings::Flag_ChildEffect) != 0) {
+                partJson << ",\"child_effect\":true";
+            }
+            if ((p.flag & ParticleSettings::Flag_ChildLongHair) != 0) {
+                partJson << ",\"child_long_hair\":true";
+            }
+            if ((p.flag & ParticleSettings::Flag_ChildGuide) != 0) {
+                partJson << ",\"child_guide\":true";
+            }
+            // C14: DNA HairKey paths when ParticleData.hair[] was written (no invent / no Depsgraph).
+            {
+                size_t strandWithKeys = 0;
+                size_t totalKeys = 0;
+                for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                    const size_t nk = ps->particles[pi].hair.size();
+                    if (nk == 0) {
+                        continue;
+                    }
+                    ++strandWithKeys;
+                    totalKeys += nk;
+                }
+                if (strandWithKeys > 0 && totalKeys > 0) {
+                    partJson << ",\"hairPaths\":{\"source\":\"ParticleData.hair\""
+                             << ",\"arraysResolved\":true"
+                             << ",\"positionsSpace\":\"emitterLocal\""
+                             << ",\"strandCount\":" << strandWithKeys
+                             << ",\"keyCount\":" << totalKeys
+                             << ",\"keyCounts\":[";
+                    bool firstKc = true;
+                    for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                        const size_t nk = ps->particles[pi].hair.size();
+                        if (nk == 0) {
+                            continue;
+                        }
+                        if (!firstKc) {
+                            partJson << ',';
+                        }
+                        firstKc = false;
+                        partJson << nk;
+                    }
+                    partJson << "],\"positions\":[";
+                    bool firstPos = true;
+                    bool anyTime = false;
+                    bool anyWorld = false;
+                    for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                        const ParticleData &pd = ps->particles[pi];
+                        for (size_t ki = 0; ki < pd.hair.size(); ++ki) {
+                            if (!firstPos) {
+                                partJson << ',';
+                            }
+                            firstPos = false;
+                            const HairKey &hk = pd.hair[ki];
+                            partJson << hk.co[0] << ',' << hk.co[1] << ',' << hk.co[2];
+                            anyTime = true;
+                            if (hk.hasWorldCo) {
+                                anyWorld = true;
+                            }
+                        }
+                    }
+                    partJson << ']';
+                    // times[] always parallel to positions when any HairKey was converted.
+                    if (anyTime) {
+                        partJson << ",\"times\":[";
+                        bool firstT = true;
+                        for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                            const ParticleData &pd = ps->particles[pi];
+                            for (size_t ki = 0; ki < pd.hair.size(); ++ki) {
+                                if (!firstT) {
+                                    partJson << ',';
+                                }
+                                firstT = false;
+                                partJson << pd.hair[ki].time;
+                            }
+                        }
+                        partJson << ']';
+                    }
+                    // world_co only when every emitted key has SDNA world_co (parallel array).
+                    if (anyWorld) {
+                        bool allWorld = true;
+                        for (size_t pi = 0; pi < ps->particles.size() && allWorld; ++pi) {
+                            const ParticleData &pd = ps->particles[pi];
+                            for (size_t ki = 0; ki < pd.hair.size(); ++ki) {
+                                if (!pd.hair[ki].hasWorldCo) {
+                                    allWorld = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (allWorld) {
+                            partJson << ",\"worldPositions\":[";
+                            bool firstW = true;
+                            for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                                const ParticleData &pd = ps->particles[pi];
+                                for (size_t ki = 0; ki < pd.hair.size(); ++ki) {
+                                    if (!firstW) {
+                                        partJson << ',';
+                                    }
+                                    firstW = false;
+                                    const HairKey &hk = pd.hair[ki];
+                                    partJson << hk.world_co[0] << ',' << hk.world_co[1] << ','
+                                             << hk.world_co[2];
+                                }
+                            }
+                            partJson << "],\"worldPositionsSpace\":\"world\"";
+                        }
+                    }
+                    // 0al4: birth face index per strand (DNA ParticleData.num) when resolved.
+                    {
+                        bool anyBirth = false;
+                        for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                            if (!ps->particles[pi].hair.empty() && ps->particles[pi].hasNum &&
+                                    ps->particles[pi].num >= 0) {
+                                anyBirth = true;
+                                break;
+                            }
+                        }
+                        if (anyBirth) {
+                            partJson << ",\"birthFace\":[";
+                            bool firstB = true;
+                            for (size_t pi = 0; pi < ps->particles.size(); ++pi) {
+                                const ParticleData &pd = ps->particles[pi];
+                                if (pd.hair.empty()) {
+                                    continue;
+                                }
+                                if (!firstB) {
+                                    partJson << ',';
+                                }
+                                firstB = false;
+                                partJson << (pd.hasNum ? pd.num : -1);
+                            }
+                            partJson << ']';
+                        }
+                    }
+                    partJson << '}';
+                } else if (p.type == ParticleSettings::Type_Hair) {
+                    // Honesty: hair typed but no HairKey DATA in file (runtime/pathcache only).
+                    partJson << ",\"hairPathsResolved\":false";
+                    conv.skippedCategories.push_back(
+                            std::string("BLEND_C14_hair_paths_unresolved:") +
+                            (objName ? objName : "?") + "/" + (psName ? psName : "?"));
+                }
+            }
+            if (p.id.name[0] != '\0') {
+                partJson << ",\"settings_name\":\"" << BlendJsonEscape(p.id.name + 2) << '"';
+            }
+            // 0al4: PS vertex groups + density face mask from DNA dvert (no invent).
+            {
+                const Mesh *emesh = (obj->type == Object::Type_MESH && obj->data) ?
+                                            static_cast<const Mesh *>(obj->data.get()) :
+                                            nullptr;
+                std::vector<std::string> vgNames;
+                BlendCollectDeformGroupNames(obj, emesh, vgNames);
+                if (ps->hasVgroup) {
+                    bool vgFirst = true;
+                    for (int si = 0; si < ParticleSystem::VG_Tot; ++si) {
+                        const short idx1 = ps->vgroup[si];
+                        if (idx1 <= 0) {
+                            continue;
+                        }
+                        const int defNr = static_cast<int>(idx1) - 1;
+                        if (defNr < 0 || static_cast<size_t>(defNr) >= vgNames.size()) {
+                            continue;
+                        }
+                        if (vgNames[static_cast<size_t>(defNr)].empty()) {
+                            continue;
+                        }
+                        const char *slot = BlendParticleVgSlotName(si);
+                        if (slot == nullptr) {
+                            continue;
+                        }
+                        if (vgFirst) {
+                            partJson << ",\"vertexGroups\":{";
+                            vgFirst = false;
+                        } else {
+                            partJson << ',';
+                        }
+                        partJson << '"' << slot << "\":\""
+                                 << BlendJsonEscape(vgNames[static_cast<size_t>(defNr)]) << '"';
+                        if (ps->hasVgNeg && (ps->vg_neg & (1 << si)) != 0) {
+                            partJson << ",\"" << slot << "Neg\":true";
+                        }
+                    }
+                    if (!vgFirst) {
+                        partJson << '}';
+                    }
+                    // Density VG -> faceMask / faceDensity (Host skip cavity strands).
+                    if (emesh != nullptr && ps->vgroup[ParticleSystem::VG_Density] > 0) {
+                        const int defNr = static_cast<int>(ps->vgroup[ParticleSystem::VG_Density]) - 1;
+                        const bool invert = ps->hasVgNeg &&
+                                            (ps->vg_neg & (1 << ParticleSystem::VG_Density)) != 0;
+                        std::vector<int> faceMask;
+                        std::vector<float> faceDensity;
+                        if (BlendFaceDensityFromVgroup(*emesh, defNr, invert, faceMask, faceDensity)) {
+                            partJson << ",\"faceMask\":[";
+                            for (size_t i = 0; i < faceMask.size(); ++i) {
+                                if (i) {
+                                    partJson << ',';
+                                }
+                                partJson << faceMask[i];
+                            }
+                            partJson << "],\"faceDensity\":[";
+                            for (size_t i = 0; i < faceDensity.size(); ++i) {
+                                if (i) {
+                                    partJson << ',';
+                                }
+                                partJson << faceDensity[i];
+                            }
+                            partJson << "],\"faceMaskSource\":\"vertex_group_density\"";
+                        }
+                    }
+                }
+            }
+            // 0al4: Particle MTex maps -> typed material (after BuildMaterials).
+            // Sidecar textures[] decommissioned - Presence typedMaterial = settings DNA name.
+            if (p.id.name[2] != '\0') {
+                bool anyMtex = false;
+                for (size_t ti = 0; ti < sizeof(p.mtex) / sizeof(p.mtex[0]); ++ti) {
+                    if (!p.mtex[ti] || !p.mtex[ti]->tex || !p.mtex[ti]->tex->ima) {
+                        continue;
+                    }
+                    aiString embedName;
+                    if (!BlendEnsureEmbeddedImage(p.mtex[ti]->tex->ima.get(), conv, embedName)) {
+                        continue;
+                    }
+                    anyMtex = true;
+                    break;
+                }
+                if (anyMtex) {
+                    const std::string settingsName = p.id.name + 2;
+                    partJson << ",\"typedMaterial\":\"" << BlendJsonEscape(settingsName) << '"';
+                    bool queued = false;
+                    for (const ParticleSettings *queuedPart : conv.pendingParticleMtex) {
+                        if (queuedPart == &p) {
+                            queued = true;
+                            break;
+                        }
+                    }
+                    if (!queued) {
+                        conv.pendingParticleMtex.push_back(&p);
+                    }
+                }
+            }
+        } else {
+            partJson << "\"source\":\"ParticleSystem\"";
+        }
+        partJson << "}}";
+        BlendPushPhysicsInv(conv.physicsParticleNodes, objName, partJson.str());
+
+        // C13 PointInstancer inventory for collection/object render (Presence: TRS only if DNA particles[]).
+        if (ps->part) {
+            const ParticleSettings &p = *ps->part;
+            if (p.ren_as == ParticleSettings::Draw_Collection || p.ren_as == ParticleSettings::Draw_Object) {
+                ConversionData::PointInstancerPending pi;
+                pi.emitterName = objName;
+                pi.systemName = psName;
+                if (p.id.name[0] != '\0') {
+                    pi.settingsName = p.id.name + 2;
+                }
+                pi.ren_as = p.ren_as;
+                pi.from = p.from;
+                pi.distr = p.distr;
+                pi.flag = p.flag;
+                pi.totpart = p.totpart;
+                pi.seed = ps->seed;
+                pi.size = p.size;
+                pi.randsize = p.randsize;
+                pi.jitfac = p.jitfac;
+                if (p.hasPhystype) {
+                    pi.phystype = p.phystype;
+                    pi.hasPhystype = true;
+                }
+                if (p.hasDrawAs) {
+                    pi.draw_as = p.draw_as;
+                    pi.hasDrawAs = true;
+                }
+                if (p.hasDraw) {
+                    pi.draw = p.draw;
+                    pi.hasDraw = true;
+                }
+                if (p.hasUserjit) {
+                    pi.userjit = p.userjit;
+                    pi.hasUserjit = true;
+                }
+                if (p.hasGridRes) {
+                    pi.grid_res = p.grid_res;
+                    pi.hasGridRes = true;
+                }
+                if (p.hasGridRand) {
+                    pi.grid_rand = p.grid_rand;
+                    pi.hasGridRand = true;
+                }
+                if (p.hasRandlife) {
+                    pi.randlife = p.randlife;
+                    pi.hasRandlife = true;
+                }
+                if (p.hasRandlength) {
+                    pi.randlength = p.randlength;
+                    pi.hasRandlength = true;
+                }
+                if (p.hasHairStep) {
+                    pi.hair_step = p.hair_step;
+                    pi.hasHairStep = true;
+                }
+                if (p.hasNormfac) {
+                    pi.normfac = p.normfac;
+                    pi.hasHairLength = true;
+                }
+                if (p.dup_group && p.dup_group->id.name[0] != '\0') {
+                    pi.collectionName = p.dup_group->id.name + 2;
+                }
+                if (p.dup_ob && p.dup_ob->id.name[0] != '\0') {
+                    pi.instanceObjectName = p.dup_ob->id.name + 2;
+                }
+                for (std::shared_ptr<ParticleDupliWeight> dw =
+                                std::static_pointer_cast<ParticleDupliWeight>(p.dupliweights.first);
+                        dw;
+                        dw = std::static_pointer_cast<ParticleDupliWeight>(dw->next)) {
+                    if (dw->ob && dw->ob->id.name[0] != '\0') {
+                        pi.prototypeNames.emplace_back(dw->ob->id.name + 2);
+                        pi.prototypeCounts.push_back(static_cast<int>(dw->count));
+                        pi.prototypeIndices.push_back(static_cast<int>(dw->index));
+                    }
+                }
+                if (pi.prototypeNames.empty() && !pi.instanceObjectName.empty()) {
+                    pi.prototypeNames.push_back(pi.instanceObjectName);
+                    pi.prototypeCounts.push_back(1);
+                    pi.prototypeIndices.push_back(0);
+                }
+                // Instance arrays: DNA ParticleData when present; else mesh-face eval for FACE emit.
+                if (!ps->particles.empty()) {
+                    const size_t n = ps->particles.size();
+                    pi.positions.reserve(n * 3);
+                    pi.orients.reserve(n * 4);
+                    pi.scales.reserve(n);
+                    pi.protoIndices.reserve(n);
+                    const size_t nproto = pi.prototypeNames.size();
+                    for (size_t i = 0; i < n; ++i) {
+                        const ParticleData &pd = ps->particles[i];
+                        pi.positions.push_back(pd.state.co[0]);
+                        pi.positions.push_back(pd.state.co[1]);
+                        pi.positions.push_back(pd.state.co[2]);
+                        pi.orients.push_back(pd.state.rot[0]);
+                        pi.orients.push_back(pd.state.rot[1]);
+                        pi.orients.push_back(pd.state.rot[2]);
+                        pi.orients.push_back(pd.state.rot[3]);
+                        const float sc = (pd.size > 0.f) ? pd.size : p.size;
+                        pi.scales.push_back(sc);
+                        if (nproto > 0) {
+                            pi.protoIndices.push_back(static_cast<int>(i % nproto));
+                        }
+                    }
+                    pi.arraysResolved = true;
+                    pi.arraysSource = "dna_particles";
+                    // Host 0ai: DNA ParticleData.co / size are emitter-local (pre parent scale).
+                    pi.positionsSpace = "emitterLocal";
+                    pi.scalesSpace = "emitterLocal";
+                } else if (obj->type == Object::Type_MESH && obj->data) {
+                    const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
+                    ParticleFaceDistributeParams dp;
+                    dp.totpart = p.totpart;
+                    dp.seed = ps->seed;
+                    dp.from = p.from;
+                    dp.distr = p.distr;
+                    dp.flag = p.flag;
+                    dp.jitfac = p.jitfac;
+                    dp.userjit = p.hasUserjit ? p.userjit : 0;
+                    dp.size = p.size;
+                    dp.randsize = p.randsize;
+                    if (p.hasNormfac) {
+                        dp.hairLength = p.normfac * 4.f;
+                    }
+                    dp.objectScale[0] = obj->scale[0];
+                    dp.objectScale[1] = obj->scale[1];
+                    dp.objectScale[2] = obj->scale[2];
+                    dp.prototypeCounts = pi.prototypeCounts;
+                    ParticleFaceDistributeResult dist;
+                    if (BlendDistributeParticlesOnMeshFaces(*emesh, dp, dist)) {
+                        pi.positions = std::move(dist.positions);
+                        pi.orients = std::move(dist.orients);
+                        pi.scales = std::move(dist.scales);
+                        pi.protoIndices = std::move(dist.protoIndices);
+                        pi.faceArea = std::move(dist.faceArea);
+                        pi.emitWeight = std::move(dist.emitWeight);
+                        pi.arraysResolved = true;
+                        pi.arraysSource = "mesh_face_eval";
+                        pi.totpart = static_cast<int>(pi.scales.size());
+                        // Host 0ai: mesh-local positions; scales = size*(1-rand)*hair_length
+                        // in emitter-local (Blender size*path_len), not worldUniform.
+                        pi.positionsSpace = "emitterLocal";
+                        pi.scalesSpace = "emitterLocal";
+                        if (p.hasNormfac) {
+                            pi.scalesMeaning = "size_times_hair_length";
+                        } else {
+                            pi.scalesMeaning = "size";
+                        }
+                    }
+                }
+                conv.pointInstancers.push_back(std::move(pi));
+            }
+        }
+    }
+
+    const SharedModifierData *cur = static_cast<const SharedModifierData *>(obj->modifiers.first.get());
+    for (; cur; cur = static_cast<const SharedModifierData *>(cur->modifier.next.get())) {
+        const ModifierData &dat = cur->modifier;
+        std::vector<ConversionData::PhysicsInvNode> *bag = nullptr;
+        const char *bagKey = nullptr;
+        bool wantMeshMatBind = false;
+        switch (dat.type) {
+        case ModifierData::eModifierType_Softbody:
+            bag = &conv.physicsSoftNodes;
+            bagKey = "softbody";
+            break;
+        case ModifierData::eModifierType_Cloth:
+            bag = &conv.physicsClothNodes;
+            bagKey = "cloth";
+            break;
+        case ModifierData::eModifierType_Fluidsim:
+        case ModifierData::eModifierType_Fluid:
+            bag = &conv.physicsFluidNodes;
+            bagKey = "fluid";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_Smoke:
+            bag = &conv.physicsSmokeNodes;
+            bagKey = "smoke";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_ParticleSystem:
+            bag = &conv.physicsParticleNodes;
+            bagKey = "particles";
+            break;
+        case ModifierData::eModifierType_Explode:
+            bag = &conv.physicsBlastNodes;
+            bagKey = "blast";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_Ocean:
+            bag = &conv.physicsOceanNodes;
+            bagKey = "ocean";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_DynamicPaint:
+            bag = &conv.physicsDynamicPaintNodes;
+            bagKey = "dynamic_paint";
+            break;
+        case ModifierData::eModifierType_Solidify:
+            bag = &conv.physicsSolidifyNodes;
+            bagKey = "solidify";
+            break;
+        case ModifierData::eModifierType_MeshCache:
+            bag = &conv.meshCacheNodes;
+            bagKey = "mesh_cache";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_MeshSequenceCache:
+            bag = &conv.meshCacheNodes;
+            bagKey = "mesh_sequence_cache";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_Collision:
+            bag = &conv.physicsCollisionNodes;
+            bagKey = "collision";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_Curve:
+            bag = &conv.physicsCurveNodes;
+            bagKey = "curve";
+            wantMeshMatBind = true;
+            break;
+        case ModifierData::eModifierType_Nodes: {
+
+            // Blender 3+ often drives cloth/soft via Geometry Nodes - map by name heuristic.
+            auto lowerContains = [](const char *a, const char *b) -> bool {
+                if (a == nullptr || b == nullptr) {
+                    return false;
+                }
+                std::string hay(a), needle(b);
+                for (char &c : hay) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                for (char &c : needle) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                return hay.find(needle) != std::string::npos;
+            };
+            const bool hitCloth = lowerContains(dat.name, "cloth") || lowerContains(objName, "cloth");
+            const bool hitSoft = lowerContains(dat.name, "soft") || lowerContains(objName, "soft") ||
+                                 lowerContains(objName, "pudding") || lowerContains(objName, "jiggle");
+            const bool hitFluid = lowerContains(dat.name, "fluid") || lowerContains(dat.name, "smoke") ||
+                                  lowerContains(objName, "smoke") || lowerContains(objName, "fluid");
+            const bool hitPart = lowerContains(dat.name, "particle") || lowerContains(objName, "particle") ||
+                                 lowerContains(dat.name, "emitter") || lowerContains(objName, "emitter");
+            // Do not specialize-convert NodesModifierData->bNodeTree here (heavy/unsafe on some files).
+            // Honest skip when modifier/object names indicate fracture/blast (e.g. CubeCuts / Cut Fracturing).
+            const bool hitBlast = lowerContains(dat.name, "fractur") || lowerContains(dat.name, "blast") ||
+                                  lowerContains(dat.name, "shatter") || lowerContains(dat.name, "cut") ||
+                                  lowerContains(objName, "fractur") || lowerContains(objName, "blast") ||
+                                  lowerContains(objName, "shatter");
+            if (hitCloth) {
+                bag = &conv.physicsClothNodes;
+                bagKey = "cloth";
+            } else if (hitSoft) {
+                bag = &conv.physicsSoftNodes;
+                bagKey = "softbody";
+            } else if (hitFluid) {
+                bag = &conv.physicsFluidNodes;
+                bagKey = "fluid";
+                wantMeshMatBind = true;
+            } else if (hitPart) {
+                bag = &conv.physicsParticleNodes;
+                bagKey = "particles";
+            } else if (hitBlast) {
+                // Geometry Nodes fracture is unevaluated - honest skip, no fake chunks.
+                conv.skippedCategories.push_back(
+                        std::string("BLEND_physics_blast_geometry_nodes_unevaluated:") +
+                        (objName ? objName : "?") + "/" + dat.name);
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        if (bag == nullptr) {
+            continue;
+        }
+
+        std::ostringstream settings;
+        settings << "{\"mode\":" << dat.mode;
+        if (dat.type == ModifierData::eModifierType_Nodes) {
+            settings << ",\"source\":\"NodesModifierData\"";
+            if (cur->dna_type != nullptr &&
+                    std::strcmp(cur->dna_type, "NodesModifierData") == 0 &&
+                    bagKey != nullptr && std::strcmp(bagKey, "particles") == 0) {
+                BlendAppendNodesModifierParticlePresence(
+                        settings, *static_cast<const NodesModifierData *>(cur));
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_Cloth &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "ClothModifierData") == 0) {
+            const auto *cloth = static_cast<const ClothModifierData *>(cur);
+            if (cloth->sim_parms) {
+                const ClothSimSettings &cs = *cloth->sim_parms;
+                settings << ",\"mass\":" << cs.mass
+                         << ",\"shear\":" << cs.shear
+                         << ",\"bending\":" << cs.bending
+                         << ",\"tension\":" << cs.tension
+                         << ",\"goalspring\":" << cs.goalspring
+                         << ",\"goalfrict\":" << cs.goalfrict
+                         << ",\"stepsPerFrame\":" << cs.stepsPerFrame
+                         << ",\"gravity\":[" << cs.gravity[0] << ',' << cs.gravity[1] << ',' << cs.gravity[2] << ']';
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_Explode) {
+            settings << ",\"source\":\"ExplodeModifierData\"";
+        }
+        if (dat.type == ModifierData::eModifierType_Fluid &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "FluidModifierData") == 0) {
+            const auto *fluid = static_cast<const FluidModifierData *>(cur);
+            const char *role = "unknown";
+            if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_DOMAIN) {
+                role = "domain";
+            } else if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_FLOW) {
+                role = "flow";
+                if (fluid->flow) {
+                    if (fluid->flow->behavior == FluidFlowSettings::Behavior_Inflow) {
+                        role = "inflow";
+                    } else if (fluid->flow->behavior == FluidFlowSettings::Behavior_Outflow) {
+                        role = "outflow";
+                    }
+                }
+            } else if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_EFFEC) {
+                role = "obstacle";
+                if (fluid->effector) {
+                    if (fluid->effector->type == FluidEffectorSettings::Type_Guide) {
+                        role = "guide";
+                    } else if (fluid->effector->type == FluidEffectorSettings::Type_Collision) {
+                        role = "collision";
+                    }
+                }
+            }
+            settings << ",\"fluid_role\":\"" << role << "\"";
+            if (fluid->domain) {
+                if (fluid->domain->type == FluidDomainSettings::Domain_Gas) {
+                    settings << ",\"domain_type\":\"gas\"";
+                } else if (fluid->domain->type == FluidDomainSettings::Domain_Liquid) {
+                    settings << ",\"domain_type\":\"liquid\"";
+                }
+                settings << ",\"cache\":{\"directory\":\"" << BlendJsonEscape(fluid->domain->cache_directory)
+                         << "\",\"frame_start\":" << fluid->domain->cache_frame_start
+                         << ",\"frame_end\":" << fluid->domain->cache_frame_end
+                         << ",\"type\":" << fluid->domain->cache_type << '}';
+            }
+            if (fluid->flow) {
+                const char *flowType = nullptr;
+                switch (fluid->flow->type) {
+                case FluidFlowSettings::Flow_Smoke: flowType = "smoke"; break;
+                case FluidFlowSettings::Flow_Fire: flowType = "fire"; break;
+                case FluidFlowSettings::Flow_SmokeFire: flowType = "smoke_fire"; break;
+                case FluidFlowSettings::Flow_Liquid: flowType = "liquid"; break;
+                default: break;
+                }
+                settings << ",\"flow\":{\"type\":" << fluid->flow->type;
+                if (flowType != nullptr) {
+                    settings << ",\"flow_type\":\"" << flowType << '"';
+                }
+                settings << ",\"behavior\":" << fluid->flow->behavior
+                         << ",\"density\":" << fluid->flow->density
+                         << ",\"fuel_amount\":" << fluid->flow->fuel_amount
+                         << ",\"temperature\":" << fluid->flow->temperature << '}';
+            }
+            if (fluid->effector) {
+                settings << ",\"effector\":{\"type\":" << fluid->effector->type
+                         << ",\"surface_distance\":" << fluid->effector->surface_distance
+                         << ",\"flags\":" << fluid->effector->flags
+                         << ",\"subframes\":" << fluid->effector->subframes
+                         << ",\"vel_multi\":" << fluid->effector->vel_multi
+                         << ",\"guide_mode\":" << fluid->effector->guide_mode << '}';
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_Smoke &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "SmokeModifierData") == 0) {
+            const auto *smoke = static_cast<const SmokeModifierData *>(cur);
+            const char *role = "unknown";
+            if (smoke->type & FluidModifierData::MOD_FLUID_TYPE_DOMAIN) {
+                role = "domain";
+            } else if (smoke->type & FluidModifierData::MOD_FLUID_TYPE_FLOW) {
+                role = "flow";
+            } else if (smoke->type & FluidModifierData::MOD_FLUID_TYPE_EFFEC) {
+                role = "obstacle";
+            }
+            // No domain_type on legacy Smoke DNA - Host: smoke bag => gas solver.
+            settings << ",\"source\":\"SmokeModifierData\",\"fluid_role\":\"" << role << '"';
+        }
+        // Legacy Elbeem Fluidsim (Blender 2.x) - FluidsimSettings.type bits.
+        if (dat.type == ModifierData::eModifierType_Fluidsim &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "FluidsimModifierData") == 0) {
+            const auto *fs = static_cast<const FluidsimModifierData *>(cur);
+            settings << ",\"source\":\"FluidsimModifierData\"";
+            if (fs->fss) {
+                const FluidsimSettings &fss = *fs->fss;
+                const char *role = "unknown";
+                // Prefer specific roles when multiple bits (DNA can OR ENABLE).
+                if (fss.type & FluidsimSettings::Type_Domain) {
+                    role = "domain";
+                } else if (fss.type & FluidsimSettings::Type_Inflow) {
+                    role = "inflow";
+                } else if (fss.type & FluidsimSettings::Type_Outflow) {
+                    role = "outflow";
+                } else if (fss.type & FluidsimSettings::Type_Obstacle) {
+                    role = "obstacle";
+                } else if (fss.type & FluidsimSettings::Type_Fluid) {
+                    role = "flow"; // Elbeem fluid body
+                } else if (fss.type & FluidsimSettings::Type_Particle) {
+                    role = "particle";
+                } else if (fss.type & FluidsimSettings::Type_Control) {
+                    role = "control";
+                }
+                settings << ",\"fluid_role\":\"" << role << '"';
+                settings << ",\"fluidsim_type\":" << static_cast<int>(fss.type);
+                // Elbeem is liquid surface sim - domain_type only when Domain bit set.
+                if (fss.type & FluidsimSettings::Type_Domain) {
+                    settings << ",\"domain_type\":\"liquid\"";
+                }
+                settings << ",\"resolutionxyz\":" << fss.resolutionxyz
+                         << ",\"previewresxyz\":" << fss.previewresxyz
+                         << ",\"realsize\":" << fss.realsize
+                         << ",\"viscosityValue\":" << fss.viscosityValue
+                         << ",\"animStart\":" << fss.animStart
+                         << ",\"animEnd\":" << fss.animEnd
+                         << ",\"bakeStart\":" << fss.bakeStart
+                         << ",\"bakeEnd\":" << fss.bakeEnd
+                         << ",\"frameOffset\":" << fss.frameOffset
+                         << ",\"flag\":" << fss.flag
+                         << ",\"typeFlags\":" << fss.typeFlags;
+                if (fss.iniVelx != 0.f || fss.iniVely != 0.f || fss.iniVelz != 0.f) {
+                    settings << ",\"iniVel\":[" << fss.iniVelx << ',' << fss.iniVely << ','
+                             << fss.iniVelz << ']';
+                }
+                if (fss.surfdataPath[0] != '\0') {
+                    settings << ",\"cache\":{\"directory\":\"" << BlendJsonEscape(fss.surfdataPath)
+                             << "\",\"frame_start\":" << fss.bakeStart
+                             << ",\"frame_end\":" << fss.bakeEnd << '}';
+                    if (fss.surfdataPath[0] == '/' && fss.surfdataPath[1] == '/') {
+                        settings << ",\"cachePathBlendRelative\":true";
+                    }
+                }
+            } else {
+                conv.skippedCategories.push_back(
+                        std::string("BLEND_fluidsim_no_settings:") + (objName ? objName : "?") + "/" +
+                        dat.name);
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_Collision &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "CollisionModifierData") == 0) {
+            settings << ",\"source\":\"CollisionModifierData\"";
+            if (obj->pd) {
+                settings << ",\"deflect\":" << static_cast<int>(obj->pd->deflect)
+                         << ",\"pdef_cfrict\":" << obj->pd->pdef_cfrict
+                         << ",\"pdef_damp\":" << obj->pd->pdef_damp
+                         << ",\"pdef_frict\":" << obj->pd->pdef_frict;
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_Curve &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "CurveModifierData") == 0) {
+            const auto *cm = static_cast<const CurveModifierData *>(cur);
+            settings << ",\"source\":\"CurveModifierData\""
+                     << ",\"defaxis\":" << cm->defaxis
+                     << ",\"flag\":" << cm->flag;
+            if (cm->name[0] != '\0') {
+                settings << ",\"vgroup\":\"" << BlendJsonEscape(cm->name) << '"';
+            }
+            if (std::shared_ptr<Object> curveOb = cm->object.lock()) {
+                if (curveOb->id.name[0] != '\0') {
+                    settings << ",\"curveObject\":\"" << BlendJsonEscape(curveOb->id.name + 2) << '"';
+                }
+            }
+        }
+
+        if (dat.type == ModifierData::eModifierType_Ocean &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "OceanModifierData") == 0) {
+            const auto *ocean = static_cast<const OceanModifierData *>(cur);
+            settings << ",\"source\":\"OceanModifierData\""
+                     << ",\"resolution\":" << ocean->resolution
+                     << ",\"spatial_size\":" << ocean->spatial_size
+                     << ",\"depth\":" << ocean->depth
+                     << ",\"wave_scale\":" << ocean->wave_scale
+                     << ",\"time\":" << ocean->time
+                     << ",\"chop_amount\":" << ocean->chop_amount
+                     << ",\"wind_velocity\":" << ocean->wind_velocity
+                     << ",\"cached\":" << (ocean->cached ? "true" : "false")
+                     << ",\"timeDrivenByFrame\":true";
+            if (ocean->cachepath[0] != '\0') {
+                settings << ",\"cachepath\":\"" << BlendJsonEscape(ocean->cachepath) << '"';
+            }
+        }
+        if (dat.type == ModifierData::eModifierType_DynamicPaint &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "DynamicPaintModifierData") == 0) {
+            const auto *dp = static_cast<const DynamicPaintModifierData *>(cur);
+            const char *ui = "unknown";
+            if (dp->type & DynamicPaintModifierData::Type_Brush) {
+                ui = "brush";
+            } else if (dp->type & DynamicPaintModifierData::Type_Canvas) {
+                ui = "canvas";
+            }
+            settings << ",\"source\":\"DynamicPaintModifierData\",\"ui_type\":\"" << ui << '"';
+        }
+        if (dat.type == ModifierData::eModifierType_Solidify &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "SolidifyModifierData") == 0) {
+            const auto *sol = static_cast<const SolidifyModifierData *>(cur);
+            settings << ",\"source\":\"SolidifyModifierData\",\"thickness\":" << sol->offset;
+        }
+        // 0al: Mesh Cache (MDD/PC2) / Mesh Sequence Cache (Alembic/USD) - paths only.
+        if (dat.type == ModifierData::eModifierType_MeshCache &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "MeshCacheModifierData") == 0) {
+            const auto *mc = static_cast<const MeshCacheModifierData *>(cur);
+            settings << ",\"source\":\"MeshCacheModifierData\"";
+            const char *kind = "mesh_cache";
+            if (mc->type == MeshCacheModifierData::Type_MDD) {
+                kind = "mdd";
+            } else if (mc->type == MeshCacheModifierData::Type_PC2) {
+                kind = "pc2";
+            }
+            settings << ",\"cacheKind\":\"" << kind << '"';
+            if (mc->filepath[0] != '\0') {
+                settings << ",\"cachePath\":\"" << BlendJsonEscape(mc->filepath) << '"';
+                if (mc->filepath[0] == '/' && mc->filepath[1] == '/') {
+                    settings << ",\"cachePathBlendRelative\":true";
+                }
+            } else {
+                conv.skippedCategories.push_back(
+                        std::string("BLEND_mesh_cache_no_path:") + (objName ? objName : "?") + "/" +
+                        dat.name);
+            }
+            settings << ",\"time_mode\":" << static_cast<int>(mc->time_mode)
+                     << ",\"play_mode\":" << static_cast<int>(mc->play_mode)
+                     << ",\"factor\":" << mc->factor
+                     << ",\"frame_start\":" << mc->frame_start
+                     << ",\"frame_scale\":" << mc->frame_scale
+                     << ",\"eval_frame\":" << mc->eval_frame
+                     << ",\"eval_time\":" << mc->eval_time
+                     << ",\"eval_factor\":" << mc->eval_factor;
+        }
+        if (dat.type == ModifierData::eModifierType_MeshSequenceCache &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "MeshSeqCacheModifierData") == 0) {
+            const auto *ms = static_cast<const MeshSeqCacheModifierData *>(cur);
+            settings << ",\"source\":\"MeshSeqCacheModifierData\"";
+            // cacheKind: DNA CacheFile.type when set; else Presence from authored filepath suffix.
+            auto kindFromPath = [](const char *path) -> const char * {
+                if (path == nullptr || path[0] == '\0') {
+                    return nullptr;
+                }
+                const char *dot = std::strrchr(path, '.');
+                if (dot == nullptr) {
+                    return nullptr;
+                }
+                if (std::strcmp(dot, ".abc") == 0) {
+                    return "alembic";
+                }
+                if (std::strcmp(dot, ".usd") == 0 || std::strcmp(dot, ".usda") == 0 ||
+                        std::strcmp(dot, ".usdc") == 0 || std::strcmp(dot, ".usdz") == 0) {
+                    return "usd";
+                }
+                return nullptr;
+            };
+            const char *kind = "mesh_sequence_cache";
+            if (ms->cache_file) {
+                if (ms->cache_file->type == CacheFile::Type_Alembic) {
+                    kind = "alembic";
+                } else if (ms->cache_file->type == CacheFile::Type_USD) {
+                    kind = "usd";
+                } else if (const char *fromPath = kindFromPath(ms->cache_file->filepath)) {
+                    kind = fromPath;
+                }
+                settings << ",\"cacheKind\":\"" << kind << '"';
+                settings << ",\"cacheFileType\":" << static_cast<int>(ms->cache_file->type);
+                if (ms->cache_file->filepath[0] != '\0') {
+                    settings << ",\"cachePath\":\"" << BlendJsonEscape(ms->cache_file->filepath)
+                             << '"';
+                    if (ms->cache_file->filepath[0] == '/' && ms->cache_file->filepath[1] == '/') {
+                        settings << ",\"cachePathBlendRelative\":true";
+                    }
+                } else {
+                    conv.skippedCategories.push_back(
+                            std::string("BLEND_mesh_cache_no_path:") + (objName ? objName : "?") +
+                            "/" + dat.name);
+                }
+                if (ms->cache_file->id.name[0] != '\0') {
+                    settings << ",\"cacheFile\":\""
+                             << BlendJsonEscape(ms->cache_file->id.name + 2) << '"';
+                }
+                // Presence: CacheFile.frame / frame_offset when DNA resolved.
+                settings << ",\"cacheFileFrame\":" << ms->cache_file->frame
+                         << ",\"cacheFileFrameOffset\":" << ms->cache_file->frame_offset;
+                if (ms->cache_file->override_frame) {
+                    settings << ",\"cacheFileOverrideFrame\":true";
+                }
+            } else {
+                settings << ",\"cacheKind\":\"" << kind << '"';
+                conv.skippedCategories.push_back(
+                        std::string("BLEND_mesh_cache_no_cachefile:") + (objName ? objName : "?") +
+                        "/" + dat.name);
+            }
+            if (ms->object_path[0] != '\0') {
+                settings << ",\"objectPath\":\"" << BlendJsonEscape(ms->object_path) << '"';
+            }
+            settings << ",\"read_flag\":" << static_cast<int>(ms->read_flag)
+                     << ",\"velocity_scale\":" << ms->velocity_scale;
+            // 0ak: DNA rest avg normal (mesh-local). Assimp does not evaluate Alembic;
+            // Host uses ABC sample - this Presence documents DNA rest orientation.
+            if (obj->type == Object::Type_MESH && obj->data) {
+                const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
+                float avgN[3];
+                if (emesh != nullptr && BlendMeshRestAvgNormal(*emesh, avgN)) {
+                    settings << ",\"restAvgNormal\":[" << avgN[0] << ',' << avgN[1] << ',' << avgN[2]
+                             << "],\"restAvgNormalSpace\":\"meshLocal\"";
+                }
+            }
+        }
+        // 0ak also on MeshCache (MDD/PC2) when DNA rest resolves.
+        if (dat.type == ModifierData::eModifierType_MeshCache &&
+                cur->dna_type != nullptr &&
+                std::strcmp(cur->dna_type, "MeshCacheModifierData") == 0 &&
+                obj->type == Object::Type_MESH && obj->data) {
+            const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
+            float avgN[3];
+            if (emesh != nullptr && BlendMeshRestAvgNormal(*emesh, avgN)) {
+                settings << ",\"restAvgNormal\":[" << avgN[0] << ',' << avgN[1] << ',' << avgN[2]
+                         << "],\"restAvgNormalSpace\":\"meshLocal\"";
+            }
+        }
+        settings << '}';
+
+        std::ostringstream nodeJson;
+        nodeJson << "{\"name\":\"" << BlendJsonEscape(objName)
+                 << "\",\"modifier\":\"" << BlendJsonEscape(dat.name)
+                 << "\",\"type\":\"" << bagKey << '"';
+        if (wantMeshMatBind) {
+            BlendAppendNodeMeshMaterialBind(nodeJson, node, conv);
+        }
+        nodeJson << ",\"settings\":" << settings.str() << '}';
+        BlendPushPhysicsInv(*bag, objName, nodeJson.str());
+    }
+
+    // C5: non-TRS Action FCurves (modifier props etc.) -> animPointerChannels.
+    auto collectAct = [&](const std::shared_ptr<bAction> &act) {
+        if (!act) {
+            return;
+        }
+        const char *actName = (act->id.name[0] != '\0') ? (act->id.name + 2) : "";
+        for (std::shared_ptr<ElemBase> cur = act->curves.first; cur;) {
+            const FCurve *fc = BlendCastFCurve(cur.get());
+            if (fc == nullptr) {
+                break;
+            }
+            cur = fc->next;
+            if (fc->rna_path.empty() || fc->bezt.empty()) {
+                continue;
+            }
+            if (fc->rna_path == "location" || fc->rna_path == "rotation_euler" ||
+                    fc->rna_path == "rotation_quaternion" || fc->rna_path == "scale" ||
+                    fc->rna_path == "delta_location" || fc->rna_path == "delta_scale") {
+                continue;
+            }
+            ConversionData::AnimPointerChannel ch;
+            ch.actionName = actName ? actName : "";
+            ch.nodeName = objName ? objName : "";
+            ch.rnaPath = fc->rna_path;
+            ch.arrayIndex = fc->array_index;
+            ch.times.reserve(fc->bezt.size());
+            ch.values.reserve(fc->bezt.size());
+            for (const BezTriple &bz : fc->bezt) {
+                ch.times.push_back(bz.vec[1][0]);
+                ch.values.push_back(bz.vec[1][1]);
+            }
+            conv.animPointerChannels.push_back(std::move(ch));
+        }
+    };
+    if (obj->adt) {
+        collectAct(obj->adt->action);
+        for (std::shared_ptr<ElemBase> tcur = obj->adt->nla_tracks.first; tcur;) {
+            const NlaTrack *track = nullptr;
+            if (tcur->dna_type == nullptr || std::strcmp(tcur->dna_type, "NlaTrack") == 0) {
+                track = static_cast<const NlaTrack *>(tcur.get());
+            }
+            if (track == nullptr) {
+                break;
+            }
+            for (std::shared_ptr<ElemBase> scur = track->strips.first; scur;) {
+                const NlaStrip *strip = nullptr;
+                if (scur->dna_type == nullptr || std::strcmp(scur->dna_type, "NlaStrip") == 0) {
+                    strip = static_cast<const NlaStrip *>(scur.get());
+                }
+                if (strip == nullptr) {
+                    break;
+                }
+                collectAct(strip->act);
+                scur = strip->next;
+            }
+            tcur = track->next;
+        }
+    }
+    // C5 Drivers: AnimData.drivers -> ConversionData.driverChannels (Animation sidecar).
+    BlendCollectObjectDrivers(obj, conv);
+}
 } // namespace
 
 // zlib is needed for compressed blend files
@@ -2430,7 +6625,7 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
         blenderVersionStr[3] = hdr[4];
         blenderVersionStr[4] = '\0';
     } else if (std::isdigit(static_cast<unsigned char>(hdr[0])) &&
-            std::isdigit(static_cast<unsigned char>(hdr[1]))) {
+               std::isdigit(static_cast<unsigned char>(hdr[1]))) {
         // Format v1: ASCII header size ("17"), then 5 more bytes already partially read...
         // Bytes read so far after magic: [0]=size tens, [1]=size ones, need rest of 17-byte header.
         const int header_size = (hdr[0] - '0') * 10 + (hdr[1] - '0');
@@ -2495,7 +6690,7 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
     Scene scene;
     ExtractScene(scene, file);
 
-    ConvertBlendFile(pScene, scene, file);
+    ConvertBlendFile(pScene, scene, file, blenderVersionStr);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -2562,7 +6757,7 @@ void BlenderImporter::ExtractScene(Scene &out, const FileDatabase &file) {
     for (const FileBlockHead &bl : file.entries) {
 
         // Fix: using the DNA index is more reliable to locate scenes
-        //if (bl.id == "SC") {
+        // if (bl.id == "SC") {
 
         if (bl.dna_index == (*it).second) {
             block = &bl;
@@ -2614,6 +6809,102 @@ static void BlendCollectCollectionObjects(const std::shared_ptr<Collection> &col
     }
 }
 
+/** Collect (collectionName -> object names) from a collection tree for C13 bind. */
+static void BlendIndexCollections(
+        const std::shared_ptr<Collection> &collection,
+        std::vector<std::pair<std::string, std::vector<std::string>>> &out) {
+    if (!collection) {
+        return;
+    }
+    std::vector<std::string> names;
+    for (std::shared_ptr<CollectionObject> cur =
+                    std::static_pointer_cast<CollectionObject>(collection->gobject.first);
+            cur;
+            cur = cur->next) {
+        if (cur->ob && cur->ob->id.name[0] != '\0') {
+            names.emplace_back(cur->ob->id.name + 2);
+        }
+    }
+    if (collection->id.name[0] != '\0') {
+        out.emplace_back(collection->id.name + 2, std::move(names));
+    }
+    for (std::shared_ptr<CollectionChild> cur =
+                    std::static_pointer_cast<CollectionChild>(collection->children.first);
+            cur;
+            cur = cur->next) {
+        if (cur->collection) {
+            BlendIndexCollections(cur->collection, out);
+        }
+    }
+}
+
+/** When DNA dup_group/instance_collection is null, bind prototypes to a owning Collection. */
+static std::string BlendResolveCollectionForPrototypes(
+        const Scene &in,
+        const std::vector<std::string> &protoNames) {
+    if (protoNames.empty() || !in.master_collection) {
+        return {};
+    }
+    std::vector<std::pair<std::string, std::vector<std::string>>> cols;
+    BlendIndexCollections(in.master_collection, cols);
+    std::string best;
+    size_t bestExtra = static_cast<size_t>(-1);
+    for (const auto &col : cols) {
+        size_t hits = 0;
+        for (const std::string &pn : protoNames) {
+            if (std::find(col.second.begin(), col.second.end(), pn) != col.second.end()) {
+                ++hits;
+            }
+        }
+        if (hits != protoNames.size()) {
+            continue;
+        }
+        const size_t extra = col.second.size() - hits;
+        if (best.empty() || extra < bestExtra) {
+            best = col.first;
+            bestExtra = extra;
+        }
+    }
+    return best;
+}
+
+static void BlendEmitFloatArray(std::ostringstream &json, const char *key, const std::vector<float> &v) {
+    json << ",\"" << key << "\":[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) {
+            json << ',';
+        }
+        json << v[i];
+    }
+    json << ']';
+}
+
+static void BlendEmitIntArray(std::ostringstream &json, const char *key, const std::vector<int> &v) {
+    json << ",\"" << key << "\":[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) {
+            json << ',';
+        }
+        json << v[i];
+    }
+    json << ']';
+}
+
+static const aiNode *BlendFindNodeByName(const aiNode *n, const char *name) {
+    if (!n || name == nullptr) {
+        return nullptr;
+    }
+    if (n->mName == aiString(name)) {
+        return n;
+    }
+    for (unsigned int ci = 0; ci < n->mNumChildren; ++ci) {
+        if (const aiNode *f = BlendFindNodeByName(n->mChildren[ci], name)) {
+            return f;
+        }
+    }
+    return nullptr;
+}
+
 // ------------------------------------------------------------------------------------------------
 void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
         const std::shared_ptr<Collection> &collection, ConversionData &conv_data) {
@@ -2646,7 +6937,34 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file) {
+
+/** Emit Asset Browser strings onto aiMetadata (Presence; aiString caps at AI_MAXLEN). */
+void BlendEmitAssetBrowserMetadata(aiMetadata *&meta, const Assimp::Blender::AssetMetaData *asset,
+        bool alsoSourceCopyright) {
+    if (asset == nullptr) {
+        return;
+    }
+    auto addStr = [&](const char *key, const std::string &val) {
+        if (val.empty()) {
+            return;
+        }
+        if (meta == nullptr) {
+            meta = new aiMetadata();
+        }
+        // aiString(std::string) truncates to AI_MAXLEN-1.
+        meta->Add(key, aiString(val));
+    };
+    addStr("Asset.Author", asset->author);
+    addStr("Asset.Description", asset->description);
+    addStr("Asset.Copyright", asset->copyright);
+    addStr("Asset.License", asset->license);
+    if (alsoSourceCopyright && !asset->copyright.empty()) {
+        addStr(AI_METADATA_SOURCE_COPYRIGHT, asset->copyright);
+    }
+}
+
+void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file,
+        const char *blenderVersion) {
     ConversionData conv(file);
 
     aiNode *root = out->mRootNode = new aiNode("<BlenderRoot>");
@@ -2686,6 +7004,9 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     }
 
     BuildMaterials(conv);
+    // 0al4: ParticleSettings.mtex[] -> typed $tex.file + meta (after mesh mats exist for UV resolve).
+    BlendEmitParticleTypedMTexMaterials(conv);
+    BlendEmitWorldEnv(in, conv);
 
     // Presence: emit every packed Image ID block, not only those reached via materials.
     std::vector<std::shared_ptr<Image>> ownedPackedImages;
@@ -2740,18 +7061,661 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
     if (!out->mNumMeshes) {
         out->mFlags |= AI_SCENE_FLAGS_INCOMPLETE;
     }
+
+    // C0-S8 sidecars (doc/Sidecar.md BLEND). Always emit scene bag when Scene DNA loaded.
+    // Typed: header SourceAsset_* + optional Scene Asset Browser fields (AssetMetaData).
+    if (out->mMetaData == nullptr) {
+        out->mMetaData = new aiMetadata();
+    }
+    const float fpsDenom = (in.r.frs_sec_base > 0.f) ? in.r.frs_sec_base : 1.f;
+    const float fps = (fpsDenom != 0.f) ? (in.r.frs_sec / fpsDenom) : in.r.frs_sec;
+    const float metersPerUnit = (in.unit.scale_length > 0.f) ? in.unit.scale_length : 1.f;
+
+    // S1 mesh CustomData layers + DNA srcVert buffer (MDD / Mesh Cache bind).
+    for (unsigned int mi = 0; mi < out->mNumMeshes; ++mi) {
+        const bool hasJson = mi < conv.meshSidecarJson.size() && !conv.meshSidecarJson[mi].empty();
+        const bool hasSrcVert = mi < conv.meshSrcVertDna.size() && !conv.meshSrcVertDna[mi].empty();
+        if (!hasJson && !hasSrcVert) {
+            continue;
+        }
+        auto *sc = new aiMeshSidecar();
+        if (hasJson) {
+            sc->mExtensionsJson = BlendDupJson(conv.meshSidecarJson[mi], sc->mExtensionsJsonLength);
+        }
+        if (hasSrcVert && out->mMeshes[mi] != nullptr &&
+                conv.meshSrcVertDna[mi].size() == static_cast<size_t>(out->mMeshes[mi]->mNumVertices)) {
+            const std::vector<int32_t> &sv = conv.meshSrcVertDna[mi];
+            sc->mNumBuffers = 1;
+            sc->mBuffers = new aiSidecarBuffer[1];
+            aiSidecarBuffer &buf = sc->mBuffers[0];
+            buf.mName.Set("srcVert");
+            buf.mNumElements = static_cast<unsigned>(sv.size());
+            buf.mNumComponents = 1;
+            buf.mComponentType = static_cast<unsigned>(aiSidecarComponentType_UnsignedInt);
+            buf.mByteLength = sv.size() * sizeof(uint32_t);
+            buf.mData = new uint8_t[buf.mByteLength];
+            uint32_t *dst = reinterpret_cast<uint32_t *>(buf.mData);
+            for (size_t i = 0; i < sv.size(); ++i) {
+                dst[i] = static_cast<uint32_t>(sv[i]);
+            }
+        }
+        AttachMeshSidecar(out, mi, sc);
+    }
+
+    // S3 material bag: BLEND_shader (+ BLEND_shader_principled when C6 flatten succeeded)
+    for (unsigned int mati = 0; mati < out->mNumMaterials; ++mati) {
+        std::string body;
+        if (mati < conv.materialSidecarJson.size() && !conv.materialSidecarJson[mati].empty()) {
+            body = conv.materialSidecarJson[mati];
+        } else {
+            std::ostringstream mjson;
+            mjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"BLEND_shader\":{";
+            if (mati < conv.materials_raw.size() && conv.materials_raw[mati]) {
+                mjson << "\"name\":\"" << BlendJsonEscape(conv.materials_raw[mati]->id.name + 2) << '"';
+            }
+            mjson << "}}";
+            body = mjson.str();
+        }
+        auto *msc = new aiMaterialSidecar();
+        msc->mExtensionsJson = BlendDupJson(body, msc->mExtensionsJsonLength);
+        AttachMaterialSidecar(out, mati, msc);
+    }
+
+    // S5/S6 physics: modifiers + soft/rigid DNA + particles + KHR-shaped rigid when fields exist
+    if (conv.physicsRigidNodes.empty()) {
+        conv.skippedCategories.push_back("BLEND_physics_rigidbody_object_pointer");
+    }
+    conv.skippedCategories.push_back("BLEND_shader_network_full_nodegraph");
+    // C5: only blanket-skip Action/NLA when nothing was collected into anim sidecar
+    // and no typed aiAnimation exists for those channels.
+    if (conv.animPointerChannels.empty() && conv.driverChannels.empty() && out->mNumAnimations == 0) {
+        // Still avoid silent drop: specific skip only when we truly have no Action DNA walk result.
+        // Water Caustics has PlaneAction -> channels; this branch then does not fire.
+        conv.skippedCategories.push_back("BLEND_action_nla_animation_sidecar");
+    }
+    // Sculpt cloth brushes (cloth_brushes_demo) - Brush DNA inventory into BLEND_physics_cloth.
+    BlendCollectClothBrushPresence(conv, &in);
+    const bool hasPhys = !conv.physicsSoftNodes.empty() || !conv.physicsClothNodes.empty() ||
+                         !conv.physicsFluidNodes.empty() || !conv.physicsSmokeNodes.empty() ||
+                         !conv.physicsRigidNodes.empty() || !conv.physicsParticleNodes.empty() ||
+                         !conv.physicsJointNodes.empty() || !conv.physicsBlastNodes.empty() ||
+                         !conv.physicsOceanNodes.empty() || !conv.physicsDynamicPaintNodes.empty() ||
+                         !conv.meshCacheNodes.empty() ||
+                         !conv.physicsCollisionNodes.empty() || !conv.physicsCurveNodes.empty() ||
+                         !conv.physicsSolidifyNodes.empty() ||
+                         !conv.khrBodies.empty() || !conv.khrJoints.empty() ||
+                         !conv.pointInstancers.empty();
+    if (hasPhys) {
+        std::unordered_map<std::string, int> nameToIndex;
+        int nextIdx = 0;
+        BlendBuildHierarchyIndexMap(out->mRootNode, nameToIndex, nextIdx);
+
+        std::ostringstream pjson;
+        pjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"";
+        if (blenderVersion != nullptr && blenderVersion[0] != '\0') {
+            pjson << ",\"blender_version\":\"" << blenderVersion << '"';
+        }
+        pjson << '}';
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_softbody", conv.physicsSoftNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_cloth", conv.physicsClothNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_fluid", conv.physicsFluidNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_smoke", conv.physicsSmokeNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_rigidbody", conv.physicsRigidNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_particles", conv.physicsParticleNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_constraints", conv.physicsJointNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_blast", conv.physicsBlastNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_ocean", conv.physicsOceanNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_dynamic_paint", conv.physicsDynamicPaintNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_solidify", conv.physicsSolidifyNodes, nameToIndex);
+        // 0al: Mesh Cache / Mesh Sequence Cache / MDD / Alembic - paths + bind only.
+        BlendEmitPhysicsInvBag(pjson, "BLEND_mesh_cache", conv.meshCacheNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_physics_collision", conv.physicsCollisionNodes, nameToIndex);
+        BlendEmitPhysicsInvBag(pjson, "BLEND_modifier_curve", conv.physicsCurveNodes, nameToIndex);
+        // C13 PointInstancer (particle collection/object) - full detail in Physics heap bag.
+        if (!conv.pointInstancers.empty()) {
+            bool anyUnresolvedArrays = false;
+            pjson << ",\"BLEND_point_instancers\":{\"nodes\":[";
+            for (size_t pi = 0; pi < conv.pointInstancers.size(); ++pi) {
+                ConversionData::PointInstancerPending &inst = conv.pointInstancers[pi];
+                if (inst.collectionName.empty()) {
+                    inst.collectionName = BlendResolveCollectionForPrototypes(in, inst.prototypeNames);
+                }
+                if (pi) {
+                    pjson << ',';
+                }
+                pjson << "{\"name\":\"" << BlendJsonEscape(inst.systemName.empty() ? inst.emitterName : inst.systemName)
+                      << "\",\"kind\":\"PointInstancer\""
+                      << ",\"source\":\"BLEND_particle\""
+                      << ",\"emitter\":\"" << BlendJsonEscape(inst.emitterName) << '"'
+                      << ",\"system\":\"" << BlendJsonEscape(inst.systemName) << '"';
+                {
+                    const auto it = nameToIndex.find(inst.emitterName);
+                    if (it != nameToIndex.end()) {
+                        pjson << ",\"emitterIndex\":" << it->second;
+                    }
+                }
+                if (!inst.settingsName.empty()) {
+                    pjson << ",\"settings\":\"" << BlendJsonEscape(inst.settingsName) << '"';
+                }
+                if (!inst.collectionName.empty()) {
+                    pjson << ",\"collection\":\"" << BlendJsonEscape(inst.collectionName) << '"';
+                }
+                if (!inst.instanceObjectName.empty()) {
+                    pjson << ",\"instanceObject\":\"" << BlendJsonEscape(inst.instanceObjectName) << '"';
+                }
+                pjson << ",\"ren_as\":" << inst.ren_as
+                      << ",\"from\":" << inst.from
+                      << ",\"distr\":" << inst.distr
+                      << ",\"flag\":" << inst.flag
+                      << ",\"totpart\":" << inst.totpart
+                      << ",\"seed\":" << inst.seed
+                      << ",\"size\":" << inst.size
+                      << ",\"randsize\":" << inst.randsize
+                      << ",\"jitfac\":" << inst.jitfac;
+                if (inst.hasPhystype) {
+                    pjson << ",\"phystype\":" << inst.phystype;
+                }
+                if (inst.hasDrawAs) {
+                    pjson << ",\"draw_as\":" << inst.draw_as;
+                }
+                if (inst.hasDraw) {
+                    pjson << ",\"draw\":" << inst.draw;
+                }
+                if (inst.hasUserjit) {
+                    pjson << ",\"userjit\":" << inst.userjit;
+                }
+                if (inst.hasGridRes) {
+                    pjson << ",\"grid_res\":" << inst.grid_res;
+                }
+                if (inst.hasGridRand) {
+                    pjson << ",\"grid_rand\":" << inst.grid_rand;
+                }
+                if (inst.hasRandlife) {
+                    pjson << ",\"randlife\":" << inst.randlife;
+                }
+                if (inst.hasRandlength) {
+                    pjson << ",\"randlength\":" << inst.randlength;
+                }
+                if (inst.hasHairStep) {
+                    pjson << ",\"hair_step\":" << inst.hair_step;
+                }
+                // Presence: hair_length only when DNA normfac was in the file SDNA.
+                if (inst.hasHairLength) {
+                    pjson << ",\"normfac\":" << inst.normfac
+                          << ",\"hair_length\":" << (inst.normfac * 4.f);
+                }
+                pjson << ",\"prototypes\":[";
+                for (size_t pr = 0; pr < inst.prototypeNames.size(); ++pr) {
+                    if (pr) {
+                        pjson << ',';
+                    }
+                    const std::string &pn = inst.prototypeNames[pr];
+                    pjson << "{\"name\":\"" << BlendJsonEscape(pn) << '"';
+                    if (pr < inst.prototypeIndices.size()) {
+                        pjson << ",\"dupliIndex\":" << inst.prototypeIndices[pr];
+                    }
+                    if (pr < inst.prototypeCounts.size()) {
+                        pjson << ",\"count\":" << inst.prototypeCounts[pr];
+                    }
+                    const auto nit = nameToIndex.find(pn);
+                    if (nit != nameToIndex.end()) {
+                        pjson << ",\"nodeIndex\":" << nit->second;
+                        // Prototype object mesh slot (mesh datablock name may differ from object name).
+                        if (const aiNode *pnode = BlendFindNodeByName(out->mRootNode, pn.c_str())) {
+                            if (pnode->mNumMeshes > 0) {
+                                pjson << ",\"meshIndex\":" << pnode->mMeshes[0];
+                            }
+                        }
+                    }
+                    pjson << '}';
+                }
+                pjson << ']';
+                if (inst.arraysResolved) {
+                    pjson << ",\"arraysResolved\":true";
+                    if (!inst.arraysSource.empty()) {
+                        pjson << ",\"arraysSource\":\"" << BlendJsonEscape(inst.arraysSource) << '"';
+                    }
+                    // Host 0ai Presence: explicit transform spaces (no invent if unset).
+                    if (!inst.positionsSpace.empty()) {
+                        pjson << ",\"positionsSpace\":\"" << BlendJsonEscape(inst.positionsSpace) << '"';
+                    }
+                    if (!inst.scalesSpace.empty()) {
+                        pjson << ",\"scalesSpace\":\"" << BlendJsonEscape(inst.scalesSpace) << '"';
+                    }
+                    if (!inst.scalesMeaning.empty()) {
+                        pjson << ",\"scalesMeaning\":\"" << BlendJsonEscape(inst.scalesMeaning) << '"';
+                    }
+                    BlendEmitFloatArray(pjson, "positions", inst.positions);
+                    BlendEmitFloatArray(pjson, "orients", inst.orients);
+                    BlendEmitFloatArray(pjson, "scales", inst.scales);
+                    if (!inst.protoIndices.empty()) {
+                        BlendEmitIntArray(pjson, "protoIndices", inst.protoIndices);
+                    }
+                    // Presence: only when mesh-face eval produced real per-instance weights.
+                    if (!inst.faceArea.empty()) {
+                        BlendEmitFloatArray(pjson, "faceArea", inst.faceArea);
+                    }
+                    if (!inst.emitWeight.empty()) {
+                        BlendEmitFloatArray(pjson, "emitWeight", inst.emitWeight);
+                    }
+                } else {
+                    pjson << ",\"arraysResolved\":false";
+                    anyUnresolvedArrays = true;
+                }
+                pjson << '}';
+            }
+            pjson << "]}";
+            if (anyUnresolvedArrays) {
+                conv.skippedCategories.push_back("BLEND_particle_instance_arrays");
+            }
+        }
+        // Host Bullet/PhysX: KHR joints/filters/nodes (glTF-shaped).
+        if (!conv.khrBodies.empty() || !conv.khrJoints.empty()) {
+            BlendEmitKhrPhysics(pjson, conv, nameToIndex, out);
+        }
+        pjson << '}';
+        auto *psc = new aiPhysicsSidecar();
+        psc->mExtensionsJson = BlendDupJson(pjson.str(), psc->mExtensionsJsonLength);
+        AttachPhysicsSidecar(out, psc);
+    }
+
+    // C5 Animation sidecar: modifier/pointer FCurves + DNA Drivers (ChannelDriver).
+    auto fillFloatBuf = [](aiSidecarBuffer &buf, const std::string &name, const std::vector<float> &data) {
+        buf.mName.Set(name);
+        buf.mNumElements = static_cast<unsigned>(data.size());
+        buf.mNumComponents = 1;
+        buf.mComponentType = static_cast<unsigned>(aiSidecarComponentType_Float);
+        buf.mByteLength = data.size() * sizeof(float);
+        buf.mData = new uint8_t[buf.mByteLength];
+        if (!data.empty()) {
+            std::memcpy(buf.mData, data.data(), buf.mByteLength);
+        }
+    };
+    if (!conv.animPointerChannels.empty()) {
+        std::map<std::string, std::vector<size_t>> byAction;
+        for (size_t ci = 0; ci < conv.animPointerChannels.size(); ++ci) {
+            const std::string &an = conv.animPointerChannels[ci].actionName;
+            byAction[an.empty() ? std::string("Action") : an].push_back(ci);
+        }
+        const unsigned baseAnim = out->mNumAnimations;
+        const unsigned addCount = static_cast<unsigned>(byAction.size());
+        aiAnimation **newAnims = new aiAnimation *[baseAnim + addCount];
+        for (unsigned i = 0; i < baseAnim; ++i) {
+            newAnims[i] = out->mAnimations[i];
+        }
+        if (out->mAnimations) {
+            delete[] out->mAnimations;
+        }
+        out->mAnimations = newAnims;
+        out->mNumAnimations = baseAnim + addCount;
+        unsigned aidx = baseAnim;
+        for (const auto &kv : byAction) {
+            const std::vector<size_t> &chs = kv.second;
+            aiAnimation *anim = new aiAnimation();
+            anim->mName.Set(kv.first);
+            anim->mTicksPerSecond = fps > 0.f ? fps : 24.0;
+            anim->mNumChannels = 0;
+            anim->mChannels = nullptr;
+            double tmax = 0.0;
+            for (size_t ci : chs) {
+                for (float tt : conv.animPointerChannels[ci].times) {
+                    tmax = std::max(tmax, static_cast<double>(tt));
+                }
+            }
+            anim->mDuration = tmax;
+            out->mAnimations[aidx] = anim;
+
+            const unsigned nBuf = static_cast<unsigned>(chs.size() * 2u);
+            auto *asc = new aiAnimationSidecar();
+            asc->mNumBuffers = nBuf;
+            asc->mBuffers = new aiSidecarBuffer[nBuf];
+            std::ostringstream ajson;
+            ajson.setf(std::ios::fixed);
+            ajson.precision(9);
+            ajson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},"
+                  << "\"BLEND_animation_pointer\":{\"action\":\"" << BlendJsonEscape(kv.first)
+                  << "\",\"channels\":[";
+            for (size_t i = 0; i < chs.size(); ++i) {
+                const auto &ch = conv.animPointerChannels[chs[i]];
+                const unsigned biTimes = static_cast<unsigned>(i * 2u);
+                const unsigned biVals = biTimes + 1u;
+                const std::string tName = "ch" + std::to_string(i) + "_times";
+                const std::string vName = "ch" + std::to_string(i) + "_values";
+                fillFloatBuf(asc->mBuffers[biTimes], tName, ch.times);
+                fillFloatBuf(asc->mBuffers[biVals], vName, ch.values);
+                if (i) {
+                    ajson << ',';
+                }
+                ajson << "{\"node\":\"" << BlendJsonEscape(ch.nodeName)
+                      << "\",\"rnaPath\":\"" << BlendJsonEscape(ch.rnaPath)
+                      << "\",\"arrayIndex\":" << ch.arrayIndex
+                      << ",\"pointer\":\"/nodes/" << BlendJsonEscape(ch.nodeName) << "/"
+                      << BlendJsonEscape(ch.rnaPath) << "\""
+                      << ",\"inputBuffer\":\"" << tName << "\""
+                      << ",\"outputBuffer\":\"" << vName << "\""
+                      << ",\"outputComponents\":1,\"interpolation\":\"LINEAR\"}";
+            }
+            ajson << "]}}";
+            asc->mExtensionsJson = BlendDupJson(ajson.str(), asc->mExtensionsJsonLength);
+            AttachAnimationSidecar(out, aidx, asc);
+            ++aidx;
+        }
+    }
+    if (!conv.driverChannels.empty()) {
+        // Group by owner Object name (Presence).
+        std::map<std::string, std::vector<size_t>> byOwner;
+        for (size_t ci = 0; ci < conv.driverChannels.size(); ++ci) {
+            const std::string &on = conv.driverChannels[ci].ownerName;
+            byOwner[on.empty() ? std::string("_") : on].push_back(ci);
+        }
+        const unsigned baseAnim = out->mNumAnimations;
+        aiAnimation **newAnims = new aiAnimation *[baseAnim + 1u];
+        for (unsigned i = 0; i < baseAnim; ++i) {
+            newAnims[i] = out->mAnimations[i];
+        }
+        if (out->mAnimations) {
+            delete[] out->mAnimations;
+        }
+        out->mAnimations = newAnims;
+        out->mNumAnimations = baseAnim + 1u;
+        aiAnimation *anim = new aiAnimation();
+        anim->mName.Set("BLEND_drivers");
+        anim->mTicksPerSecond = fps > 0.f ? fps : 24.0;
+        anim->mNumChannels = 0;
+        anim->mChannels = nullptr;
+        anim->mDuration = 0.0;
+        out->mAnimations[baseAnim] = anim;
+
+        // Optional key buffers for driver generator FCurves.
+        size_t nKeyPairs = 0;
+        for (const auto &ch : conv.driverChannels) {
+            if (!ch.keyTimes.empty()) {
+                ++nKeyPairs;
+            }
+        }
+        auto *asc = new aiAnimationSidecar();
+        asc->mNumBuffers = static_cast<unsigned>(nKeyPairs * 2u);
+        asc->mBuffers = (asc->mNumBuffers > 0) ? new aiSidecarBuffer[asc->mNumBuffers] : nullptr;
+        std::ostringstream ajson;
+        ajson.setf(std::ios::fixed);
+        ajson.precision(9);
+        ajson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},"
+              << "\"BLEND_drivers\":{\"owners\":[";
+        bool ownerFirst = true;
+        unsigned bufIdx = 0;
+        size_t keyPairIdx = 0;
+        for (const auto &kv : byOwner) {
+            if (!ownerFirst) {
+                ajson << ',';
+            }
+            ownerFirst = false;
+            const auto &chs = kv.second;
+            const auto &first = conv.driverChannels[chs[0]];
+            ajson << "{\"idCode\":\"" << BlendJsonEscape(first.ownerIdCode)
+                  << "\",\"idName\":\"" << BlendJsonEscape(first.ownerName) << "\",\"drivers\":[";
+            for (size_t i = 0; i < chs.size(); ++i) {
+                const auto &ch = conv.driverChannels[chs[i]];
+                if (i) {
+                    ajson << ',';
+                }
+                ajson << '{';
+                if (!ch.rnaPath.empty()) {
+                    ajson << "\"rnaPath\":\"" << BlendJsonEscape(ch.rnaPath) << "\",";
+                }
+                ajson << "\"arrayIndex\":" << ch.arrayIndex << ",\"type\":" << ch.type;
+                if (const char *tn = BlendDriverTypeName(ch.type)) {
+                    ajson << ",\"typeName\":\"" << tn << '"';
+                }
+                ajson << ",\"flag\":" << ch.flag;
+                if (ch.hasInfluence) {
+                    ajson << ",\"influence\":" << ch.influence;
+                }
+                if (!ch.expression.empty()) {
+                    ajson << ",\"expression\":\"" << BlendJsonEscape(ch.expression) << '"';
+                }
+                if (!ch.variables.empty()) {
+                    ajson << ",\"variables\":[";
+                    for (size_t vi = 0; vi < ch.variables.size(); ++vi) {
+                        const auto &ve = ch.variables[vi];
+                        if (vi) {
+                            ajson << ',';
+                        }
+                        ajson << '{';
+                        if (!ve.name.empty()) {
+                            ajson << "\"name\":\"" << BlendJsonEscape(ve.name) << "\",";
+                        }
+                        ajson << "\"type\":" << ve.type;
+                        if (const char *vn = BlendDriverVarTypeName(ve.type)) {
+                            ajson << ",\"typeName\":\"" << vn << '"';
+                        }
+                        if (ve.flag != 0) {
+                            ajson << ",\"flag\":" << ve.flag;
+                        }
+                        if (!ve.targets.empty()) {
+                            ajson << ",\"targets\":[";
+                            for (size_t ti = 0; ti < ve.targets.size(); ++ti) {
+                                const auto &te = ve.targets[ti];
+                                if (ti) {
+                                    ajson << ',';
+                                }
+                                ajson << '{';
+                                bool tfirst = true;
+                                auto tsep = [&]() {
+                                    if (!tfirst) {
+                                        ajson << ',';
+                                    }
+                                    tfirst = false;
+                                };
+                                if (!te.idCode.empty()) {
+                                    tsep();
+                                    ajson << "\"idCode\":\"" << BlendJsonEscape(te.idCode) << '"';
+                                }
+                                if (!te.idName.empty()) {
+                                    tsep();
+                                    ajson << "\"idName\":\"" << BlendJsonEscape(te.idName) << '"';
+                                }
+                                if (te.idtype != 0) {
+                                    tsep();
+                                    ajson << "\"idtype\":" << te.idtype;
+                                }
+                                if (!te.rnaPath.empty()) {
+                                    tsep();
+                                    ajson << "\"rnaPath\":\"" << BlendJsonEscape(te.rnaPath) << '"';
+                                }
+                                if (!te.bone.empty()) {
+                                    tsep();
+                                    ajson << "\"bone\":\"" << BlendJsonEscape(te.bone) << '"';
+                                }
+                                tsep();
+                                ajson << "\"transformChannel\":" << te.transChan;
+                                if (const char *cn = BlendDriverTransChanName(te.transChan)) {
+                                    ajson << ",\"transformChannelName\":\"" << cn << '"';
+                                }
+                                if (te.flag != 0) {
+                                    ajson << ",\"flag\":" << te.flag;
+                                }
+                                if (te.hasOptions) {
+                                    ajson << ",\"options\":" << te.options;
+                                }
+                                if (te.hasFallback) {
+                                    ajson << ",\"fallbackValue\":" << te.fallbackValue;
+                                }
+                                if (te.hasContextProperty) {
+                                    ajson << ",\"contextProperty\":" << te.contextProperty;
+                                }
+                                if (te.hasRotationMode) {
+                                    ajson << ",\"rotationMode\":" << static_cast<int>(te.rotationMode);
+                                }
+                                ajson << '}';
+                            }
+                            ajson << ']';
+                        }
+                        ajson << '}';
+                    }
+                    ajson << ']';
+                }
+                if (!ch.keyTimes.empty()) {
+                    const std::string tName = "drv" + std::to_string(keyPairIdx) + "_times";
+                    const std::string vName = "drv" + std::to_string(keyPairIdx) + "_values";
+                    fillFloatBuf(asc->mBuffers[bufIdx], tName, ch.keyTimes);
+                    fillFloatBuf(asc->mBuffers[bufIdx + 1u], vName, ch.keyValues);
+                    bufIdx += 2u;
+                    ++keyPairIdx;
+                    ajson << ",\"keyInputBuffer\":\"" << tName << "\",\"keyOutputBuffer\":\"" << vName << '"';
+                }
+                ajson << '}';
+            }
+            ajson << "]}";
+        }
+        ajson << "]}}";
+        asc->mExtensionsJson = BlendDupJson(ajson.str(), asc->mExtensionsJsonLength);
+        AttachAnimationSidecar(out, baseAnim, asc);
+    }
+
+    std::ostringstream json;
+    json.setf(std::ios::fixed);
+    json.precision(9);
+    json << "{\"schemaVersion\":1,\"source\":{"
+         << "\"format\":\"blend\"";
+    if (blenderVersion != nullptr && blenderVersion[0] != '\0') {
+        json << ",\"generator\":\"Blender " << blenderVersion << '"';
+        out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(blenderVersion));
+        std::string generator = std::string("Blender ") + blenderVersion;
+        out->mMetaData->Add(AI_METADATA_SOURCE_GENERATOR, aiString(generator));
+    }
+    json << ",\"formatVersion\":" << file.file_format_version
+         << ",\"blenderFileVersion\":" << file.blender_file_version
+         << ",\"metersPerUnit\":" << metersPerUnit
+         << ",\"timeCodesPerSecond\":" << fps
+         << ",\"framesPerSecond\":" << fps
+         << ",\"startTimeCode\":" << static_cast<double>(in.r.sfra)
+         << ",\"endTimeCode\":" << static_cast<double>(in.r.efra)
+         << '}';
+    // Optional BLEND_file bag for host logs (container honesty)
+    json << ",\"BLEND_file\":{"
+         << "\"formatVersion\":" << file.file_format_version
+         << ",\"blenderFileVersion\":" << file.blender_file_version
+         << '}';
+
+    // Scene DNA already loaded: active camera / world (Presence - no invent).
+    const char *sceneCameraName = nullptr;
+    int sceneCameraIndex = -1;
+    if (in.camera && in.camera->id.name[0] != '\0') {
+        sceneCameraName = in.camera->id.name + 2;
+        for (unsigned int ci = 0; ci < out->mNumCameras; ++ci) {
+            if (std::strcmp(out->mCameras[ci]->mName.C_Str(), sceneCameraName) == 0) {
+                sceneCameraIndex = static_cast<int>(ci);
+                break;
+            }
+        }
+    }
+    json << ",\"BLEND_scene\":{";
+    {
+        bool sfirst = true;
+        auto ssep = [&]() {
+            if (!sfirst) {
+                json << ',';
+            }
+            sfirst = false;
+        };
+        if (in.id.name[0] != '\0') {
+            ssep();
+            json << "\"name\":\"" << BlendJsonEscape(in.id.name + 2) << '"';
+        }
+        if (sceneCameraName != nullptr) {
+            ssep();
+            json << "\"camera\":\"" << BlendJsonEscape(sceneCameraName) << '"';
+            if (sceneCameraIndex >= 0) {
+                ssep();
+                json << "\"cameraIndex\":" << sceneCameraIndex;
+            }
+        }
+        if (in.world && in.world->id.name[0] != '\0') {
+            ssep();
+            json << "\"world\":\"" << BlendJsonEscape(in.world->id.name + 2) << '"';
+        }
+        if (!conv.worldEnvJson.empty()) {
+            ssep();
+            json << "\"worldEnv\":" << conv.worldEnvJson;
+        }
+    }
+    json << '}';
+
+    // S4 cameras / lights (typed already; bag for host inject inventory)
+    json << ",\"cameras\":[";
+    for (unsigned int ci = 0; ci < out->mNumCameras; ++ci) {
+        if (ci) {
+            json << ',';
+        }
+        const char *cname = out->mCameras[ci]->mName.C_Str();
+        json << "{\"index\":" << ci << ",\"name\":\"" << BlendJsonEscape(cname) << '"';
+        if (sceneCameraName != nullptr && std::strcmp(cname, sceneCameraName) == 0) {
+            json << ",\"sceneCamera\":true";
+        }
+        const auto itEx = conv.cameraSidecarExtras.find(cname);
+        if (itEx != conv.cameraSidecarExtras.end() && !itEx->second.empty()) {
+            json << ',' << itEx->second;
+        }
+        json << '}';
+    }
+    json << "],\"lights\":[";
+    for (unsigned int li = 0; li < out->mNumLights; ++li) {
+        if (li) {
+            json << ',';
+        }
+        json << "{\"index\":" << li << ",\"name\":\"" << BlendJsonEscape(out->mLights[li]->mName.C_Str()) << "\"}";
+    }
+    json << "],\"volumes\":[";
+    for (size_t vi = 0; vi < conv.volumeJsonEntries.size(); ++vi) {
+        if (vi) {
+            json << ',';
+        }
+        json << conv.volumeJsonEntries[vi];
+    }
+    // C13 detail lives in Physics bag (heap). Scene JSON is heap via aiSceneSidecar
+    // (not aiString / AI_MAXLEN - Cityscapes volumes[] + worldEnv exceed 1023).
+    json << "],\"pointInstancers\":[";
+    if (!conv.pointInstancers.empty()) {
+        json << "{\"count\":" << conv.pointInstancers.size()
+             << ",\"bag\":\"BLEND_point_instancers\"}";
+    }
+    json << "],\"composition\":{},\"skipped\":[";
+    for (size_t si = 0; si < conv.skippedCategories.size(); ++si) {
+        if (si) {
+            json << ',';
+        }
+        json << '"' << BlendJsonEscape(conv.skippedCategories[si]) << '"';
+    }
+    json << "]}";
+
+    {
+        auto *ssc = new aiSceneSidecar();
+        ssc->mExtensionsJson = BlendDupJson(json.str(), ssc->mExtensionsJsonLength);
+        AttachSceneSidecar(out, ssc);
+    }
+    out->mMetaData->Add(AI_METADATA_SOURCE_FORMAT, aiString("blend"));
+    // Presence: DNA AssetMetaData on Scene ID (not Text datablocks).
+    BlendEmitAssetBrowserMetadata(out->mMetaData, in.id.asset_data.get(), true);
+    const bool flag = true;
+    if (aiSceneHasMeshSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_MESH_SIDECAR, flag);
+    }
+    if (aiSceneHasMaterialSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_MATERIAL_SIDECAR, flag);
+    }
+    if (aiSceneHasPhysicsSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_PHYSICS_SIDECAR, flag);
+    }
+    if (aiSceneHasSceneSidecar(out)) {
+        out->mMetaData->Add(AI_METADATA_SCENE_SIDECAR, flag);
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
 void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const MTex *tex, const Image *img, ConversionData &conv_data) {
     aiString name;
-
-    unsigned int texIndex = 0;
-    if (BlendEnsureEmbeddedPackedTexture(img, conv_data, &texIndex)) {
-        name.data[0] = '*';
-        name.length = 1 + ASSIMP_itoa10(name.data + 1, static_cast<unsigned int>(AI_MAXLEN - 1), static_cast<int32_t>(texIndex));
-    } else {
-        name = aiString(BlendImageDisplayPath(img));
+    if (!BlendEnsureEmbeddedImage(img, conv_data, name)) {
+        return;
     }
 
     aiTextureType texture_type = aiTextureType_UNKNOWN;
@@ -2770,20 +7734,20 @@ void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const M
         texture_type = aiTextureType_SPECULAR;
     else if (map_type & MTex::MapType_COLMIR)
         texture_type = aiTextureType_REFLECTION;
-    //else if (map_type & MTex::MapType_REF)
+    // else if (map_type & MTex::MapType_REF)
     else if (map_type & MTex::MapType_SPEC)
         texture_type = aiTextureType_SHININESS;
     else if (map_type & MTex::MapType_EMIT)
         texture_type = aiTextureType_EMISSIVE;
-    //else if (map_type & MTex::MapType_ALPHA)
-    //else if (map_type & MTex::MapType_HAR)
-    //else if (map_type & MTex::MapType_RAYMIRR)
-    //else if (map_type & MTex::MapType_TRANSLU)
+    // else if (map_type & MTex::MapType_ALPHA)
+    // else if (map_type & MTex::MapType_HAR)
+    // else if (map_type & MTex::MapType_RAYMIRR)
+    // else if (map_type & MTex::MapType_TRANSLU)
     else if (map_type & MTex::MapType_AMB)
         texture_type = aiTextureType_AMBIENT;
     else if (map_type & MTex::MapType_DISPLACE)
         texture_type = aiTextureType_DISPLACEMENT;
-    //else if (map_type & MTex::MapType_WARP)
+    // else if (map_type & MTex::MapType_WARP)
 
     const unsigned matIndex = BlendMaterialRawIndex(conv_data, mat);
     const int uvIndex = BlendFindUvIndex(conv_data, matIndex, tex->uvname);
@@ -2826,6 +7790,9 @@ void BlenderImporter::ResolveTexture(aiMaterial *out, const Material *mat, const
         const char *disp = GetTextureTypeDisplayString(rtex->type);
         LogWarn("BLEND: skipping procedural texture type ", disp,
                 " (no Image datablock; not inventing $tex.file)");
+        std::string sk = "BLEND_texture_procedural_";
+        sk += disp;
+        conv_data.skippedCategories.push_back(sk);
         break;
     }
 
@@ -2976,6 +7943,7 @@ void BlenderImporter::AddBlendParams(aiMaterial *result, const Material *source)
 
 void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
     conv_data.materials->reserve(conv_data.materials_raw.size());
+    conv_data.materialSidecarJson.reserve(conv_data.materials_raw.size());
 
     BuildDefaultMaterial(conv_data);
 
@@ -3003,10 +7971,11 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
         if (std::strcmp(mat->id.name + 2, AI_DEFAULT_MATERIAL_NAME) == 0) {
             aiColor3D clr(0.6f, 0.6f, 0.6f);
             mout->AddProperty(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
+            conv_data.materialSidecarJson.emplace_back();
             continue;
         }
 
-        // C6 typed: flatten Principled/Glass/Glossy/Diffuse/Emission + Image Tex maps (no sidecars).
+        // C6: flatten active Principled/Glass/Glossy/Diffuse/Emission + follow Image Tex links.
         const BlendShaderFlat flat = BlendFlattenMaterialNodes(*mat);
         if (flat.ok) {
             BlendApplyFlatToMaterial(mout, flat, conv_data, static_cast<unsigned>(matRawIndex));
@@ -3069,8 +8038,8 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
             BlendTexMap gpMap;
             if (mat->gp_style->ima) {
                 gpMap.img = mat->gp_style->ima.get();
-                BlendAttachNodeImage(mout, gpMap, aiTextureType_BASE_COLOR, conv_data, matIndex);
-                BlendAttachNodeImage(mout, gpMap, aiTextureType_DIFFUSE, conv_data, matIndex);
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_BASE_COLOR, conv_data, matIndex, "baseColor");
+                BlendAttachNodeImage(mout, gpMap, aiTextureType_DIFFUSE, conv_data, matIndex, "baseColor");
             }
             if (mat->gp_style->sima) {
                 gpMap.img = mat->gp_style->sima.get();
@@ -3079,6 +8048,68 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
         }
 
         AddBlendParams(mout, mat.get());
+        std::vector<BlendMapInventoryEntry> inventory;
+        if (mat->nodetree) {
+            const BlendNodeGraph rootG = BlendBuildGraph(*mat->nodetree);
+            BlendCollectTexImageInventory(rootG, rootG, inventory);
+            // Linked inventory maps -> typed $tex.* + usage meta; drop when fully typed.
+            BlendEmitInventoryTypedMaps(mout, flat, inventory, conv_data,
+                    static_cast<unsigned>(matRawIndex), rootG);
+        }
+        conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat, conv_data, inventory));
+        if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityDefault ||
+                flat.hasVolumeDensityLinked || flat.hasVolumeDensityAttribute || flat.hasVolumeAnisotropy ||
+                flat.hasVolumeAbsorptionColor || flat.hasVolumeEmissionColor ||
+                flat.hasVolumeEmissionStrength) {
+            if (conv_data.materialHasPrincipledVolume.size() < conv_data.materials_raw.size()) {
+                conv_data.materialHasPrincipledVolume.resize(conv_data.materials_raw.size(), 0);
+            }
+            const unsigned mi = static_cast<unsigned>(conv_data.materials->size() - 1u);
+            if (mi < conv_data.materialHasPrincipledVolume.size()) {
+                conv_data.materialHasPrincipledVolume[mi] = 1;
+            }
+            std::ostringstream vj;
+            vj << "{\"materialIndex\":" << mi
+               << ",\"name\":\"" << BlendJsonEscape(mat->id.name + 2)
+               << "\",\"source\":\"Principled Volume\"";
+            if (flat.hasVolumeDensity) {
+                vj << ",\"density\":" << flat.volumeDensity;
+            }
+            if (flat.hasVolumeDensityLinked) {
+                vj << ",\"densityLinked\":true";
+            }
+            if (flat.hasVolumeDensityDefault) {
+                vj << ",\"densityDefault\":" << flat.volumeDensityDefault;
+            }
+            if (flat.hasVolumeColor) {
+                vj << ",\"color\":[" << flat.volumeColor[0] << ',' << flat.volumeColor[1] << ','
+                   << flat.volumeColor[2] << ',' << flat.volumeColor[3] << ']';
+            }
+            if (flat.hasVolumeDensityAttribute) {
+                vj << ",\"densityAttribute\":\"" << BlendJsonEscape(flat.volumeDensityAttribute) << '"';
+            }
+            if (flat.hasVolumeAnisotropy) {
+                vj << ",\"anisotropy\":" << flat.volumeAnisotropy;
+            }
+            if (flat.hasVolumeAbsorptionColor) {
+                vj << ",\"absorptionColor\":[" << flat.volumeAbsorptionColor[0] << ','
+                   << flat.volumeAbsorptionColor[1] << ',' << flat.volumeAbsorptionColor[2] << ','
+                   << flat.volumeAbsorptionColor[3] << ']';
+            }
+            if (flat.hasVolumeEmissionStrength) {
+                vj << ",\"emissionStrength\":" << flat.volumeEmissionStrength;
+            }
+            if (flat.hasVolumeEmissionColor) {
+                vj << ",\"emissionColor\":[" << flat.volumeEmissionColor[0] << ','
+                   << flat.volumeEmissionColor[1] << ',' << flat.volumeEmissionColor[2] << ','
+                   << flat.volumeEmissionColor[3] << ']';
+            }
+            vj << '}';
+            conv_data.volumeJsonEntries.push_back(vj.str());
+        }
+        if (mat->nodetree && !flat.ok) {
+            conv_data.skippedCategories.push_back("BLEND_shader_nodegraph");
+        }
     }
 }
 
@@ -3127,7 +8158,8 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         if (!HydrateMeshGeometry(*mutableMesh, conv_data.db)) {
             LogWarn("mesh '", mesh->id.name + 2,
                     "' has no classic arrays and geometry hydrate failed "
-                    "(file_version=", conv_data.db.blender_file_version,
+                    "(file_version=",
+                    conv_data.db.blender_file_version,
                     " totvert=", mesh->totvert, " mvert=", mesh->mvert.size(),
                     " totloop=", mesh->totloop, " mloop=", mesh->mloop.size(), ")");
             return;
@@ -3163,17 +8195,22 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
     temp->reserve(temp->size() + per_mat.size());
 
     std::map<size_t, size_t> mat_num_to_mesh_idx;
+    // Per sub-mesh: Assimp vertex order -> DNA totvert index (UV-split duplicates share iDna).
+    std::vector<std::vector<int32_t>> srcVertLocal;
+    srcVertLocal.resize(temp->size()); // preserve prior meshes' slots; new ones push below
     for (MyPair &it : per_mat) {
 
         mat_num_to_mesh_idx[it.first] = temp->size();
         temp->push_back(new aiMesh());
+        srcVertLocal.resize(temp->size());
+        srcVertLocal.back().reserve(per_mat_verts[it.first]);
 
         aiMesh *out = temp->back();
         out->mVertices = new aiVector3D[per_mat_verts[it.first]];
         out->mNormals = new aiVector3D[per_mat_verts[it.first]];
 
-        //out->mNumFaces = 0
-        //out->mNumVertices = 0
+        // out->mNumFaces = 0
+        // out->mNumVertices = 0
         out->mFaces = new aiFace[it.second]();
 
         // all sub-meshes created from this mesh are named equally. this allows
@@ -3229,6 +8266,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         // cannot be changed without breaking the entire
         // import process.
 
+        std::vector<int32_t> &srcVert = srcVertLocal[mat_num_to_mesh_idx[mf.mat_nr]];
         if (mf.v1 >= mesh->totvert) {
             ThrowException("Vertex index v1 out of range");
         }
@@ -3239,6 +8277,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->x = v->no[0];
         vn->y = v->no[1];
         vn->z = v->no[2];
+        srcVert.push_back(mf.v1);
         f.mIndices[0] = out->mNumVertices++;
         ++vo;
         ++vn;
@@ -3254,6 +8293,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->x = v->no[0];
         vn->y = v->no[1];
         vn->z = v->no[2];
+        srcVert.push_back(mf.v2);
         f.mIndices[1] = out->mNumVertices++;
         ++vo;
         ++vn;
@@ -3269,6 +8309,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->x = v->no[0];
         vn->y = v->no[1];
         vn->z = v->no[2];
+        srcVert.push_back(mf.v3);
         f.mIndices[2] = out->mNumVertices++;
         ++vo;
         ++vn;
@@ -3285,6 +8326,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
             vn->x = v->no[0];
             vn->y = v->no[1];
             vn->z = v->no[2];
+            srcVert.push_back(static_cast<int32_t>(mf.v4));
             f.mIndices[3] = out->mNumVertices++;
             ++vo;
             ++vn;
@@ -3335,6 +8377,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
             vn->x = v.no[0];
             vn->y = v.no[1];
             vn->z = v.no[2];
+            srcVertLocal[mat_num_to_mesh_idx[mf.mat_nr]].push_back(loop.v);
             f.mIndices[j] = out->mNumVertices++;
 
             ++vo;
@@ -3494,11 +8537,51 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         }
     }
 
+    // S1: stash CustomData layer inventory + DNA srcVert map for mesh sidecars.
+    {
+        const std::string layerJson = BuildBlendCustomDataLayersJson(mesh);
+        if (conv_data.meshSidecarJson.size() < temp->size()) {
+            conv_data.meshSidecarJson.resize(temp->size());
+        }
+        if (conv_data.meshSrcVertDna.size() < temp->size()) {
+            conv_data.meshSrcVertDna.resize(temp->size());
+        }
+        for (size_t mi = old; mi < temp->size(); ++mi) {
+            const aiMesh *am = temp[mi];
+            const std::vector<int32_t> &sv = srcVertLocal[mi];
+            std::ostringstream j;
+            // Merge BLEND_srcVert Presence into CustomData JSON object.
+            const std::string &base = layerJson;
+            if (base.size() >= 2 && base.back() == '}') {
+                j << base.substr(0, base.size() - 1);
+            } else {
+                j << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"";
+            }
+            if (!sv.empty() && am != nullptr && sv.size() == static_cast<size_t>(am->mNumVertices)) {
+                j << ",\"BLEND_srcVert\":{"
+                  << "\"buffer\":\"srcVert\""
+                  << ",\"count\":" << sv.size()
+                  << ",\"totvert\":" << mesh->totvert
+                  << ",\"componentType\":\"unsignedInt\""
+                  << ",\"positionsSpace\":\"meshLocal\""
+                  << '}';
+                conv_data.meshSrcVertDna[mi] = sv;
+            } else if (am != nullptr && am->mNumVertices > 0) {
+                // Honesty: expanded verts without a full DNA map (should not happen).
+                j << ",\"BLEND_srcVert\":{\"arraysResolved\":false}";
+                conv_data.skippedCategories.push_back(
+                        std::string("BLEND_srcVert_unresolved:") + (mesh->id.name + 2));
+            }
+            j << '}';
+            conv_data.meshSidecarJson[mi] = j.str();
+        }
+    }
+
     return;
 }
 
 // ------------------------------------------------------------------------------------------------
-aiCamera *BlenderImporter::ConvertCamera(const Scene & /*in*/, const Object *obj, const Camera *cam, ConversionData & /*conv_data*/) {
+aiCamera *BlenderImporter::ConvertCamera(const Scene & /*in*/, const Object *obj, const Camera *cam, ConversionData &conv_data) {
     std::unique_ptr<aiCamera> out(new aiCamera());
     out->mName = obj->id.name + 2;
     out->mPosition = aiVector3D(0.f, 0.f, 0.f);
@@ -3518,6 +8601,150 @@ aiCamera *BlenderImporter::ConvertCamera(const Scene & /*in*/, const Object *obj
     }
     out->mClipPlaneNear = cam->clipsta;
     out->mClipPlaneFar = cam->clipend;
+
+    // C8 sidecar: DOF / focus-object bind (not an aiCamera field) — Presence only.
+    const Object *focusObj = nullptr;
+    bool dofEnabled = false;
+    float focusDistance = 0.f;
+    bool hasFocusDistance = false;
+    float apertureFstop = 0.f;
+    bool hasFstop = false;
+    int apertureBlades = 0;
+    bool hasBlades = false;
+    const char *dofSource = nullptr;
+
+    if (cam->dof.focus_object || (cam->dof.flag & CameraDOFSettings::Flag_Enabled) ||
+            cam->dof.focus_distance > 0.f || cam->dof.aperture_fstop > 0.f) {
+        dofSource = "Camera.dof";
+        if (cam->dof.flag & CameraDOFSettings::Flag_Enabled) {
+            dofEnabled = true;
+        }
+        if (cam->dof.focus_object) {
+            focusObj = cam->dof.focus_object.get();
+            dofEnabled = true;
+        }
+        if (cam->dof.focus_distance > 0.f) {
+            focusDistance = cam->dof.focus_distance;
+            hasFocusDistance = true;
+        }
+        if (cam->dof.aperture_fstop > 0.f) {
+            apertureFstop = cam->dof.aperture_fstop;
+            hasFstop = true;
+        }
+        if (cam->dof.aperture_blades > 0) {
+            apertureBlades = cam->dof.aperture_blades;
+            hasBlades = true;
+        }
+    }
+    if (focusObj == nullptr && cam->dof_ob) {
+        // Legacy *dof_ob (tiger.blend / pre-2.8).
+        dofSource = "Camera.dof_ob";
+        focusObj = cam->dof_ob.get();
+        dofEnabled = true;
+    }
+    // gpu_dof only supplements when DOF is actually active (dof_ob / dof.flag / focus_object).
+    // Do not emit from unused gpu_dof defaults alone (e.g. fstop=128 on non-DOF cams).
+    if (dofEnabled || focusObj != nullptr) {
+        if (cam->gpu_dof.focus_distance > 0.f || cam->gpu_dof.fstop > 0.f || cam->gpu_dof.num_blades > 0) {
+            if (dofSource == nullptr) {
+                dofSource = "Camera.gpu_dof";
+            } else if (std::strcmp(dofSource, "Camera.dof_ob") == 0) {
+                // keep dof_ob as primary source; gpu_dof supplies numeric params
+            }
+            if (!hasFocusDistance && cam->gpu_dof.focus_distance > 0.f) {
+                focusDistance = cam->gpu_dof.focus_distance;
+                hasFocusDistance = true;
+            }
+            if (!hasFstop && cam->gpu_dof.fstop > 0.f) {
+                apertureFstop = cam->gpu_dof.fstop;
+                hasFstop = true;
+            }
+            if (!hasBlades && cam->gpu_dof.num_blades > 0) {
+                apertureBlades = cam->gpu_dof.num_blades;
+                hasBlades = true;
+            }
+        }
+    }
+
+    if (dofEnabled || focusObj != nullptr) {
+        std::ostringstream dj;
+        dj << "\"BLEND_camera_dof\":{";
+        bool first = true;
+        auto sep = [&]() {
+            if (!first) {
+                dj << ',';
+            }
+            first = false;
+        };
+        if (dofSource != nullptr) {
+            sep();
+            dj << "\"source\":\"" << dofSource << '"';
+        }
+        sep();
+        dj << "\"enabled\":" << (dofEnabled ? "true" : "false");
+        if (focusObj != nullptr && focusObj->id.name[0] != '\0') {
+            const char *fname = focusObj->id.name + 2;
+            sep();
+            dj << "\"focusObject\":\"" << BlendJsonEscape(fname) << '"';
+            sep();
+            dj << "\"focusObjectType\":";
+            if (focusObj->type == Object::Type_CAMERA) {
+                dj << "\"CAMERA\"";
+            } else if (focusObj->type == Object::Type_EMPTY) {
+                dj << "\"EMPTY\"";
+            } else {
+                dj << "\"OTHER\"";
+            }
+            // Empty display (how Host knows focus is a DOF target empty, not a cam).
+            if (focusObj->type == Object::Type_EMPTY) {
+                const char *disp = nullptr;
+                switch (static_cast<unsigned char>(focusObj->empty_drawtype)) {
+                case 1: disp = "ARROWS"; break;
+                case 2: disp = "PLAIN_AXES"; break;
+                case 3: disp = "CIRCLE"; break;
+                case 4: disp = "SINGLE_ARROW"; break;
+                case 5: disp = "CUBE"; break;
+                case 6: disp = "SPHERE"; break;
+                case 7: disp = "CONE"; break;
+                case 8: disp = "IMAGE"; break;
+                default: break;
+                }
+                if (disp != nullptr) {
+                    sep();
+                    dj << "\"emptyDisplayType\":\"" << disp << '"';
+                }
+                if (focusObj->empty_drawsize > 0.f) {
+                    sep();
+                    dj << "\"emptyDisplaySize\":" << focusObj->empty_drawsize;
+                }
+            }
+            // Collect focus object for TRS Action -> aiNodeAnim (e.g. focusAction).
+            bool seen = false;
+            for (const Object *fo : conv_data.camera_focus_objects) {
+                if (fo == focusObj) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                conv_data.camera_focus_objects.push_back(focusObj);
+            }
+        }
+        if (hasFocusDistance) {
+            sep();
+            dj << "\"focusDistance\":" << focusDistance;
+        }
+        if (hasFstop) {
+            sep();
+            dj << "\"apertureFstop\":" << apertureFstop;
+        }
+        if (hasBlades) {
+            sep();
+            dj << "\"apertureBlades\":" << apertureBlades;
+        }
+        dj << '}';
+        conv_data.cameraSidecarExtras[out->mName.C_Str()] = dj.str();
+    }
 
     return out.release();
 }
@@ -3716,9 +8943,9 @@ void BlendEulXYZToMat3(float m[3][3], const float eul[3]) {
 void BlendObjectToMat4(const Object &ob, float r_mat[4][4]) {
     float smat[3][3], rmat[3][3], dmat[3][3], tmat[3][3];
     float size[3] = {
-            ob.scale[0] * ob.dscale[0],
-            ob.scale[1] * ob.dscale[1],
-            ob.scale[2] * ob.dscale[2]
+        ob.scale[0] * ob.dscale[0],
+        ob.scale[1] * ob.dscale[1],
+        ob.scale[2] * ob.dscale[2]
     };
     BlendSizeToMat3(smat, size);
 
@@ -3777,11 +9004,11 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
     std::unique_ptr<aiNode> node(new aiNode(obj->id.name + 2)); // skip over the name prefix 'OB'
     if (obj->data) {
         switch (obj->type) {
-        case Object ::Type_EMPTY:
+        case Object::Type_EMPTY:
             break; // do nothing
 
             // supported object types
-        case Object ::Type_MESH: {
+        case Object::Type_MESH: {
             const size_t old = conv_data.meshes->size();
 
             CheckActualType(obj->data.get(), "Mesh");
@@ -3794,7 +9021,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
                 }
             }
         } break;
-        case Object ::Type_LAMP: {
+        case Object::Type_LAMP: {
             CheckActualType(obj->data.get(), "Lamp");
             aiLight *mesh = ConvertLight(in, obj, static_cast<const Lamp *>(obj->data.get()), conv_data);
 
@@ -3802,7 +9029,7 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
                 conv_data.lights->push_back(mesh);
             }
         } break;
-        case Object ::Type_CAMERA: {
+        case Object::Type_CAMERA: {
             CheckActualType(obj->data.get(), "Camera");
             aiCamera *mesh = ConvertCamera(in, obj, static_cast<const Camera *>(obj->data.get()), conv_data);
 
@@ -3812,14 +9039,14 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
             }
         } break;
 
-        case Object ::Type_ARMATURE: {
+        case Object::Type_ARMATURE: {
             CheckActualType(obj->data.get(), "bArmature");
             conv_data.armature_objects.push_back(obj);
         } break;
 
             // Grease Pencil 3 (bpy 'GREASEPENCIL' / OB_GREASE_PENCIL): no stroke mesh yet,
             // but register DNA materials so packed fill/stroke / node images embed+assign.
-        case Object ::Type_GREASE_PENCIL: {
+        case Object::Type_GREASE_PENCIL: {
             CheckActualType(obj->data.get(), "GreasePencil");
             const GreasePencil *gp = static_cast<const GreasePencil *>(obj->data.get());
             for (const std::shared_ptr<Material> &mat : gp->material_array) {
@@ -3834,27 +9061,27 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
         } break;
 
             // Legacy GP (bpy 'GPENCIL' / OB_GPENCIL_LEGACY): data is bGPdata (unsupported).
-        case Object ::Type_GPENCIL_LEGACY:
+        case Object::Type_GPENCIL_LEGACY:
             NotSupportedObjectType(obj, "GPencil");
             break;
 
             // unsupported object types / log, but do not break
-        case Object ::Type_CURVE:
+        case Object::Type_CURVE:
             NotSupportedObjectType(obj, "Curve");
             break;
-        case Object ::Type_SURF:
+        case Object::Type_SURF:
             NotSupportedObjectType(obj, "Surface");
             break;
-        case Object ::Type_FONT:
+        case Object::Type_FONT:
             NotSupportedObjectType(obj, "Font");
             break;
-        case Object ::Type_MBALL:
+        case Object::Type_MBALL:
             NotSupportedObjectType(obj, "MetaBall");
             break;
-        case Object ::Type_WAVE:
+        case Object::Type_WAVE:
             NotSupportedObjectType(obj, "Wave");
             break;
-        case Object ::Type_LATTICE:
+        case Object::Type_LATTICE:
             NotSupportedObjectType(obj, "Lattice");
             break;
 
@@ -3907,6 +9134,13 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 
     // apply modifiers
     modifier_cache->ApplyModifiers(*node, conv_data, in, *obj);
+    CollectBlendPhysicsModifiers(obj, conv_data, node.get());
+
+    // No Modifier:*/ParticleSystem:* marker children in typed hierarchy (Host 0af):
+    // bind stays in Physics sidecar emitter/emitterIndex/system only.
+
+    // Asset Browser fields on Object ID (Presence).
+    BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);
 
     return node.release();
 }
@@ -3914,28 +9148,28 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
 BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::string &pFile, IOSystem *pIOHandler) const {
     std::shared_ptr<IOStream> stream(pIOHandler->Open(pFile, "rb"));
     if (stream == nullptr) {
-        return {{}, {}, "Could not open file for reading"};
+        return { {}, {}, "Could not open file for reading" };
     }
 
     char magic[8] = { 0 };
     stream->Read(magic, 7, 1);
     if (strcmp(magic, Token) == 0) {
-        return {stream, {}, {}};
+        return { stream, {}, {} };
     }
 
     // Check for gzip (legacy) or zstd (Blender 3+ default) compressed blend files.
 #ifdef ASSIMP_BUILD_NO_COMPRESSED_BLEND
-    return {{}, {}, "BLENDER magic bytes are missing, is this file compressed (Assimp was built without decompression support)?"};
+    return { {}, {}, "BLENDER magic bytes are missing, is this file compressed (Assimp was built without decompression support)?" };
 #else
     const bool isGzip = (magic[0] == 0x1f && static_cast<uint8_t>(magic[1]) == 0x8b);
     // Zstandard magic: 0x28 0xB5 0x2F 0xFD (little-endian frame header)
     const bool isZstd = (static_cast<uint8_t>(magic[0]) == 0x28 &&
-            static_cast<uint8_t>(magic[1]) == 0xb5 &&
-            static_cast<uint8_t>(magic[2]) == 0x2f &&
-            static_cast<uint8_t>(magic[3]) == 0xfd);
+                         static_cast<uint8_t>(magic[1]) == 0xb5 &&
+                         static_cast<uint8_t>(magic[2]) == 0x2f &&
+                         static_cast<uint8_t>(magic[3]) == 0xfd);
 
     if (!isGzip && !isZstd) {
-        return {{}, {}, "BLENDER magic bytes are missing, couldn't find GZIP or Zstandard header either"};
+        return { {}, {}, "BLENDER magic bytes are missing, couldn't find GZIP or Zstandard header either" };
     }
 
     stream->Seek(0L, aiOrigin_SET);
@@ -3945,7 +9179,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
     if (isGzip) {
         LogDebug("Found no BLENDER magic word but a GZIP header, might be a compressed file");
         if (magic[2] != 8) {
-            return {{}, {}, "Unsupported GZIP compression method"};
+            return { {}, {}, "Unsupported GZIP compression method" };
         }
 
         // http://www.gzip.org/zlib/rfc-gzip.html#header-trailer
@@ -3965,7 +9199,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
         const size_t srcSize = reader->GetRemainingSize();
         ZSTD_DCtx *dctx = ZSTD_createDCtx();
         if (dctx == nullptr) {
-            return {{}, {}, "Failed to allocate Zstandard decompression context"};
+            return { {}, {}, "Failed to allocate Zstandard decompression context" };
         }
         uncompressed->resize(srcSize * 8 + 256 * 1024);
         ZSTD_inBuffer input{ src, srcSize, 0 };
@@ -3975,7 +9209,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
                 const size_t newSize = uncompressed->size() * 2;
                 if (newSize > (1ull << 31)) {
                     ZSTD_freeDCtx(dctx);
-                    return {{}, {}, "Zstandard BLEND payload is unreasonably large"};
+                    return { {}, {}, "Zstandard BLEND payload is unreasonably large" };
                 }
                 uncompressed->resize(newSize);
                 output.dst = uncompressed->data();
@@ -3984,7 +9218,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
             const size_t ret = ZSTD_decompressStream(dctx, &output, &input);
             if (ZSTD_isError(ret)) {
                 ZSTD_freeDCtx(dctx);
-                return {{}, {}, std::string("Zstandard decompress failed: ") + ZSTD_getErrorName(ret)};
+                return { {}, {}, std::string("Zstandard decompress failed: ") + ZSTD_getErrorName(ret) };
             }
             // ret==0 means a frame finished; continue for further frames / skippable frames.
         }
@@ -3992,7 +9226,7 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
         total = output.pos;
         uncompressed->resize(total);
 #else
-        return {{}, {}, "BLENDER file appears Zstandard-compressed, but Assimp was built without ZSTD support"};
+        return { {}, {}, "BLENDER file appears Zstandard-compressed, but Assimp was built without ZSTD support" };
 #endif
     }
 
@@ -4002,9 +9236,9 @@ BlenderImporter::StreamOrError BlenderImporter::ParseMagicToken(const std::strin
     // .. and retry
     stream->Read(magic, 7, 1);
     if (strcmp(magic, Token) == 0) {
-        return {stream, uncompressed, {}};
+        return { stream, uncompressed, {} };
     }
-    return {{}, {}, isGzip ? "Found no BLENDER magic word in decompressed GZIP file" : "Found no BLENDER magic word in decompressed Zstandard file"};
+    return { {}, {}, isGzip ? "Found no BLENDER magic word in decompressed GZIP file" : "Found no BLENDER magic word in decompressed Zstandard file" };
 #endif
 }
 

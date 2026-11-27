@@ -41,10 +41,14 @@ Copyright (c) 2006-2026, assimp team
 #include "UnitTestPCH.h"
 
 #include "AbstractImportExportBase.h"
+#include <assimp/commonMetaData.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
 #include <assimp/Exporter.hpp>
 #include <assimp/Importer.hpp>
+#include <assimp/metadata.h>
+#include <cstring>
 
 using namespace ::Assimp;
 
@@ -88,3 +92,142 @@ TEST_F(utUSDImport, singleAnimationTest) {
 
 // Note: Add multi-animation test once supported by USD
 // See https://github.com/lighttransport/tinyusdz/issues/122 for details.
+
+TEST_F(utUSDImport, sceneTimingSidecarS0Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarSceneTiming/SidecarSceneTiming.usda",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    aiString format;
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_SOURCE_FORMAT, format));
+    EXPECT_STREQ("usda", format.C_Str());
+
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *j = ssc->mExtensionsJson;
+    EXPECT_NE(nullptr, std::strstr(j, "\"schemaVersion\":1"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"format\":\"usda\""));
+    EXPECT_NE(nullptr, std::strstr(j, "\"upAxis\":\"Z\""));
+    EXPECT_NE(nullptr, std::strstr(j, "\"metersPerUnit\":0.01"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"timeCodesPerSecond\":30"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"startTimeCode\":1"));
+    EXPECT_NE(nullptr, std::strstr(j, "\"endTimeCode\":48"));
+}
+
+TEST_F(utUSDImport, categorySidecarsS1toS8Test) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarCategories/SidecarCategories.usda",
+            0);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene->mMetaData);
+
+    EXPECT_NE(0, aiSceneHasMeshSidecar(scene));
+    ASSERT_GE(scene->mNumMeshes, 1u);
+    const aiMeshSidecar *meshSc = aiGetMeshSidecar(scene, 0);
+    ASSERT_NE(nullptr, meshSc);
+    ASSERT_NE(nullptr, meshSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(meshSc->mExtensionsJson, "\"primvars\""));
+
+    EXPECT_NE(0, aiSceneHasMaterialSidecar(scene));
+    ASSERT_GE(scene->mNumMaterials, 1u);
+    const aiMaterialSidecar *matSc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, matSc);
+    ASSERT_NE(nullptr, matSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "UsdPreviewSurface"));
+
+    // Physics API schemas on fixture RigidBody
+    EXPECT_NE(0, aiSceneHasPhysicsSidecar(scene));
+    const aiPhysicsSidecar *phys = aiGetPhysicsSidecar(scene);
+    ASSERT_NE(nullptr, phys);
+    ASSERT_NE(nullptr, phys->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "USD_physics_rigid"));
+
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *sj = ssc->mExtensionsJson;
+    EXPECT_NE(nullptr, std::strstr(sj, "\"cameras\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"lights\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"pointInstancers\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"volumes\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"composition\""));
+    EXPECT_NE(nullptr, std::strstr(sj, "\"skipped\""));
+}
+
+// Honesty: only authored UsdPreviewSurface inputs become typed keys / sidecar factors.
+TEST_F(utUSDImport, previewSurfaceAuthoredPresenceTest) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarPreviewPresence/SidecarPreviewPresence.usda",
+            0);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_GE(scene->mNumMaterials, 1u);
+    const aiMaterial *mat = scene->mMaterials[0];
+    aiColor3D diffuse;
+    ASSERT_EQ(AI_SUCCESS, mat->Get(AI_MATKEY_COLOR_DIFFUSE, diffuse));
+    float unused = 0.f;
+    EXPECT_NE(AI_SUCCESS, mat->Get(AI_MATKEY_METALLIC_FACTOR, unused));
+    EXPECT_NE(AI_SUCCESS, mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, unused));
+    EXPECT_NE(AI_SUCCESS, mat->Get(AI_MATKEY_OPACITY, unused));
+    EXPECT_NE(AI_SUCCESS, mat->Get(AI_MATKEY_REFRACTI, unused));
+    const aiMaterialSidecar *matSc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, matSc);
+    ASSERT_NE(nullptr, matSc->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "diffuseColor"));
+    EXPECT_EQ(nullptr, std::strstr(matSc->mExtensionsJson, "metallic"));
+    EXPECT_EQ(nullptr, std::strstr(matSc->mExtensionsJson, "roughness"));
+    EXPECT_EQ(nullptr, std::strstr(matSc->mExtensionsJson, "opacity"));
+}
+
+// Host probe: UsdGeom Cube physics USDA must tessellate into aiMesh (not empty-mesh fail).
+// Fixture also authors kilogramsPerUnit (stripped for TinyUSDZ) like Pixar usdPhysicsBoxOnBox.
+TEST_F(utUSDImport, gprimPhysicsTessellationTest) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarGprimPhysics/SidecarGprimPhysics.usda",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    EXPECT_GE(scene->mNumMeshes, 2u);
+    EXPECT_NE(nullptr, scene->mRootNode);
+    EXPECT_NE(0, aiSceneHasPhysicsSidecar(scene));
+    const aiPhysicsSidecar *phys = aiGetPhysicsSidecar(scene);
+    ASSERT_NE(nullptr, phys);
+    ASSERT_NE(nullptr, phys->mExtensionsJson);
+    EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "USD_physics_rigid"));
+    EXPECT_NE(nullptr, std::strstr(phys->mExtensionsJson, "PhysicsRigidBodyAPI"));
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    // kilogramsPerUnit kept via TinyUSDZ (not Assimp ASCII strip).
+    EXPECT_NE(nullptr, std::strstr(ssc->mExtensionsJson, "kilogramsPerUnit"));
+}
+
+// Host probe: payload/reference + unknown plugin dict meta -> incomplete, honest skipped[].
+TEST_F(utUSDImport, payloadCompositionHonestyTest) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/USD/SidecarPayloadHonesty/SidecarPayloadHonesty.usda",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    EXPECT_NE(nullptr, scene->mRootNode);
+    EXPECT_EQ(0u, scene->mNumMeshes);
+    EXPECT_NE(0u, scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE);
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_NE(0, aiSceneHasSceneSidecar(scene));
+    const aiSceneSidecar *ssc = aiGetSceneSidecar(scene);
+    ASSERT_NE(nullptr, ssc);
+    ASSERT_NE(nullptr, ssc->mExtensionsJson);
+    const char *sj = ssc->mExtensionsJson;
+    EXPECT_NE(nullptr, std::strstr(sj, "composition:payload_or_reference"));
+    // Unknown Usd_DCE_Params is ignored by TinyUSDZ (not Assimp-stripped).
+    EXPECT_EQ(nullptr, std::strstr(sj, "sanitized:stripped"));
+}

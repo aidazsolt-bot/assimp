@@ -4,6 +4,7 @@ Open Asset Import Library (assimp)
 
 Copyright (c) 2006-2026, assimp team
 
+
 All rights reserved.
 
 Redistribution and use of this software in source and binary forms,
@@ -46,7 +47,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define AI_SCENEPRIVATE_H_INCLUDED
 
 #include <assimp/ai_assert.h>
+#include <assimp/gaussian.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
+
+#include <vector>
 
 namespace Assimp {
 
@@ -57,9 +62,11 @@ struct ScenePrivateData {
     //  The struct constructor.
     ScenePrivateData() AI_NO_EXCEPT;
 
+    ~ScenePrivateData();
+
     // Importer that originally loaded the scene though the C-API
     // If set, this object is owned by this private data instance.
-    Assimp::Importer* mOrigImporter;
+    Assimp::Importer *mOrigImporter;
 
     // List of post-processing steps already applied to the scene.
     unsigned int mPPStepsApplied;
@@ -70,33 +77,92 @@ struct ScenePrivateData {
     // and mOrigImporter are no longer safe to rely on and only
     // serve informative purposes.
     bool mIsCopy;
+
+    // Optional 3DGS side data, indexed by mesh index (nullptr = no splat).
+    // Does not change public aiMesh / aiScene ABI.
+    std::vector<aiGaussianSplat *> mGaussianSplats;
+
+    // Optional 3DGS morph targets per mesh (parallel to aiMesh::mAnimMeshes).
+    // Outer index = meshIndex; inner = targetIndex. Empty = no GS morph.
+    std::vector<std::vector<aiGaussianAnimSplat *>> mGaussianAnimSplats;
+
+    // Optional generic mesh sidecar data, indexed by mesh index (nullptr = none).
+    // Does not change public aiMesh / aiScene ABI.
+    std::vector<aiMeshSidecar *> mMeshSidecars;
+
+    // Optional material sidecar data, indexed by material index (nullptr = none).
+    std::vector<aiMaterialSidecar *> mMaterialSidecars;
+
+    // Optional animation sidecar data, indexed by animation index (nullptr = none).
+    std::vector<aiAnimationSidecar *> mAnimationSidecars;
+
+    // Optional scene-level physics sidecar (KHR_physics_* JSON bag).
+    aiPhysicsSidecar *mPhysicsSidecar;
+
+    // Optional scene-level JSON sidecar (timing/units/cameras/volumes/…).
+    // Heap-backed - not aiString SceneSidecarJson (AI_MAXLEN).
+    aiSceneSidecar *mSceneSidecar;
 };
 
-inline
-ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
-: mOrigImporter( nullptr )
-, mPPStepsApplied( 0 )
-, mIsCopy( false ) {
+inline ScenePrivateData::ScenePrivateData() AI_NO_EXCEPT
+        : mOrigImporter(nullptr),
+          mPPStepsApplied(0),
+          mIsCopy(false),
+          mGaussianSplats(),
+          mGaussianAnimSplats(),
+          mMeshSidecars(),
+          mMaterialSidecars(),
+          mAnimationSidecars(),
+          mPhysicsSidecar(nullptr),
+          mSceneSidecar(nullptr) {
     // empty
 }
 
-// Access private data stored in the scene
-inline
-ScenePrivateData* ScenePriv(aiScene* in) {
-    ai_assert( nullptr != in );
-    if ( nullptr == in ) {
-        return nullptr;
+inline ScenePrivateData::~ScenePrivateData() {
+    for (aiGaussianSplat *g : mGaussianSplats) {
+        delete g;
     }
-    return static_cast<ScenePrivateData*>(in->mPrivate);
+    mGaussianSplats.clear();
+    for (std::vector<aiGaussianAnimSplat *> &targets : mGaussianAnimSplats) {
+        for (aiGaussianAnimSplat *a : targets) {
+            delete a;
+        }
+        targets.clear();
+    }
+    mGaussianAnimSplats.clear();
+    for (aiMeshSidecar *s : mMeshSidecars) {
+        delete s;
+    }
+    mMeshSidecars.clear();
+    for (aiMaterialSidecar *s : mMaterialSidecars) {
+        delete s;
+    }
+    mMaterialSidecars.clear();
+    for (aiAnimationSidecar *s : mAnimationSidecars) {
+        delete s;
+    }
+    mAnimationSidecars.clear();
+    delete mPhysicsSidecar;
+    mPhysicsSidecar = nullptr;
+    delete mSceneSidecar;
+    mSceneSidecar = nullptr;
 }
 
-inline
-const ScenePrivateData* ScenePriv(const aiScene* in) {
-    ai_assert( nullptr != in );
-    if ( nullptr == in ) {
+// Access private data stored in the scene
+inline ScenePrivateData *ScenePriv(aiScene *in) {
+    ai_assert(nullptr != in);
+    if (nullptr == in) {
         return nullptr;
     }
-    return static_cast<const ScenePrivateData*>(in->mPrivate);
+    return static_cast<ScenePrivateData *>(in->mPrivate);
+}
+
+inline const ScenePrivateData *ScenePriv(const aiScene *in) {
+    ai_assert(nullptr != in);
+    if (nullptr == in) {
+        return nullptr;
+    }
+    return static_cast<const ScenePrivateData *>(in->mPrivate);
 }
 
 } // Namespace Assimp

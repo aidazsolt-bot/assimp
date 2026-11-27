@@ -26,6 +26,16 @@ __Importers__:
   + KHR_materials_pbrSpecularGlossiness ( 5.0 )
   + KHR_materials_unlit ( 5.0 )
   + KHR_texture_transform ( 5.1 under test )
+  Custom / underscore vertex attributes and mesh/primitive extras are exposed via the
+  ABI-safe [sidecar API](Sidecar.md) (`include/assimp/sidecar.h`).
+  Unmapped material extensions such as `KHR_materials_iridescence` use the material
+  sidecar (`aiMaterialSidecar`) until typed MATKEYs exist.
+  `KHR_animation_pointer` channels that are not classic node TRS/weights use the
+  animation sidecar (`aiAnimationSidecar`).
+  `KHR_implicit_shapes` / `KHR_physics_rigid_bodies` use the scene-level physics
+  sidecar (`aiPhysicsSidecar`).
+  `KHR_gaussian_splatting` uses the typed [Gaussian API](GaussianSplatting.md)
+  (`aiGetGaussianSplat`) plus mesh-sidecar extension JSON.
 - HMB
 - IFC-STEP
 - IQM
@@ -49,7 +59,10 @@ __Importers__:
 - [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file)
 - [OFF](https://en.wikipedia.org/wiki/OFF_(file_format))
 - [OGEX](https://en.wikipedia.org/wiki/Open_Game_Engine_Exchange)
-- [PLY](https://en.wikipedia.org/wiki/PLY_(file_format))
+- [PLY](https://en.wikipedia.org/wiki/PLY_(file_format)) — see also [PLY.md](PLY.md) (mesh vs. 3DGS `f_dc_*` / `f_rest_*`)
+- SPZ (Niantic Labs compressed 3DGS) — see [GaussianSplatting.md](GaussianSplatting.md)
+- SPLAT (antimatter15 binary 3DGS) — see [GaussianSplatting.md](GaussianSplatting.md)
+- KSPLAT (mkkellogg GaussianSplats3D) — see [GaussianSplatting.md](GaussianSplatting.md)
 - PMX
 - PRJ
 - Q3O

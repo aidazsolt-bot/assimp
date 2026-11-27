@@ -1,0 +1,47 @@
+# Wavefront reflection map regression (sphere)
+newmtl ChromeSphere
+Ka 0.05 0.05 0.05
+Kd 0.10 0.10 0.12
+Ks 0.90 0.90 0.95
+Ns 500
+illum 3
+refl -type sphere chrome_env.jpg
+
+newmtl ChromeBare
+Ka 0.0 0.0 0.0
+Kd 0.1 0.1 0.1
+Ks 1.0 1.0 1.0
+Ns 200
+illum 3
+# no -type → should default to sphere
+refl bare_env.jpg
+
+newmtl ChromeMapRefl
+Ka 0.0 0.0 0.0
+Kd 0.1 0.1 0.1
+Ks 1.0 1.0 1.0
+Ns 200
+illum 3
+# Non-standard Blender-style keyword; Assimp ignores it (use Wavefront "refl").
+map_refl -type sphere map_refl_env.jpg
+
+# Clara.io / community PBR extension tokens - Assimp logs and ignores them.
+newmtl CommunityPbr
+Ka 0.0 0.0 0.0
+Kd 0.4 0.3 0.2
+Ks 0.5 0.5 0.5
+Ns 100
+illum 2
+Pr 0.3
+Pm 0.8
+Ps 0.1
+Pc 0.5
+Pcr 0.2
+aniso 0.4
+anisor 0.25
+map_Pr rough.png
+map_Pm metal.png
+map_Ps sheen.png
+map_RMA rma.png
+map_ORM orm.png
+norm normal.png
