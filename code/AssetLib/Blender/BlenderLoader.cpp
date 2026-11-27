@@ -3127,7 +3127,13 @@ struct BlendMapInventoryEntry {
 struct BlendTexUsageHit {
     aiTextureType type{ aiTextureType_UNKNOWN };
     const char *usage{ "unknown" }; // key=value meta ($tex.blend.usage)
+    /** Destination socket on the consuming node (e.g. Mix Fac). */
     char socket[64]{};
+    /**
+     * Source socket on the TexImage (or walk start) that feeds this hit
+     * (e.g. Color / Alpha into Mix Fac). Presence only - omit when unread.
+     */
+    char fromSocket[64]{};
 };
 
 /** Map Principled/BSDF/Bump/Displacement/Mix socket name -> typed type + usage label. */
@@ -3330,11 +3336,23 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
     auto already = [&](const BlendTexUsageHit &h) -> bool {
         for (const BlendTexUsageHit &e : out) {
             if (e.type == h.type && std::strcmp(e.usage, h.usage) == 0 &&
-                    std::strcmp(e.socket, h.socket) == 0) {
+                    std::strcmp(e.socket, h.socket) == 0 &&
+                    std::strcmp(e.fromSocket, h.fromSocket) == 0) {
                 return true;
             }
         }
         return false;
+    };
+    auto fillFromSock = [&](BlendTexUsageHit &hit, const bNodeLink *link) {
+        if (link == nullptr) {
+            return;
+        }
+        const char *fs = sockLabel(BlendCastSocket(link->fromsock.get()));
+        if (fs == nullptr || fs[0] == '\0') {
+            return;
+        }
+        std::strncpy(hit.fromSocket, fs, sizeof(hit.fromSocket) - 1);
+        hit.fromSocket[sizeof(hit.fromSocket) - 1] = '\0';
     };
     for (const bNodeLink *l : g.links) {
         if (l == nullptr || BlendCastNode(l->fromnode.get()) != texNode) {
@@ -3349,6 +3367,7 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
         BlendTexUsageHit hit;
         const bool classified = BlendClassifySocketUsage(toSock, *to, hit);
         if (classified) {
+            fillFromSock(hit, l);
             if (!already(hit)) {
                 out.push_back(hit);
             }
@@ -3382,8 +3401,11 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                     }
                     const bNodeSocket *hts = BlendCastSocket(hl->tosock.get());
                     BlendTexUsageHit hh;
-                    if (BlendClassifySocketUsage(sockLabel(hts), *hnt, hh) && !already(hh)) {
-                        out.push_back(hh);
+                    if (BlendClassifySocketUsage(sockLabel(hts), *hnt, hh)) {
+                        fillFromSock(hh, hl);
+                        if (!already(hh)) {
+                            out.push_back(hh);
+                        }
                     }
                     if (!BlendNodeIsTexWalkBarrier(*hnt) || BlendNodeIsNormalMap(*hnt) ||
                             BlendNodeIsBump(*hnt) || BlendNodeIsDisplacement(*hnt)) {
@@ -3426,8 +3448,11 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                     }
                     BlendTexUsageHit ih;
                     const bNodeSocket *its = BlendCastSocket(il->tosock.get());
-                    if (BlendClassifySocketUsage(sockLabel(its), *inner, ih) && !already(ih)) {
-                        out.push_back(ih);
+                    if (BlendClassifySocketUsage(sockLabel(its), *inner, ih)) {
+                        fillFromSock(ih, il);
+                        if (!already(ih)) {
+                            out.push_back(ih);
+                        }
                         if (std::strcmp(ih.usage, "mixFac") == 0) {
                             continue;
                         }
@@ -3600,6 +3625,10 @@ void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
                         aiString sock(h.socket);
                         mout->AddProperty(&sock, "$tex.blend.socket", h.type, si);
                     }
+                    if (h.fromSocket[0] != '\0') {
+                        aiString fromSock(h.fromSocket);
+                        mout->AddProperty(&fromSock, "$tex.blend.fromSocket", h.type, si);
+                    }
                     if (e.node->name[0] != '\0') {
                         aiString nname(e.node->name);
                         mout->AddProperty(&nname, "$tex.blend.node", h.type, si);
@@ -3617,6 +3646,10 @@ void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
             if (h.socket[0] != '\0') {
                 aiString sock(h.socket);
                 mout->AddProperty(&sock, "$tex.blend.socket", h.type, slot);
+            }
+            if (h.fromSocket[0] != '\0') {
+                aiString fromSock(h.fromSocket);
+                mout->AddProperty(&fromSock, "$tex.blend.fromSocket", h.type, slot);
             }
             if (e.node->name[0] != '\0') {
                 aiString nname(e.node->name);

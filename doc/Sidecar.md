@@ -350,6 +350,13 @@ retro-link unlinked Previz into Body. Particle Fur (0al4): typed
 `ParticleSettings` mat + `$tex.blend.particleInfluence`; Sidecar `textures[]`
 removed.
 
+**`$tex.blend.socket` / `$tex.blend.fromSocket` (2026-11-27):** on typed inventory
+slots, `$tex.blend.socket` = **destination** socket on the consuming node (e.g.
+Mix `Fac`). `$tex.blend.fromSocket` = **source** socket on the Image (or walk
+start) that feeds that hit (e.g. Image `Color` / `Alpha` into Mix Fac). Presence
+only - omit when unread. Host uses `fromSocket` to pick Alpha vs Color-luma for
+mixFac without guessing.
+
 ### BLEND World Env / Skymap (Arris)
 
 When `World.nodetree` has Environment Texture (or Image Tex) -> Background ->
