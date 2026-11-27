@@ -169,6 +169,7 @@ struct BlendShaderFlat {
     bool hasEmissionStrength{ false };
     bool hasCoatWeight{ false };
     bool hasCoatRoughness{ false };
+    bool hasSpecular{ false };
     bool hasVolumeColor{ false };
     bool hasVolumeDensity{ false };
     bool hasVolumeDensityDefault{ false };
@@ -188,6 +189,7 @@ struct BlendShaderFlat {
     float emissionStrength{ 0.f };
     float coatWeight{ 0.f };
     float coatRoughness{ 0.f };
+    float specular{ 0.f };
     float volumeColor[4]{};
     float volumeDensity{ 0.f };
     float volumeDensityDefault{ 0.f };
@@ -205,8 +207,8 @@ struct BlendShaderFlat {
     bool HasAnyFactor() const {
         return hasBaseColor || hasMetallic || hasRoughness || hasIor || hasTransmission ||
                hasAlpha || hasEmissionColor || hasEmissionStrength || hasCoatWeight ||
-               hasCoatRoughness || mapBaseColor || mapRoughness || mapNormal || mapEmission ||
-               mapMetallic;
+               hasCoatRoughness || hasSpecular || mapBaseColor || mapRoughness || mapNormal ||
+               mapEmission || mapMetallic;
     }
 };
 
@@ -2674,6 +2676,13 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
                 if (BlendReadSocketFloat(sock, flat.emissionStrength)) {
                     flat.hasEmissionStrength = true;
                 }
+            } else if (BlendSockNameIsAny(sock, { "Specular", "Specular IOR Level" })) {
+                // Factor only. Linked ColorRamp/Image chains stay HostEval (network).
+                float v = 0.f;
+                if (BlendReadLinkedOrDefaultFloat(g, sock, v, nullptr)) {
+                    flat.specular = v;
+                    flat.hasSpecular = true;
+                }
             } else if (BlendSockNameIs(sock, "Normal")) {
                 const bNodeLink *l = g.FindLinkToSocket(sock);
                 if (l) {
@@ -3136,7 +3145,7 @@ bool BlendClassifySocketUsage(const char *sockName, const Assimp::Blender::bNode
     out.socket[sizeof(out.socket) - 1] = '\0';
 
     // Fac into Mix = mask Influence (caller must not walk through Mix Color).
-    // Fac into ColorRamp selects the ramp - not a terminal usage (keep walking).
+    // Fac into ColorRamp selects the ramp - not a terminal usage (caller stops at ramp).
     if (std::strcmp(sockName, "Fac") == 0 || std::strcmp(sockName, "Factor") == 0) {
         if (BlendNodeIsColorRamp(toNode)) {
             return false;
@@ -3305,12 +3314,15 @@ void BlendCollectTexImageInventory(const BlendNodeGraph &g, const BlendNodeGraph
 }
 
 /**
- * Walk outbound DNA links from a TexImage (through Mix/Ramp/Reroute/NormalMap/Bump/
+ * Walk outbound DNA links from a TexImage (through Mix/Reroute/NormalMap/Bump/
  * Group Output) and collect usage hits. Presence only - no filename invent.
+ * ColorRamp is procedural HostEval: do not attribute ramp-output sockets to the
+ * source Image (keeps mixFac on Fac Images; Specular stays network-only).
  */
 void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::bNode *texNode,
         std::vector<BlendTexUsageHit> &out, int depth = 0,
-        const BlendNodeGraph *hostGraph = nullptr, const Assimp::Blender::bNode *hostGroup = nullptr) {
+        const BlendNodeGraph *hostGraph = nullptr, const Assimp::Blender::bNode *hostGroup = nullptr,
+        bool throughMixColor = false) {
     using namespace Assimp::Blender;
     if (texNode == nullptr || depth > 20) {
         return;
@@ -3330,6 +3342,18 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
         }
         return false;
     };
+    auto markMixLayer = [&](BlendTexUsageHit &h) {
+        // Mix Color1/Color2 layers that reach Principled Base Color are not the folded primary.
+        if (throughMixColor && std::strcmp(h.usage, "baseColor") == 0) {
+            h.usage = "mixColor";
+        }
+    };
+    auto isMixColorOperand = [](const char *sockName) -> bool {
+        return sockName != nullptr &&
+               (std::strcmp(sockName, "Color1") == 0 || std::strcmp(sockName, "Color2") == 0 ||
+                       std::strcmp(sockName, "Color") == 0 || std::strcmp(sockName, "A") == 0 ||
+                       std::strcmp(sockName, "B") == 0 || std::strcmp(sockName, "Result") == 0);
+    };
     for (const bNodeLink *l : g.links) {
         if (l == nullptr || BlendCastNode(l->fromnode.get()) != texNode) {
             continue;
@@ -3343,15 +3367,21 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
         BlendTexUsageHit hit;
         const bool classified = BlendClassifySocketUsage(toSock, *to, hit);
         if (classified) {
+            markMixLayer(hit);
             if (!already(hit)) {
                 out.push_back(hit);
             }
             // Mix.Fac: Color comes from Color1/Color2 - do not attribute Mix Color to this map.
-            // ColorRamp.Fac: Fac selects ramp color - keep walking through the ramp.
             if (std::strcmp(hit.usage, "mixFac") == 0 && BlendNodeIsMixColor(*to)) {
                 continue;
             }
         }
+        // ColorRamp: Fac/Color select ramp output - HostEval via BLEND_shader_network.
+        if (BlendNodeIsColorRamp(*to)) {
+            continue;
+        }
+        const bool nextThroughMix =
+                throughMixColor || (BlendNodeIsMixColor(*to) && isMixColorOperand(toSock));
         if (BlendNodeIsGroupOutput(*to)) {
             // Cross into host ShaderNodeGroup outputs.
             if (hostGraph != nullptr && hostGroup != nullptr) {
@@ -3376,12 +3406,16 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                     }
                     const bNodeSocket *hts = BlendCastSocket(hl->tosock.get());
                     BlendTexUsageHit hh;
-                    if (BlendClassifySocketUsage(sockLabel(hts), *hnt, hh) && !already(hh)) {
-                        out.push_back(hh);
+                    if (BlendClassifySocketUsage(sockLabel(hts), *hnt, hh)) {
+                        markMixLayer(hh);
+                        if (!already(hh)) {
+                            out.push_back(hh);
+                        }
                     }
                     if (!BlendNodeIsTexWalkBarrier(*hnt) || BlendNodeIsNormalMap(*hnt) ||
                             BlendNodeIsBump(*hnt) || BlendNodeIsDisplacement(*hnt)) {
-                        BlendCollectTexImageUsages(*hostGraph, hnt, out, depth + 1, nullptr, nullptr);
+                        BlendCollectTexImageUsages(*hostGraph, hnt, out, depth + 1, nullptr, nullptr,
+                                nextThroughMix);
                     }
                 }
             }
@@ -3420,15 +3454,21 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                     }
                     BlendTexUsageHit ih;
                     const bNodeSocket *its = BlendCastSocket(il->tosock.get());
-                    if (BlendClassifySocketUsage(sockLabel(its), *inner, ih) && !already(ih)) {
-                        out.push_back(ih);
+                    if (BlendClassifySocketUsage(sockLabel(its), *inner, ih)) {
+                        markMixLayer(ih);
+                        if (!already(ih)) {
+                            out.push_back(ih);
+                        }
                         if (std::strcmp(ih.usage, "mixFac") == 0) {
                             continue;
                         }
                     }
+                    if (BlendNodeIsColorRamp(*inner)) {
+                        continue;
+                    }
                     if (!BlendNodeIsTexWalkBarrier(*inner) || BlendNodeIsNormalMap(*inner) ||
                             BlendNodeIsBump(*inner) || BlendNodeIsDisplacement(*inner)) {
-                        BlendCollectTexImageUsages(sub, inner, out, depth + 1, &g, to);
+                        BlendCollectTexImageUsages(sub, inner, out, depth + 1, &g, to, nextThroughMix);
                     }
                 }
             }
@@ -3437,8 +3477,8 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
         if (BlendNodeIsTexWalkBarrier(*to)) {
             continue;
         }
-        // Continue through filters / mix / ramp / reroute / normal / bump.
-        BlendCollectTexImageUsages(g, to, out, depth + 1, hostGraph, hostGroup);
+        // Continue through filters / mix / reroute / normal / bump (not ColorRamp).
+        BlendCollectTexImageUsages(g, to, out, depth + 1, hostGraph, hostGroup, nextThroughMix);
     }
 }
 
@@ -3990,6 +4030,9 @@ void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
     if (flat.hasRoughness) {
         mout->AddProperty(&flat.roughness, 1, AI_MATKEY_ROUGHNESS_FACTOR);
     }
+    if (flat.hasSpecular) {
+        mout->AddProperty(&flat.specular, 1, AI_MATKEY_SPECULAR_FACTOR);
+    }
     if (flat.hasIor) {
         mout->AddProperty(&flat.ior, 1, AI_MATKEY_REFRACTI);
     }
@@ -4072,6 +4115,10 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
         if (flat.hasRoughness) {
             sep();
             mjson << "\"roughness\":" << flat.roughness;
+        }
+        if (flat.hasSpecular) {
+            sep();
+            mjson << "\"specular\":" << flat.specular;
         }
         if (flat.hasIor) {
             sep();
@@ -4891,6 +4938,35 @@ static std::string BlendParticleInfluenceLabels(int mapBits) {
     return out;
 }
 
+/** $tex.blend.usage labels for ParticleSettings MTex (inventory parity with body mats). */
+static std::string BlendParticleUsageLabels(int mapBits) {
+    std::string out;
+    auto add = [&](int bit, const char *name) {
+        if ((mapBits & bit) == 0) {
+            return;
+        }
+        if (!out.empty()) {
+            out += ',';
+        }
+        out += name;
+    };
+    add(BlendPamap_Time, "particleTime");
+    add(BlendPamap_Life, "particleLife");
+    add(BlendPamap_Dens, "particleDensity");
+    add(BlendPamap_Size, "particleSize");
+    add(BlendPamap_Length, "particleLength");
+    add(BlendPamap_IVel, "particleIVel");
+    add(BlendPamap_Field, "particleField");
+    add(BlendPamap_Clump, "particleClump");
+    add(BlendPamap_KinkFreq, "particleKinkFreq");
+    add(BlendPamap_Rough, "particleRough");
+    add(BlendPamap_Gravity, "particleGravity");
+    add(BlendPamap_Damp, "particleDamp");
+    add(BlendPamap_KinkAmp, "particleKinkAmp");
+    add(BlendPamap_Twist, "particleTwist");
+    return out;
+}
+
 /**
  * 0al4: DNA ParticleSettings.mtex[] -> typed aiMaterial ($tex.file + key=value meta).
  * Sidecar textures[] decommissioned - Host binds via typedMaterial / meta.
@@ -4951,8 +5027,10 @@ static void BlendEmitParticleTypedMTexMaterials(Assimp::Blender::ConversionData 
 
             const int mapBits = static_cast<int>(mtx.mapto);
             const std::string influences = BlendParticleInfluenceLabels(mapBits);
+            const std::string usageLabels = BlendParticleUsageLabels(mapBits);
             // UNKNOWN typed slot: usage + mapto so Host can parse density/length/... later.
-            const char *usageLabel = influences.empty() ? "particle" : influences.c_str();
+            // usage uses particle* labels; particleInfluence keeps short DNA names.
+            const char *usageLabel = usageLabels.empty() ? "particle" : usageLabels.c_str();
             BlendEmitTexUsageMeta(mout, texType, slot, usageLabel, mapBits, true, mtx.uvname);
             BlendEmitUvTransformFromMTex(mout, texType, slot, mtx);
             {
