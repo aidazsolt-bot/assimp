@@ -2812,13 +2812,12 @@ BlendShaderFlat BlendFlattenFromNode(const BlendNodeGraph &g, const Assimp::Blen
     return flat;
 }
 
-BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) {
+BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat, const BlendNodeGraph &g) {
     using namespace Assimp::Blender;
     BlendShaderFlat flat;
     if (!mat.nodetree) {
         return flat;
     }
-    const BlendNodeGraph g = BlendBuildGraph(*mat.nodetree);
 
     const bNode *outputNode = nullptr;
     for (const bNode *n : g.nodes) {
@@ -3057,6 +3056,14 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) 
 
     // Presence: only Image Tex maps reached via bNodeLink (same as Blender). No name-guess.
     return flat;
+}
+
+BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat) {
+    using namespace Assimp::Blender;
+    if (!mat.nodetree) {
+        return BlendShaderFlat();
+    }
+    return BlendFlattenMaterialNodes(mat, BlendBuildGraph(*mat.nodetree));
 }
 
 /** Embed packed Image into conv.textures (dedupe by Image*). Returns true when *N or filepath usable. */
@@ -3769,13 +3776,10 @@ void BlendEmitWorldEnv(const Assimp::Blender::Scene &in, Assimp::Blender::Conver
 }
 
 std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
-        Assimp::Blender::ConversionData &conv) {
+        Assimp::Blender::ConversionData &conv, const BlendNodeGraph &g) {
     using namespace Assimp::Blender;
     (void)conv;
-    if (!mat.nodetree) {
-        return {};
-    }
-    const BlendNodeGraph g = BlendBuildGraph(*mat.nodetree);
+    (void)mat;
 
     // Link DAG structure (Presence): roots = Material Output; parents = upstream
     // (fromnode), children = downstream (tonode). Socket-level refs stay in links[].
@@ -4040,6 +4044,15 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
     return nj.str();
 }
 
+std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
+        Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    if (!mat.nodetree) {
+        return {};
+    }
+    return BlendBuildShaderNetworkJson(mat, conv, BlendBuildGraph(*mat.nodetree));
+}
+
 void BlendApplyFlatToMaterial(aiMaterial *mout, const BlendShaderFlat &flat,
         Assimp::Blender::ConversionData &conv_data, unsigned matIndex) {
     if (mout == nullptr || !flat.ok) {
@@ -4099,7 +4112,8 @@ static std::string BlendMapJson(const BlendTexMap &map) {
 
 std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, const BlendShaderFlat &flat,
         Assimp::Blender::ConversionData &conv_data,
-        const std::vector<BlendMapInventoryEntry> &inventory) {
+        const std::vector<BlendMapInventoryEntry> &inventory,
+        const BlendNodeGraph *prebuiltGraph = nullptr) {
     std::ostringstream mjson;
     mjson << "{\"schemaVersion\":1,\"source\":{\"format\":\"blend\"},\"BLEND_shader\":{";
     mjson << "\"name\":\"" << BlendJsonEscape(mat.id.name + 2) << '"';
@@ -4277,7 +4291,9 @@ std::string BlendBuildMaterialSidecarJson(const Assimp::Blender::Material &mat, 
         mjson << '}';
     }
     {
-        const std::string net = BlendBuildShaderNetworkJson(mat, conv_data);
+        const std::string net = prebuiltGraph != nullptr ?
+                                        BlendBuildShaderNetworkJson(mat, conv_data, *prebuiltGraph) :
+                                        BlendBuildShaderNetworkJson(mat, conv_data);
         if (!net.empty()) {
             mjson << ",\"BLEND_shader_network\":" << net;
         }
@@ -8594,8 +8610,16 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
             continue;
         }
 
-        // C6: flatten active Principled/Glass/Glossy/Diffuse/Emission + follow Image Tex links.
-        const BlendShaderFlat flat = BlendFlattenMaterialNodes(*mat);
+        // C6: flatten + inventory + shader network share one BlendNodeGraph (identical emit).
+        BlendNodeGraph materialGraph;
+        const BlendNodeGraph *materialGraphPtr = nullptr;
+        if (mat->nodetree) {
+            materialGraph = BlendBuildGraph(*mat->nodetree);
+            materialGraphPtr = &materialGraph;
+        }
+        const BlendShaderFlat flat = materialGraphPtr != nullptr ?
+                                             BlendFlattenMaterialNodes(*mat, *materialGraphPtr) :
+                                             BlendFlattenMaterialNodes(*mat);
         if (flat.ok) {
             BlendApplyFlatToMaterial(mout, flat, conv_data, static_cast<unsigned>(matRawIndex));
         } else {
@@ -8668,14 +8692,14 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
 
         AddBlendParams(mout, mat.get());
         std::vector<BlendMapInventoryEntry> inventory;
-        if (mat->nodetree) {
-            const BlendNodeGraph rootG = BlendBuildGraph(*mat->nodetree);
-            BlendCollectTexImageInventory(rootG, rootG, inventory);
+        if (materialGraphPtr != nullptr) {
+            BlendCollectTexImageInventory(*materialGraphPtr, *materialGraphPtr, inventory);
             // Linked inventory maps -> typed $tex.* + usage meta; drop when fully typed.
             BlendEmitInventoryTypedMaps(mout, flat, inventory, conv_data,
-                    static_cast<unsigned>(matRawIndex), rootG);
+                    static_cast<unsigned>(matRawIndex), *materialGraphPtr);
         }
-        conv_data.materialSidecarJson.push_back(BlendBuildMaterialSidecarJson(*mat, flat, conv_data, inventory));
+        conv_data.materialSidecarJson.push_back(
+                BlendBuildMaterialSidecarJson(*mat, flat, conv_data, inventory, materialGraphPtr));
         if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityDefault ||
                 flat.hasVolumeDensityLinked || flat.hasVolumeDensityAttribute || flat.hasVolumeAnisotropy ||
                 flat.hasVolumeAbsorptionColor || flat.hasVolumeEmissionColor ||

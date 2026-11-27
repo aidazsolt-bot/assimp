@@ -90,11 +90,26 @@ void Structure::Convert(std::shared_ptr<ElemBase> in, const FileDatabase &db) co
 }
 
 //--------------------------------------------------------------------------------
+// Same message as Structure::operator[] missing-field Error (Fail policy / debug).
+inline std::string BlendDnaMissingFieldMsg(const Structure &s, const char *fieldName) {
+    return std::string("BlendDNA: Did not find a field named `") + fieldName + "` in structure `" + s.name + "`";
+}
+
+//--------------------------------------------------------------------------------
 template <int error_policy, typename T, size_t M>
 void Structure::ReadFieldArray(T (&out)[M], const char *name, const FileDatabase &db) const {
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+    const Field *fPtr = Get(name);
+    if (fPtr == nullptr) {
+        _defaultInitializer<error_policy>()(out, BlendDnaMissingFieldMsg(*this, name).c_str());
+        db.reader->SetCurrentPos(old);
+#ifndef ASSIMP_BUILD_BLENDER_NO_STATS
+        ++db.stats().fields_read;
+#endif
+        return;
+    }
     try {
-        const Field &f = (*this)[name];
+        const Field &f = *fPtr;
         const Structure &s = db.dna[f.type];
 
         // is the input actually an array?
@@ -128,8 +143,17 @@ void Structure::ReadFieldArray(T (&out)[M], const char *name, const FileDatabase
 template <int error_policy, typename T, size_t M, size_t N>
 void Structure::ReadFieldArray2(T (&out)[M][N], const char *name, const FileDatabase &db) const {
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+    const Field *fPtr = Get(name);
+    if (fPtr == nullptr) {
+        _defaultInitializer<error_policy>()(out, BlendDnaMissingFieldMsg(*this, name).c_str());
+        db.reader->SetCurrentPos(old);
+#ifndef ASSIMP_BUILD_BLENDER_NO_STATS
+        ++db.stats().fields_read;
+#endif
+        return;
+    }
     try {
-        const Field &f = (*this)[name];
+        const Field &f = *fPtr;
         const Structure &s = db.dna[f.type];
 
         // is the input actually an array?
@@ -172,10 +196,17 @@ bool Structure::ReadFieldPtr(TOUT<T> &out, const char *name, const FileDatabase 
         bool non_recursive /*= false*/) const {
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
     Pointer ptrval;
-    const Field *f;
+    const Field *f = Get(name);
+    if (f == nullptr) {
+        _defaultInitializer<error_policy>()(out, BlendDnaMissingFieldMsg(*this, name).c_str());
+        out.reset();
+        db.reader->SetCurrentPos(old);
+#ifndef ASSIMP_BUILD_BLENDER_NO_STATS
+        ++db.stats().fields_read;
+#endif
+        return false;
+    }
     try {
-        f = &(*this)[name];
-
         // sanity check, should never happen if the genblenddna script is right
         if (!(f->flags & FieldFlag_Pointer)) {
             throw Error("Field `", name, "` of structure `",
@@ -228,10 +259,19 @@ bool Structure::ReadFieldPtr(TOUT<T> (&out)[N], const char *name,
     // XXX see if we can reduce this to call to the 'normal' ReadFieldPtr
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
     Pointer ptrval[N];
-    const Field *f;
+    const Field *f = Get(name);
+    if (f == nullptr) {
+        _defaultInitializer<error_policy>()(out, BlendDnaMissingFieldMsg(*this, name).c_str());
+        for (size_t i = 0; i < N; ++i) {
+            out[i].reset();
+        }
+        db.reader->SetCurrentPos(old);
+#ifndef ASSIMP_BUILD_BLENDER_NO_STATS
+        ++db.stats().fields_read;
+#endif
+        return false;
+    }
     try {
-        f = &(*this)[name];
-
 #ifdef _DEBUG
         // sanity check, should never happen if the genblenddna script is right
         if ((FieldFlag_Pointer | FieldFlag_Pointer) != (f->flags & (FieldFlag_Pointer | FieldFlag_Pointer))) {
@@ -279,8 +319,17 @@ bool Structure::ReadFieldPtr(TOUT<T> (&out)[N], const char *name,
 template <int error_policy, typename T>
 void Structure::ReadField(T &out, const char *name, const FileDatabase &db) const {
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+    const Field *fPtr = Get(name);
+    if (fPtr == nullptr) {
+        _defaultInitializer<error_policy>()(out, BlendDnaMissingFieldMsg(*this, name).c_str());
+        db.reader->SetCurrentPos(old);
+#ifndef ASSIMP_BUILD_BLENDER_NO_STATS
+        ++db.stats().fields_read;
+#endif
+        return;
+    }
     try {
-        const Field &f = (*this)[name];
+        const Field &f = *fPtr;
         // find the structure definition pertaining to this field
         const Structure &s = db.dna[f.type];
 
@@ -306,10 +355,17 @@ bool Structure::ReadCustomDataPtr(std::shared_ptr<ElemBase> &out, int cdtype, co
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
 
     Pointer ptrval;
-    const Field *f;
+    const Field *f = Get(name);
+    if (f == nullptr) {
+        _defaultInitializer<error_policy>()(out, BlendDnaMissingFieldMsg(*this, name).c_str());
+        out.reset();
+        db.reader->SetCurrentPos(old);
+#ifndef ASSIMP_BUILD_BLENDER_NO_STATS
+        ++db.stats().fields_read;
+#endif
+        return false;
+    }
     try {
-        f = &(*this)[name];
-
         // sanity check, should never happen if the genblenddna script is right
         if (!(f->flags & FieldFlag_Pointer)) {
             throw Error("Field `", name, "` of structure `",
