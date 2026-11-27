@@ -1061,7 +1061,7 @@ struct OceanModifierData final : SharedModifierData {
     float wind_velocity WARN;
     char cachepath[1024] WARN;
     char cached WARN;
-    // Presence: true only when SDNA field exists and typed Convert succeeded.
+    // Presence: true only when SDNA field exists on the converted hull.
     bool hasResolution WARN;
     bool hasSpatialSize WARN;
     bool hasDepth WARN;

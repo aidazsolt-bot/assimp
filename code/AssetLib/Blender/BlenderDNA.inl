@@ -542,8 +542,8 @@ bool Structure::ResolvePointer(TOUT<T> &out, const Pointer &ptrval, const FileDa
     if (!non_recursive) {
         for (size_t i = 0; i < num; ++i, ++o) {
             s.Convert(*o, db);
-            // Typed pointees are concrete hulls matching file SDNA (ss == s).
-            BlendElemBindTypes(static_cast<ElemBase &>(*o), s.name.c_str(), s.name.c_str());
+            // Typed pointees: converted hull matches file SDNA (ss == s).
+            BlendElemBindConvertedHull(static_cast<ElemBase &>(*o), s.name.c_str(), s.name.c_str());
         }
 
         db.reader->SetCurrentPos(pold);
@@ -699,15 +699,15 @@ bool Structure::ResolvePointer<std::shared_ptr, ElemBase>(std::shared_ptr<ElemBa
     (s.*builders.second)(out, db);
     db.reader->SetCurrentPos(pold);
 
-    // File SDNA name stays on dna_type (ApplyModifiers structure walk).
-    // converted_type is the C++ hull actually allocated - Generic stand-in must
-    // not claim Ocean/Mirror/... or static_cast reads past the object.
+    // File SDNA name stays on dna_type (structure walk / field offsets).
+    // converted_hull names the C++ hull actually allocated. A Generic/header-only
+    // stand-in must not advertise a specialized SDNA name or casts read OOB.
     {
         const auto genIt = db.dna.converters.find("GenericModifierData");
         const bool usedGeneric = genIt != db.dna.converters.end() &&
                 builders.first == genIt->second.first &&
                 s.name != "GenericModifierData";
-        BlendElemBindTypes(*out, s.name.c_str(),
+        BlendElemBindConvertedHull(*out, s.name.c_str(),
                 usedGeneric ? "GenericModifierData" : s.name.c_str());
     }
 

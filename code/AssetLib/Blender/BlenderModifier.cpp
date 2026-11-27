@@ -118,13 +118,13 @@ void BlenderModifierShowcase::ApplyModifiers(aiNode &out, ConversionData &conv_d
 
             BlenderModifier *const modifier = *curmod;
             if (modifier->IsActive(dat)) {
-                // CodeRabbit PR7099: header type alone is not enough. GenericModifierData
-                // fallback can carry eModifierType_Mirror while allocating only the header;
-                // DoIt must not static_cast to MirrorModifierData / SubsurfModifierData.
+                // Header ModifierData.type alone is not enough. A Generic converted hull
+                // can still carry eModifierType_Mirror while allocating only the header;
+                // DoIt must not static_cast unless converted_hull matches RequiredDnaType.
                 const char *need = modifier->RequiredDnaType();
-                if (need != nullptr && !BlendElemConvertedAs(*cur, need)) {
-                    const char *have = cur->converted_type ? cur->converted_type : cur->dna_type;
-                    ASSIMP_LOG_DEBUG("BlendModifier: skip `", dat.name, "` handler - converted as `",
+                if (need != nullptr && !BlendElemConvertedHullIs(*cur, need)) {
+                    const char *have = cur->converted_hull ? cur->converted_hull : cur->dna_type;
+                    ASSIMP_LOG_DEBUG("BlendModifier: skip `", dat.name, "` handler - converted hull `",
                             have ? have : "?", "`, need `", need, "`");
                     continue;
                 }

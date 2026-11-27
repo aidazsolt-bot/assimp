@@ -1846,7 +1846,7 @@ void Structure::Convert<bNodeSocket>(
                         dest.default_value = ((*sVal).*builders.first)();
                         db.cache(dest.default_value).set(*sVal, dest.default_value, ptrval, cache_owner);
                         ((*sVal).*builders.second)(dest.default_value, db);
-                        BlendElemBindTypes(*dest.default_value, sVal->name.c_str(), sVal->name.c_str());
+                        BlendElemBindConvertedHull(*dest.default_value, sVal->name.c_str(), sVal->name.c_str());
                         db.reader->SetCurrentPos(pold);
                     }
                 }
@@ -1939,7 +1939,7 @@ void Structure::Convert<bNode>(
                         dest.storage = ((*sVal).*builders.first)();
                         db.cache(dest.storage).set(*sVal, dest.storage, ptrval, cache_owner);
                         ((*sVal).*builders.second)(dest.storage, db);
-                        BlendElemBindTypes(*dest.storage, sVal->name.c_str(), sVal->name.c_str());
+                        BlendElemBindConvertedHull(*dest.storage, sVal->name.c_str(), sVal->name.c_str());
                         db.reader->SetCurrentPos(pold);
                     }
                 }
@@ -2664,8 +2664,8 @@ void DNA::RegisterConverters() {
     converters["Group"] = DNA::FactoryPair(&Structure::Allocate<Group>, &Structure::Convert<Group>);
     converters["MTex"] = DNA::FactoryPair(&Structure::Allocate<MTex>, &Structure::Convert<MTex>);
     converters["TFace"] = DNA::FactoryPair(&Structure::Allocate<TFace>, &Structure::Convert<TFace>);
-    // All specialized *ModifierData converters BEFORE the Generic map. Generic
-    // never overwrites these (also skipped by find() in the loop below).
+    // Specialized *ModifierData converters BEFORE the Generic map so each gets a
+    // full converted hull. Generic never overwrites (also skipped via find()).
     converters["SubsurfModifierData"] = DNA::FactoryPair(&Structure::Allocate<SubsurfModifierData>, &Structure::Convert<SubsurfModifierData>);
     converters["MirrorModifierData"] = DNA::FactoryPair(&Structure::Allocate<MirrorModifierData>, &Structure::Convert<MirrorModifierData>);
     converters["FluidModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidModifierData>, &Structure::Convert<FluidModifierData>);
@@ -2691,7 +2691,7 @@ void DNA::RegisterConverters() {
     converters["FluidsimModifierData"] = DNA::FactoryPair(&Structure::Allocate<FluidsimModifierData>, &Structure::Convert<FluidsimModifierData>);
     converters["GenericModifierData"] = DNA::FactoryPair(&Structure::Allocate<GenericModifierData>, &Structure::Convert<GenericModifierData>);
     {
-        // Remaining blender.git *ModifierData names: header-only Generic hull.
+        // Remaining blender.git *ModifierData names: header-only Generic converted hull.
         static const char *const kGenericModifierDnaNames[] = {
 #include "BlenderModifierDnaNames.inc"
         };
@@ -2699,8 +2699,8 @@ void DNA::RegisterConverters() {
             if (dnaName[0] == '\0' || dnaName[0] == '/') {
                 continue; // skip comment-only lines if any slip through
             }
-            // Never overwrite a specialized converter. Generic is header-only;
-            // casting that object to Ocean/Cloth/Mirror/... is OOB (CodeRabbit PR7099).
+            // Never overwrite a specialized converter. Generic allocates only the
+            // ModifierData header; casting that hull to a concrete *ModifierData is OOB.
             if (converters.find(dnaName) != converters.end()) {
                 continue;
             }

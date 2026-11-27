@@ -235,7 +235,7 @@ bool BlendReadSocketFloat(const Assimp::Blender::bNodeSocket &sock, float &out) 
     if (!sock.default_value || sock.default_value->dna_type == nullptr) {
         return false;
     }
-    if (BlendElemConvertedAs(*(sock.default_value), "bNodeSocketValueFloat")) {
+    if (BlendElemConvertedHullIs(*(sock.default_value), "bNodeSocketValueFloat")) {
         out = static_cast<const bNodeSocketValueFloat *>(sock.default_value.get())->value;
         return true;
     }
@@ -247,7 +247,7 @@ bool BlendReadSocketColor(const Assimp::Blender::bNodeSocket &sock, float out[4]
     if (!sock.default_value || sock.default_value->dna_type == nullptr) {
         return false;
     }
-    if (BlendElemConvertedAs(*(sock.default_value), "bNodeSocketValueRGBA")) {
+    if (BlendElemConvertedHullIs(*(sock.default_value), "bNodeSocketValueRGBA")) {
         const auto *rgba = static_cast<const bNodeSocketValueRGBA *>(sock.default_value.get());
         out[0] = rgba->value[0];
         out[1] = rgba->value[1];
@@ -264,7 +264,7 @@ bool BlendReadSocketVector(const Assimp::Blender::bNodeSocket &sock, float out[3
     if (!sock.default_value || sock.default_value->dna_type == nullptr) {
         return false;
     }
-    if (BlendElemConvertedAs(*(sock.default_value), "bNodeSocketValueVector")) {
+    if (BlendElemConvertedHullIs(*(sock.default_value), "bNodeSocketValueVector")) {
         const auto *vec = static_cast<const bNodeSocketValueVector *>(sock.default_value.get());
         out[0] = vec->value[0];
         out[1] = vec->value[1];
@@ -287,7 +287,7 @@ const Assimp::Blender::bNode *BlendCastNode(const Assimp::Blender::ElemBase *e) 
     if (e == nullptr) {
         return nullptr;
     }
-    if (e->dna_type != nullptr && !BlendElemConvertedAs(*(e), "bNode")) {
+    if (e->dna_type != nullptr && !BlendElemConvertedHullIs(*(e), "bNode")) {
         return nullptr;
     }
     return static_cast<const bNode *>(e);
@@ -298,7 +298,7 @@ const Assimp::Blender::bNodeSocket *BlendCastSocket(const Assimp::Blender::ElemB
     if (e == nullptr) {
         return nullptr;
     }
-    if (e->dna_type != nullptr && !BlendElemConvertedAs(*(e), "bNodeSocket")) {
+    if (e->dna_type != nullptr && !BlendElemConvertedHullIs(*(e), "bNodeSocket")) {
         return nullptr;
     }
     return static_cast<const bNodeSocket *>(e);
@@ -537,7 +537,7 @@ const Assimp::Blender::bNodeTree *BlendNodeGroupTree(const Assimp::Blender::bNod
     if (!BlendNodeIsGroup(n) || !n.id) {
         return nullptr;
     }
-    if (n.id->dna_type != nullptr && !BlendElemConvertedAs(*(n.id), "bNodeTree")) {
+    if (n.id->dna_type != nullptr && !BlendElemConvertedHullIs(*(n.id), "bNodeTree")) {
         return nullptr;
     }
     return static_cast<const bNodeTree *>(n.id.get());
@@ -583,7 +583,7 @@ const Assimp::Blender::bNodeLink *BlendCastLink(const Assimp::Blender::ElemBase 
     if (e == nullptr) {
         return nullptr;
     }
-    if (e->dna_type != nullptr && !BlendElemConvertedAs(*(e), "bNodeLink")) {
+    if (e->dna_type != nullptr && !BlendElemConvertedHullIs(*(e), "bNodeLink")) {
         return nullptr;
     }
     return static_cast<const bNodeLink *>(e);
@@ -594,7 +594,7 @@ const Assimp::Blender::Image *BlendNodeImage(const Assimp::Blender::bNode &n) {
     if (!n.id) {
         return nullptr;
     }
-    if (n.id->dna_type != nullptr && !BlendElemConvertedAs(*(n.id), "Image")) {
+    if (n.id->dna_type != nullptr && !BlendElemConvertedHullIs(*(n.id), "Image")) {
         return nullptr;
     }
     return static_cast<const Image *>(n.id.get());
@@ -764,7 +764,7 @@ const Assimp::Blender::FCurve *BlendCastFCurve(const Assimp::Blender::ElemBase *
     if (e == nullptr) {
         return nullptr;
     }
-    if (e->dna_type != nullptr && !BlendElemConvertedAs(*(e), "FCurve")) {
+    if (e->dna_type != nullptr && !BlendElemConvertedHullIs(*(e), "FCurve")) {
         return nullptr;
     }
     return static_cast<const FCurve *>(e);
@@ -775,7 +775,7 @@ const Assimp::Blender::DriverVar *BlendCastDriverVar(const Assimp::Blender::Elem
     if (e == nullptr) {
         return nullptr;
     }
-    if (e->dna_type != nullptr && !BlendElemConvertedAs(*(e), "DriverVar")) {
+    if (e->dna_type != nullptr && !BlendElemConvertedHullIs(*(e), "DriverVar")) {
         return nullptr;
     }
     return static_cast<const DriverVar *>(e);
@@ -1081,7 +1081,7 @@ void BlendConvertCameraAnimations(std::vector<aiAnimation *> &anims, Assimp::Ble
         // NLA strips (tiger cameras stash clips here; adt.action is often null).
         for (std::shared_ptr<ElemBase> tcur = obj->adt->nla_tracks.first; tcur;) {
             const NlaTrack *track = nullptr;
-            if (tcur->dna_type == nullptr || BlendElemConvertedAs(*(tcur), "NlaTrack")) {
+            if (tcur->dna_type == nullptr || BlendElemConvertedHullIs(*(tcur), "NlaTrack")) {
                 track = static_cast<const NlaTrack *>(tcur.get());
             }
             if (track == nullptr) {
@@ -1089,7 +1089,7 @@ void BlendConvertCameraAnimations(std::vector<aiAnimation *> &anims, Assimp::Ble
             }
             for (std::shared_ptr<ElemBase> scur = track->strips.first; scur;) {
                 const NlaStrip *strip = nullptr;
-                if (scur->dna_type == nullptr || BlendElemConvertedAs(*(scur), "NlaStrip")) {
+                if (scur->dna_type == nullptr || BlendElemConvertedHullIs(*(scur), "NlaStrip")) {
                     strip = static_cast<const NlaStrip *>(scur.get());
                 }
                 if (strip == nullptr) {
@@ -1117,7 +1117,7 @@ const Assimp::Blender::Bone *BlendCastBone(const Assimp::Blender::ElemBase *e) {
     if (e == nullptr) {
         return nullptr;
     }
-    if (e->dna_type != nullptr && !BlendElemConvertedAs(*(e), "Bone")) {
+    if (e->dna_type != nullptr && !BlendElemConvertedHullIs(*(e), "Bone")) {
         return nullptr;
     }
     return static_cast<const Bone *>(e);
@@ -1370,7 +1370,7 @@ bool BlendArmatureBoneRestLocal(const Assimp::Blender::bArmature &arm, const std
 void BlendPushArmatureActionAnim(std::vector<aiAnimation *> &anims, const Assimp::Blender::Object &obj,
         const Assimp::Blender::bAction &act, Assimp::Blender::ConversionData &conv_data) {
     using namespace Assimp::Blender;
-    if (!obj.data || (obj.data->dna_type != nullptr && !BlendElemConvertedAs(*(obj.data), "bArmature"))) {
+    if (!obj.data || (obj.data->dna_type != nullptr && !BlendElemConvertedHullIs(*(obj.data), "bArmature"))) {
         return;
     }
     const bArmature *arm = static_cast<const bArmature *>(obj.data.get());
@@ -1466,7 +1466,7 @@ void BlendConvertArmatureAnimations(std::vector<aiAnimation *> &anims, Assimp::B
         tryAct(obj->adt->action);
         for (std::shared_ptr<ElemBase> tcur = obj->adt->nla_tracks.first; tcur;) {
             const NlaTrack *track = nullptr;
-            if (tcur->dna_type == nullptr || BlendElemConvertedAs(*(tcur), "NlaTrack")) {
+            if (tcur->dna_type == nullptr || BlendElemConvertedHullIs(*(tcur), "NlaTrack")) {
                 track = static_cast<const NlaTrack *>(tcur.get());
             }
             if (track == nullptr) {
@@ -1474,7 +1474,7 @@ void BlendConvertArmatureAnimations(std::vector<aiAnimation *> &anims, Assimp::B
             }
             for (std::shared_ptr<ElemBase> scur = track->strips.first; scur;) {
                 const NlaStrip *strip = nullptr;
-                if (scur->dna_type == nullptr || BlendElemConvertedAs(*(scur), "NlaStrip")) {
+                if (scur->dna_type == nullptr || BlendElemConvertedHullIs(*(scur), "NlaStrip")) {
                     strip = static_cast<const NlaStrip *>(scur.get());
                 }
                 if (strip == nullptr) {
@@ -1533,7 +1533,7 @@ void BlendAttachArmatureBones(aiNode *armNode, const Assimp::Blender::Object &ob
     if (armNode == nullptr || !obj.data) {
         return;
     }
-    if (obj.data->dna_type != nullptr && !BlendElemConvertedAs(*(obj.data), "bArmature")) {
+    if (obj.data->dna_type != nullptr && !BlendElemConvertedHullIs(*(obj.data), "bArmature")) {
         return;
     }
     const bArmature *arm = static_cast<const bArmature *>(obj.data.get());
@@ -1558,7 +1558,7 @@ const Assimp::Blender::PackedFile *BlendImageGetPacked(const Assimp::Blender::Im
     }
     for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
         const ImagePackedFile *ipf = nullptr;
-        if (cur->dna_type == nullptr || BlendElemConvertedAs(*(cur), "ImagePackedFile")) {
+        if (cur->dna_type == nullptr || BlendElemConvertedHullIs(*(cur), "ImagePackedFile")) {
             ipf = static_cast<const ImagePackedFile *>(cur.get());
         }
         if (ipf == nullptr) {
@@ -1599,7 +1599,7 @@ const char *BlendImageDisplayPath(const Assimp::Blender::Image *img) {
     }
     for (std::shared_ptr<ElemBase> cur = img->packedfiles.first; cur;) {
         const ImagePackedFile *ipf = nullptr;
-        if (cur->dna_type == nullptr || BlendElemConvertedAs(*(cur), "ImagePackedFile")) {
+        if (cur->dna_type == nullptr || BlendElemConvertedHullIs(*(cur), "ImagePackedFile")) {
             ipf = static_cast<const ImagePackedFile *>(cur.get());
         }
         if (ipf == nullptr) {
@@ -1700,7 +1700,7 @@ void BlendEmitAllPackedImages(Assimp::Blender::ConversionData &conv_data,
             // Cache before Convert to match ResolvePointer cyclic-safe order.
             conv_data.db.cache(img).set(ss, img, bl.address, 0);
             (ss.*builders.second)(base, conv_data.db);
-            BlendElemBindTypes(*base, ss.name.c_str(), ss.name.c_str());
+            BlendElemBindConvertedHull(*base, ss.name.c_str(), ss.name.c_str());
             conv_data.db.active_id_scope = prevScope;
             conv_data.db.reader->SetCurrentPos(pold);
         }
@@ -2300,7 +2300,7 @@ void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::
             for (int depth = 0; src != nullptr && depth < 12; ++depth) {
                 if (BlendNodeIsUVMap(*src)) {
                     if (src->storage && src->storage->dna_type != nullptr &&
-                            BlendElemConvertedAs(*(src->storage), "NodeShaderUVMap")) {
+                            BlendElemConvertedHullIs(*(src->storage), "NodeShaderUVMap")) {
                         const auto *st = static_cast<const NodeShaderUVMap *>(src->storage.get());
                         BlendCopyUvName(uvname, st->uv_map);
                     }
@@ -2431,7 +2431,7 @@ void BlendResolveTexImageUvTrafo(const BlendNodeGraph &g, const Assimp::Blender:
         }
         // Pre-2.81 TexMapping storage when sockets had no readable defaults.
         if ((!gotLoc || !gotRot || !gotScl) && mapNode.storage && mapNode.storage->dna_type &&
-                BlendElemConvertedAs(*(mapNode.storage), "TexMapping")) {
+                BlendElemConvertedHullIs(*(mapNode.storage), "TexMapping")) {
             const auto *tm = static_cast<const TexMapping *>(mapNode.storage.get());
             if (!gotLoc) {
                 loc[0] = tm->loc[0];
@@ -2972,7 +2972,7 @@ BlendShaderFlat BlendFlattenMaterialNodes(const Assimp::Blender::Material &mat, 
                         } else if (BlendSockNameIs(*vs, "Density Attribute") ||
                                    BlendSockNameIs(*vs, "density_attribute")) {
                             if (vs->default_value && vs->default_value->dna_type &&
-                                    BlendElemConvertedAs(*(vs->default_value), "bNodeSocketValueString")) {
+                                    BlendElemConvertedHullIs(*(vs->default_value), "bNodeSocketValueString")) {
                                 const auto *sv = static_cast<const bNodeSocketValueString *>(
                                         vs->default_value.get());
                                 if (sv->value[0] != '\0') {
@@ -3939,7 +3939,7 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         }
         // Pre-2.81 Mapping: Location/Rotation/Scale lived in TexMapping storage, not sockets.
         if (BlendNodeIsMapping(*n) && n->storage && n->storage->dna_type &&
-                BlendElemConvertedAs(*(n->storage), "TexMapping")) {
+                BlendElemConvertedHullIs(*(n->storage), "TexMapping")) {
             const auto *tm = static_cast<const TexMapping *>(n->storage.get());
             auto emitVec = [&](const char *name, const float v[3], bool &have) {
                 if (have) {
@@ -3961,7 +3961,7 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
 
         // ColorRamp storage (ColorBand stops).
         if (n->storage && n->storage->dna_type != nullptr &&
-                BlendElemConvertedAs(*(n->storage), "ColorBand")) {
+                BlendElemConvertedHullIs(*(n->storage), "ColorBand")) {
             const auto *band = static_cast<const ColorBand *>(n->storage.get());
             const int tot = std::max(0, std::min(static_cast<int>(band->tot), 32));
             nj << ",\"colorBand\":{\"tot\":" << tot << ",\"ipotype\":" << static_cast<int>(band->ipotype)
@@ -3978,10 +3978,10 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         // Musgrave / Noise type Presence (SHD_MUSGRAVE_* == SHD_NOISE_*; omit if unread).
         if (n->storage && n->storage->dna_type != nullptr) {
             int musgraveType = -1;
-            if (BlendElemConvertedAs(*(n->storage), "NodeTexNoise")) {
+            if (BlendElemConvertedHullIs(*(n->storage), "NodeTexNoise")) {
                 const auto *noise = static_cast<const NodeTexNoise *>(n->storage.get());
                 musgraveType = static_cast<int>(noise->type);
-            } else if (BlendElemConvertedAs(*(n->storage), "NodeTexMusgrave")) {
+            } else if (BlendElemConvertedHullIs(*(n->storage), "NodeTexMusgrave")) {
                 const auto *mus = static_cast<const NodeTexMusgrave *>(n->storage.get());
                 musgraveType = mus->musgrave_type;
             }
@@ -4518,7 +4518,7 @@ static void BlendCollectClothBrushPresence(Assimp::Blender::ConversionData &conv
             brush = std::static_pointer_cast<Brush>(base);
             conv.db.cache(brush).set(ss, brush, bl.address, 0);
             (ss.*builders.second)(base, conv.db);
-            BlendElemBindTypes(*base, ss.name.c_str(), ss.name.c_str());
+            BlendElemBindConvertedHull(*base, ss.name.c_str(), ss.name.c_str());
             conv.db.active_id_scope = prevScope;
             conv.db.reader->SetCurrentPos(pold);
         }
@@ -6680,7 +6680,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         if (dat.type == ModifierData::eModifierType_Nodes) {
             settings << ",\"source\":\"NodesModifierData\"";
             if (cur->dna_type != nullptr &&
-                    BlendElemConvertedAs(*(cur), "NodesModifierData") &&
+                    BlendElemConvertedHullIs(*(cur), "NodesModifierData") &&
                     bagKey != nullptr && std::strcmp(bagKey, "particles") == 0) {
                 BlendAppendNodesModifierParticlePresence(
                         settings, *static_cast<const NodesModifierData *>(cur));
@@ -6688,7 +6688,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         if (dat.type == ModifierData::eModifierType_Cloth &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "ClothModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "ClothModifierData")) {
             const auto *cloth = static_cast<const ClothModifierData *>(cur);
             if (cloth->sim_parms) {
                 const ClothSimSettings &cs = *cloth->sim_parms;
@@ -6707,7 +6707,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         if (dat.type == ModifierData::eModifierType_Fluid &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "FluidModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "FluidModifierData")) {
             const auto *fluid = static_cast<const FluidModifierData *>(cur);
             const char *role = "unknown";
             if (fluid->type & FluidModifierData::MOD_FLUID_TYPE_DOMAIN) {
@@ -6772,7 +6772,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         if (dat.type == ModifierData::eModifierType_Smoke &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "SmokeModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "SmokeModifierData")) {
             const auto *smoke = static_cast<const SmokeModifierData *>(cur);
             const char *role = "unknown";
             if (smoke->type & FluidModifierData::MOD_FLUID_TYPE_DOMAIN) {
@@ -6788,7 +6788,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         // Legacy Elbeem Fluidsim (Blender 2.x) - FluidsimSettings.type bits.
         if (dat.type == ModifierData::eModifierType_Fluidsim &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "FluidsimModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "FluidsimModifierData")) {
             const auto *fs = static_cast<const FluidsimModifierData *>(cur);
             settings << ",\"source\":\"FluidsimModifierData\"";
             if (fs->fss) {
@@ -6847,7 +6847,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         if (dat.type == ModifierData::eModifierType_Collision &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "CollisionModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "CollisionModifierData")) {
             settings << ",\"source\":\"CollisionModifierData\"";
             if (obj->pd) {
                 settings << ",\"deflect\":" << static_cast<int>(obj->pd->deflect)
@@ -6858,7 +6858,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         if (dat.type == ModifierData::eModifierType_Curve &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "CurveModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "CurveModifierData")) {
             const auto *cm = static_cast<const CurveModifierData *>(cur);
             settings << ",\"source\":\"CurveModifierData\""
                      << ",\"defaxis\":" << cm->defaxis
@@ -6875,7 +6875,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
 
         if (dat.type == ModifierData::eModifierType_Ocean &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "OceanModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "OceanModifierData")) {
             const auto *ocean = static_cast<const OceanModifierData *>(cur);
             settings << ",\"source\":\"OceanModifierData\"";
             if (ocean->hasResolution) {
@@ -6912,7 +6912,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         if (dat.type == ModifierData::eModifierType_DynamicPaint &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "DynamicPaintModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "DynamicPaintModifierData")) {
             const auto *dp = static_cast<const DynamicPaintModifierData *>(cur);
             settings << ",\"source\":\"DynamicPaintModifierData\"";
             if (dp->hasType) {
@@ -6927,7 +6927,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         if (dat.type == ModifierData::eModifierType_Solidify &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "SolidifyModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "SolidifyModifierData")) {
             const auto *sol = static_cast<const SolidifyModifierData *>(cur);
             settings << ",\"source\":\"SolidifyModifierData\"";
             if (sol->hasOffset) {
@@ -6937,7 +6937,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         // 0al: Mesh Cache (MDD/PC2) / Mesh Sequence Cache (Alembic/USD) - paths only.
         if (dat.type == ModifierData::eModifierType_MeshCache &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "MeshCacheModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "MeshCacheModifierData")) {
             const auto *mc = static_cast<const MeshCacheModifierData *>(cur);
             settings << ",\"source\":\"MeshCacheModifierData\"";
             const char *kind = "mesh_cache";
@@ -6968,7 +6968,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
         if (dat.type == ModifierData::eModifierType_MeshSequenceCache &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "MeshSeqCacheModifierData")) {
+                BlendElemConvertedHullIs(*(cur), "MeshSeqCacheModifierData")) {
             const auto *ms = static_cast<const MeshSeqCacheModifierData *>(cur);
             settings << ",\"source\":\"MeshSeqCacheModifierData\"";
             // cacheKind: DNA CacheFile.type when set; else Presence from authored filepath suffix.
@@ -7046,7 +7046,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         // 0ak also on MeshCache (MDD/PC2) when DNA rest resolves.
         if (dat.type == ModifierData::eModifierType_MeshCache &&
                 cur->dna_type != nullptr &&
-                BlendElemConvertedAs(*(cur), "MeshCacheModifierData") &&
+                BlendElemConvertedHullIs(*(cur), "MeshCacheModifierData") &&
                 obj->type == Object::Type_MESH && obj->data) {
             const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
             float avgN[3];
@@ -7108,7 +7108,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         collectAct(obj->adt->action);
         for (std::shared_ptr<ElemBase> tcur = obj->adt->nla_tracks.first; tcur;) {
             const NlaTrack *track = nullptr;
-            if (tcur->dna_type == nullptr || BlendElemConvertedAs(*(tcur), "NlaTrack")) {
+            if (tcur->dna_type == nullptr || BlendElemConvertedHullIs(*(tcur), "NlaTrack")) {
                 track = static_cast<const NlaTrack *>(tcur.get());
             }
             if (track == nullptr) {
@@ -7116,7 +7116,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
             }
             for (std::shared_ptr<ElemBase> scur = track->strips.first; scur;) {
                 const NlaStrip *strip = nullptr;
-                if (scur->dna_type == nullptr || BlendElemConvertedAs(*(scur), "NlaStrip")) {
+                if (scur->dna_type == nullptr || BlendElemConvertedHullIs(*(scur), "NlaStrip")) {
                     strip = static_cast<const NlaStrip *>(scur.get());
                 }
                 if (strip == nullptr) {
@@ -8784,10 +8784,10 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
 // ------------------------------------------------------------------------------------------------
 void BlenderImporter::CheckActualType(const ElemBase *dt, const char *check) {
     ai_assert(dt);
-    if (!BlendElemConvertedAs(*dt, check)) {
-        const char *have = dt->converted_type != nullptr ? dt->converted_type : dt->dna_type;
-        ThrowException("Expected object at ", std::hex, dt, " to be of type `", check,
-                "`, but it claims to be a `", have ? have : "?", "`instead");
+    if (!BlendElemConvertedHullIs(*dt, check)) {
+        const char *have = dt->converted_hull != nullptr ? dt->converted_hull : dt->dna_type;
+        ThrowException("Expected object at ", std::hex, dt, " converted hull `", check,
+                "`, but have `", have ? have : "?", "` instead");
     }
 }
 

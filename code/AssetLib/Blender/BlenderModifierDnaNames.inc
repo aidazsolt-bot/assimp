@@ -1,8 +1,8 @@
 /* Generated from blender.git DNA_modifier_types.h - GenericModifierData DNA names. */
 /* Regen: python3 gen_blender_modifier_incs.py [--dna PATH] */
-/* Specialized converters (must NOT be GenericModifierData - overwrite breaks typed Presence):
- * Subsurf / Mirror / Fluid / Cloth / Collision / Curve / MeshCache / MeshSeqCache /
- * Ocean / Solidify / DynamicPaint / Nodes / Smoke / Fluidsim. */
+/* Specialized converters allocate a full converted hull - must NOT be listed here
+ * (Generic overwrite would leave only a ModifierData header). Keep specialized
+ * names registered before the Generic map instead. */
     "LatticeModifierData",
     /* CurveModifierData: specialized (curve object bind). */
     "BuildModifierData",

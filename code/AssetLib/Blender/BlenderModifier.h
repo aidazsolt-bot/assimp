@@ -73,7 +73,7 @@ public:
 
     // --------------------
     /**
-     *  SDNA / converter name required before DoIt may static_cast the blob.
+     *  Converted-hull SDNA name required before DoIt may static_cast the blob.
      *  nullptr = no concrete typed payload (must not cast beyond ModifierData).
      */
     virtual const char *RequiredDnaType() const {
