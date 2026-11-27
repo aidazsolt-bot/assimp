@@ -1073,9 +1073,21 @@ struct OceanModifierData final : SharedModifierData {
     float wind_velocity WARN;
     char cachepath[1024] WARN;
     char cached WARN;
+    // Presence: true only when SDNA field exists and typed Convert succeeded.
+    bool hasResolution WARN;
+    bool hasSpatialSize WARN;
+    bool hasDepth WARN;
+    bool hasWaveScale WARN;
+    bool hasTime WARN;
+    bool hasChopAmount WARN;
+    bool hasWindVelocity WARN;
+    bool hasCachepath WARN;
+    bool hasCached WARN;
 
     OceanModifierData() :
-            resolution(7), spatial_size(50), depth(200.f), wave_scale(1.f), time(1.f), chop_amount(1.f), wind_velocity(30.f), cached(0) {
+            resolution(0), spatial_size(0), depth(0.f), wave_scale(0.f), time(0.f), chop_amount(0.f), wind_velocity(0.f), cached(0),
+            hasResolution(false), hasSpatialSize(false), hasDepth(false), hasWaveScale(false), hasTime(false),
+            hasChopAmount(false), hasWindVelocity(false), hasCachepath(false), hasCached(false) {
         cachepath[0] = '\0';
     }
 };
@@ -1087,17 +1099,19 @@ struct DynamicPaintModifierData final : SharedModifierData {
         Type_Brush = (1 << 1)
     };
     int type WARN; // canvas / brush UI
+    bool hasType WARN;
 
     DynamicPaintModifierData() :
-            type(Type_Canvas) {}
+            type(0), hasType(false) {}
 };
 
 /** Subset of DNA SolidifyModifierData - thickness for Host volumeThickness. */
 struct SolidifyModifierData final : SharedModifierData {
     float offset WARN; // thickness (DNA name "offset")
+    bool hasOffset WARN;
 
     SolidifyModifierData() :
-            offset(0.01f) {}
+            offset(0.f), hasOffset(false) {}
 };
 
 /**
