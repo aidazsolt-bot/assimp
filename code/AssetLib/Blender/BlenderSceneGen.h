@@ -86,6 +86,21 @@ void Structure::Convert<GenericModifierData>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<ArmatureModifierData>(
+        ArmatureModifierData &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<KeyBlock>(
+        KeyBlock &dest,
+        const FileDatabase &db) const;
+
+template <>
+void Structure::Convert<Key>(
+        Key &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<FluidDomainSettings>(
         FluidDomainSettings &dest,
         const FileDatabase &db) const;

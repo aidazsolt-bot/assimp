@@ -687,6 +687,8 @@ struct Mesh final : ElemBase {
     vector<MCol> mcol;
     /** DNA Mesh.vertex_group_names (Blender 2.8+ moved from Object.defbase). */
     ListBase vertex_group_names;
+    /** DNA Mesh.key - shape keys. */
+    std::shared_ptr<struct Key> key WARN;
 
     vector<std::shared_ptr<Material>> mat FAIL;
 
@@ -882,6 +884,16 @@ struct SharedModifierData : ElemBase {
 // ------------------------------------------------------------------------------------------------
 /** Hull for every blender *ModifierData DNA type except Subsurf/Mirror/Fluid (specialized). */
 struct GenericModifierData final : SharedModifierData {};
+
+/** DNA ArmatureModifierData - armature Object* for skinning bind. */
+struct ArmatureModifierData final : SharedModifierData {
+    std::weak_ptr<Object> object;
+    char defgrp_name[64];
+
+    ArmatureModifierData() {
+        memset(defgrp_name, 0, sizeof defgrp_name);
+    }
+};
 
 /** Subset of blender DNA FluidDomainSettings - cache paths for Host Flow/VDB. */
 struct FluidDomainSettings final : ElemBase {
@@ -2463,16 +2475,59 @@ struct ChannelDriver final : ElemBase {
 
 /** DNA FCurve - one animated RNA path component. */
 struct FCurve final : ElemBase {
+    enum Extend {
+        Extend_Constant = 0,
+        Extend_Linear = 1
+    };
+
     std::shared_ptr<ElemBase> next WARN;
     std::shared_ptr<ChannelDriver> driver WARN; // only for AnimData.drivers
     int totvert;
     int array_index;
+    short extend WARN; // eFCurve_Extend
     std::string rna_path; // from char *rna_path
     vector<BezTriple> bezt;
 
     FCurve() :
             totvert(0),
-            array_index(0) {}
+            array_index(0),
+            extend(Extend_Constant) {}
+};
+
+/** DNA KeyBlock - one shape key. */
+struct KeyBlock final : ElemBase {
+    std::shared_ptr<ElemBase> next WARN;
+    float curval WARN;
+    int totelem WARN;
+    char name[64];
+    /** Mesh keys: totelem XYZ floats from DNA *data (Presence only when resolved). */
+    vector<float> co;
+
+    KeyBlock() :
+            curval(0.f),
+            totelem(0) {
+        memset(name, 0, sizeof name);
+    }
+};
+
+/** DNA Key - shape key container on Mesh.key. */
+struct Key final : ElemBase {
+    enum Type {
+        Type_Normal = 0,
+        Type_Relative = 1
+    };
+
+    ID id;
+    std::shared_ptr<struct AnimData> adt WARN;
+    ListBase block; // KeyBlock
+    int elemsize WARN;
+    int totkey WARN;
+    short type WARN;
+
+    Key() :
+            elemsize(0),
+            totkey(0),
+            type(Type_Relative) {}
 };
 
 /** DNA Bone - rest pose bone in an Armature. */
@@ -2525,10 +2580,16 @@ struct NlaStrip final : ElemBase {
     std::shared_ptr<bAction> act;
     char name[64];
     float start, end;
+    float actstart WARN;
+    float actend WARN;
+    float scale WARN;
 
     NlaStrip() :
             start(0.f),
-            end(0.f) {
+            end(0.f),
+            actstart(0.f),
+            actend(0.f),
+            scale(1.f) {
         memset(name, 0, sizeof name);
     }
 };

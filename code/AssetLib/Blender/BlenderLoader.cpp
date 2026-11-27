@@ -48,6 +48,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef ASSIMP_BUILD_NO_BLEND_IMPORTER
 
+#include "BlenderAnimEmit.h"
 #include "BlenderBMesh.h"
 #include "BlenderCustomData.h"
 #include "BlenderIntermediate.h"
@@ -7192,7 +7193,7 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
     Scene scene;
     ExtractScene(scene, file);
 
-    ConvertBlendFile(pScene, scene, file, blenderVersionStr);
+    ConvertBlendFile(pScene, scene, file, blenderVersionStr, pFile, pIOHandler);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -7466,8 +7467,15 @@ void BlendEmitAssetBrowserMetadata(aiMetadata *&meta, const Assimp::Blender::Ass
 }
 
 void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file,
-        const char *blenderVersion) {
+        const char *blenderVersion, const std::string &pFile, IOSystem *pIOHandler) {
     ConversionData conv(file);
+    conv.io = pIOHandler;
+    {
+        const size_t slash = pFile.find_last_of("/\\");
+        if (slash != std::string::npos) {
+            conv.blendDirectory.assign(pFile, 0, slash);
+        }
+    }
 
     aiNode *root = out->mRootNode = new aiNode("<BlenderRoot>");
     // Blender 2.8+: objects live in master_collection. Hierarchy must follow Object.parent
@@ -7544,11 +7552,14 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         conv.textures.dismiss();
     }
 
-    // Camera Actions + Armature pose.bones Actions -> typed aiNodeAnim.
+    // Object TRS + Armature pose.bones + ShapeKey morph + MeshCache MDD -> typed anim.
     {
         std::vector<aiAnimation *> anims;
-        BlendConvertCameraAnimations(anims, conv);
-        BlendConvertArmatureAnimations(anims, conv);
+        Assimp::Blender::BlendConvertObjectAnimations(anims, conv);
+        Assimp::Blender::BlendConvertArmatureAnimations(anims, conv);
+        Assimp::Blender::BlendConvertShapeKeyAnimations(anims, conv);
+        anims.insert(anims.end(), conv.pendingMeshAnims.begin(), conv.pendingMeshAnims.end());
+        conv.pendingMeshAnims.clear();
         if (!anims.empty()) {
             out->mNumAnimations = static_cast<unsigned int>(anims.size());
             out->mAnimations = new aiAnimation *[out->mNumAnimations];
@@ -8679,7 +8690,7 @@ void BlenderImporter::NotSupportedObjectType(const Object *obj, const char *type
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, const Mesh *mesh,
+void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object *obj, const Mesh *mesh,
         ConversionData &conv_data, TempArray<std::vector, aiMesh> &temp) {
     // TODO: Resolve various problems with BMesh triangulation before re-enabling.
     //       See issues #400, #373, #318  #315 and #132.
@@ -9128,6 +9139,29 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         }
     }
 
+    // Typed skinning / shape keys / MeshCache MDD (Assimp anim interfaces).
+    if (obj != nullptr) {
+        for (size_t mi = old; mi < temp->size(); ++mi) {
+            aiMesh *sub = temp[mi];
+            if (sub == nullptr) {
+                continue;
+            }
+            std::vector<int> map;
+            if (mi < conv_data.meshSrcVertDna.size()) {
+                map.assign(conv_data.meshSrcVertDna[mi].begin(), conv_data.meshSrcVertDna[mi].end());
+            }
+            if (map.empty()) {
+                continue;
+            }
+            Assimp::Blender::BlendAttachMeshBones(sub, *obj, *mesh, conv_data, map);
+            Assimp::Blender::BlendAttachShapeKeyTargets(sub, obj, *mesh, map, conv_data);
+            if (mi == old) {
+                Assimp::Blender::BlendAttachMeshCacheAnim(sub, *obj, *mesh, conv_data, map,
+                        conv_data.pendingMeshAnims);
+            }
+        }
+    }
+
     return;
 }
 
@@ -9553,6 +9587,9 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
     }
 
     std::unique_ptr<aiNode> node(new aiNode(obj->id.name + 2)); // skip over the name prefix 'OB'
+    if (obj->adt) {
+        conv_data.trs_anim_objects.push_back(obj);
+    }
     if (obj->data) {
         switch (obj->type) {
         case Object::Type_EMPTY:

@@ -58,6 +58,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <vector>
 
 struct aiTexture;
+struct aiAnimation;
+
+namespace Assimp {
+class IOSystem;
+}
 
 namespace Assimp {
 namespace Blender {
@@ -171,10 +176,26 @@ struct ConversionData {
     // Dedupe embedded aiTexture by Blender Image* (packedfiles / packedfile).
     std::unordered_map<const Image *, unsigned int> embeddedImageTexIndex;
 
-    // Camera objects (for Action -> aiNodeAnim), filled during ConvertNode.
+    // Objects with AnimData (Object TRS -> aiNodeAnim), filled during ConvertNode.
+    std::vector<const Object *> trs_anim_objects;
+    // Camera objects (legacy list; also in trs_anim_objects).
     std::vector<const Object *> camera_objects;
     /** DOF focus empties / objects (TRS Action -> aiNodeAnim), filled from Camera DNA. */
     std::vector<const Object *> camera_focus_objects;
+    /** Directory of the .blend (for // relative MeshCache paths). */
+    std::string blendDirectory;
+    /** Optional IO for MeshCache MDD load. */
+    Assimp::IOSystem *io = nullptr;
+    /** Shape-key targets attached to aiMeshes (for weight-curve morph anim). */
+    struct ShapeKeyMeshRef {
+        std::string meshName;
+        std::vector<std::string> keyNames;
+        const Key *key = nullptr;
+        const Object *obj = nullptr;
+    };
+    std::vector<ShapeKeyMeshRef> shapeKeyMeshes;
+    /** MeshCache MDD -> aiMeshAnim produced during ConvertMesh. */
+    std::vector<aiAnimation *> pendingMeshAnims;
     /** Per aiCamera name: extra JSON fragment for SceneSidecarJson.cameras[] (DOF bind). */
     std::unordered_map<std::string, std::string> cameraSidecarExtras;
     /** Armature objects (bone hierarchy + pose Action -> aiNodeAnim). */
