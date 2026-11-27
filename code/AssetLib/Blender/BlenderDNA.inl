@@ -542,6 +542,8 @@ bool Structure::ResolvePointer(TOUT<T> &out, const Pointer &ptrval, const FileDa
     if (!non_recursive) {
         for (size_t i = 0; i < num; ++i, ++o) {
             s.Convert(*o, db);
+            // Typed pointees are concrete hulls matching file SDNA (ss == s).
+            BlendElemBindTypes(static_cast<ElemBase &>(*o), s.name.c_str(), s.name.c_str());
         }
 
         db.reader->SetCurrentPos(pold);
@@ -697,10 +699,17 @@ bool Structure::ResolvePointer<std::shared_ptr, ElemBase>(std::shared_ptr<ElemBa
     (s.*builders.second)(out, db);
     db.reader->SetCurrentPos(pold);
 
-    // store a pointer to the name string of the actual type
-    // in the object itself. This allows the conversion code
-    // to perform additional type checking.
-    out->dna_type = s.name.c_str();
+    // File SDNA name stays on dna_type (ApplyModifiers structure walk).
+    // converted_type is the C++ hull actually allocated - Generic stand-in must
+    // not claim Ocean/Mirror/... or static_cast reads past the object.
+    {
+        const auto genIt = db.dna.converters.find("GenericModifierData");
+        const bool usedGeneric = genIt != db.dna.converters.end() &&
+                builders.first == genIt->second.first &&
+                s.name != "GenericModifierData";
+        BlendElemBindTypes(*out, s.name.c_str(),
+                usedGeneric ? "GenericModifierData" : s.name.c_str());
+    }
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
     ++db.stats().pointers_resolved;

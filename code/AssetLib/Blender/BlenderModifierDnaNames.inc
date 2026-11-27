@@ -1,6 +1,8 @@
 /* Generated from blender.git DNA_modifier_types.h - GenericModifierData DNA names. */
 /* Regen: python3 gen_blender_modifier_incs.py [--dna PATH] */
-/* SubsurfModifierData / MirrorModifierData / FluidModifierData keep specialized converters. */
+/* Specialized converters (must NOT be GenericModifierData - overwrite breaks typed Presence):
+ * Subsurf / Mirror / Fluid / Cloth / Collision / Curve / MeshCache / MeshSeqCache /
+ * Ocean / Solidify / DynamicPaint / Nodes / Smoke / Fluidsim. */
     "LatticeModifierData",
     /* CurveModifierData: specialized (curve object bind). */
     "BuildModifierData",
@@ -31,14 +33,14 @@
     "ShrinkwrapModifierData",
     "SimpleDeformModifierData",
     "ShapeKeyModifierData",
-    "SolidifyModifierData",
+    /* SolidifyModifierData: specialized (offset / thickness Presence). */
     "ScrewModifierData",
-    "OceanModifierData",
+    /* OceanModifierData: specialized (wave / depth Presence). */
     "WarpModifierData",
     "WeightVGEditModifierData",
     "WeightVGMixModifierData",
     "WeightVGProximityModifierData",
-    "DynamicPaintModifierData",
+    /* DynamicPaintModifierData: specialized (canvas/brush Presence). */
     "RemeshModifierData",
     "SkinModifierData",
     "TriangulateModifierData",
@@ -53,7 +55,7 @@
     "NormalEditModifierData",
     "SurfaceDeformModifierData",
     "WeightedNormalModifierData",
-    "NodesModifierData",
+    /* NodesModifierData: specialized (IDProperty / particle Presence). */
     "MeshToVolumeModifierData",
     "VolumeDisplaceModifierData",
     "VolumeToMeshModifierData",

@@ -73,6 +73,15 @@ public:
 
     // --------------------
     /**
+     *  SDNA / converter name required before DoIt may static_cast the blob.
+     *  nullptr = no concrete typed payload (must not cast beyond ModifierData).
+     */
+    virtual const char *RequiredDnaType() const {
+        return nullptr;
+    }
+
+    // --------------------
+    /**
      *  Apply the modifier to a given output node. The original data used
      *  to construct the node is given as well. Not called unless IsActive()
      *  was called and gave positive response.
@@ -120,6 +129,11 @@ public:
     virtual bool IsActive( const ModifierData& modin);
 
     // --------------------
+    const char *RequiredDnaType() const override {
+        return "MirrorModifierData";
+    }
+
+    // --------------------
     virtual void DoIt(aiNode& out,
         ConversionData& conv_data,
         const ElemBase& orig_modifier,
@@ -136,6 +150,11 @@ public:
 
     // --------------------
     virtual bool IsActive( const ModifierData& modin);
+
+    // --------------------
+    const char *RequiredDnaType() const override {
+        return "SubsurfModifierData";
+    }
 
     // --------------------
     virtual void DoIt(aiNode& out,
