@@ -49,9 +49,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/SceneCombiner.h>
 #include <assimp/Subdivision.h>
 #include <assimp/scene.h>
-#include <memory>
-
+#include <cstring>
 #include <functional>
+#include <memory>
 
 using namespace Assimp;
 using namespace Assimp::Blender;
@@ -119,6 +119,16 @@ void BlenderModifierShowcase::ApplyModifiers(aiNode &out, ConversionData &conv_d
 
             BlenderModifier *const modifier = *curmod;
             if (modifier->IsActive(dat)) {
+                // CodeRabbit PR7099: header type alone is not enough. GenericModifierData
+                // fallback can carry eModifierType_Mirror while allocating only the header;
+                // DoIt must not static_cast to MirrorModifierData / SubsurfModifierData.
+                const char *need = modifier->RequiredDnaType();
+                if (need != nullptr && !BlendElemConvertedAs(*cur, need)) {
+                    const char *have = cur->converted_type ? cur->converted_type : cur->dna_type;
+                    ASSIMP_LOG_DEBUG("BlendModifier: skip `", dat.name, "` handler - converted as `",
+                            have ? have : "?", "`, need `", need, "`");
+                    continue;
+                }
                 modifier->DoIt(out, conv_data, *static_cast<const ElemBase *>(cur), in, orig_object);
                 cnt++;
 
