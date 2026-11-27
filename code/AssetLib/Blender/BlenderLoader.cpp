@@ -140,6 +140,11 @@ enum BlendShaderNodeType : short {
 struct BlendTexMap {
     const Assimp::Blender::Image *img{ nullptr };
     char uvname[64]{};
+    /** Presence: UV scale/offset/rotate from ShaderNodeMapping or MTex ofs/size/rot. */
+    bool hasUvTrafo{ false };
+    float uvOfs[2]{ 0.f, 0.f };
+    float uvScale[2]{ 1.f, 1.f };
+    float uvRot{ 0.f };
 
     explicit operator bool() const {
         return img != nullptr;
@@ -676,6 +681,57 @@ void BlendEmitUvWsrc(aiMaterial *mout, aiTextureType type, unsigned slot, int uv
         return;
     }
     mout->AddProperty(&uvIndex, 1, AI_MATKEY_UVWSRC(type, slot));
+}
+
+/** Assimp-usual $tex.uvtrafo when DNA/node scale-offset-rotate was resolved (Presence). */
+void BlendEmitUvTransform(aiMaterial *mout, aiTextureType type, unsigned slot,
+        float ofsU, float ofsV, float scaleU, float scaleV, float rotRad) {
+    if (mout == nullptr) {
+        return;
+    }
+    aiUVTransform trafo;
+    trafo.mTranslation.x = ofsU;
+    trafo.mTranslation.y = ofsV;
+    trafo.mScaling.x = scaleU;
+    trafo.mScaling.y = scaleV;
+    trafo.mRotation = rotRad;
+    mout->AddProperty(&trafo, 1, AI_MATKEY_UVTRANSFORM(type, slot));
+}
+
+void BlendEmitUvTransformFromMap(aiMaterial *mout, aiTextureType type, unsigned slot, const BlendTexMap &map) {
+    if (!map.hasUvTrafo) {
+        return;
+    }
+    BlendEmitUvTransform(mout, type, slot, map.uvOfs[0], map.uvOfs[1], map.uvScale[0], map.uvScale[1], map.uvRot);
+}
+
+void BlendEmitUvTransformFromMTex(aiMaterial *mout, aiTextureType type, unsigned slot,
+        const Assimp::Blender::MTex &tex) {
+    // DNA MTex.ofs / size / rot always present on BI slots that ResolveImage sees.
+    BlendEmitUvTransform(mout, type, slot, tex.ofs[0], tex.ofs[1], tex.size[0], tex.size[1], tex.rot);
+    // Extra meta for hosts that do not read aiUVTransform (Z scale / full ofs).
+    mout->AddProperty(&tex.ofs[0], 3, "$tex.blend.ofs", type, slot);
+    mout->AddProperty(&tex.size[0], 3, "$tex.blend.size", type, slot);
+    mout->AddProperty(&tex.rot, 1, "$tex.blend.rot", type, slot);
+}
+
+/** usage + mapto (+ optional uv name) so UNKNOWN (and typed) slots stay Host-parseable. */
+void BlendEmitTexUsageMeta(aiMaterial *mout, aiTextureType type, unsigned slot, const char *usage,
+        int maptoBits = 0, bool haveMapto = false, const char *uvname = nullptr) {
+    if (mout == nullptr) {
+        return;
+    }
+    if (usage != nullptr && usage[0] != '\0') {
+        aiString u(usage);
+        mout->AddProperty(&u, "$tex.blend.usage", type, slot);
+    }
+    if (haveMapto) {
+        mout->AddProperty(&maptoBits, 1, "$tex.blend.mapto", type, slot);
+    }
+    if (uvname != nullptr && uvname[0] != '\0') {
+        aiString uv(uvname);
+        mout->AddProperty(&uv, "$tex.blend.uvName", type, slot);
+    }
 }
 
 /** Sample FCurve at keyframe points (BezTriple.vec[1] = time, value). Linear between keys. */
@@ -2322,8 +2378,172 @@ void BlendResolveTexImageUvName(const BlendNodeGraph &g, const Assimp::Blender::
     walkGroups(g, 0);
 }
 
+/** Follow TexImage Vector through Mapping -> Presence ofs/scale/rot (no invent). */
+void BlendResolveTexImageUvTrafo(const BlendNodeGraph &g, const Assimp::Blender::bNode &texNode, BlendTexMap &out) {
+    using namespace Assimp::Blender;
+    out.hasUvTrafo = false;
+    if (!BlendNodeIsTexImage(texNode)) {
+        return;
+    }
+    auto graphHasNode = [](const BlendNodeGraph &gg, const bNode &node) -> bool {
+        for (const bNode *n : gg.nodes) {
+            if (n == &node) {
+                return true;
+            }
+        }
+        return false;
+    };
+    auto readMapping = [&](const BlendNodeGraph &gg, const bNode &mapNode) -> bool {
+        if (!BlendNodeIsMapping(mapNode)) {
+            return false;
+        }
+        float loc[3] = { 0, 0, 0 };
+        float rot[3] = { 0, 0, 0 };
+        float scl[3] = { 1, 1, 1 };
+        bool gotLoc = false, gotRot = false, gotScl = false;
+        for (std::shared_ptr<ElemBase> cur = mapNode.inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            if (gg.FindLinkToSocket(*sock) == nullptr) {
+                float vec[3] = { 0, 0, 0 };
+                if (BlendReadSocketVector(*sock, vec)) {
+                    if (BlendSockNameIsAny(*sock, { "Location" })) {
+                        loc[0] = vec[0];
+                        loc[1] = vec[1];
+                        loc[2] = vec[2];
+                        gotLoc = true;
+                    } else if (BlendSockNameIsAny(*sock, { "Rotation" })) {
+                        rot[0] = vec[0];
+                        rot[1] = vec[1];
+                        rot[2] = vec[2];
+                        gotRot = true;
+                    } else if (BlendSockNameIsAny(*sock, { "Scale" })) {
+                        scl[0] = vec[0];
+                        scl[1] = vec[1];
+                        scl[2] = vec[2];
+                        gotScl = true;
+                    }
+                }
+            }
+            cur = sock->next;
+        }
+        // Pre-2.81 TexMapping storage when sockets had no readable defaults.
+        if ((!gotLoc || !gotRot || !gotScl) && mapNode.storage && mapNode.storage->dna_type &&
+                std::strcmp(mapNode.storage->dna_type, "TexMapping") == 0) {
+            const auto *tm = static_cast<const TexMapping *>(mapNode.storage.get());
+            if (!gotLoc) {
+                loc[0] = tm->loc[0];
+                loc[1] = tm->loc[1];
+                loc[2] = tm->loc[2];
+                gotLoc = true;
+            }
+            if (!gotRot) {
+                rot[0] = tm->rot[0];
+                rot[1] = tm->rot[1];
+                rot[2] = tm->rot[2];
+                gotRot = true;
+            }
+            if (!gotScl) {
+                scl[0] = tm->size[0];
+                scl[1] = tm->size[1];
+                scl[2] = tm->size[2];
+                gotScl = true;
+            }
+        }
+        if (!gotLoc && !gotRot && !gotScl) {
+            return false;
+        }
+        out.uvOfs[0] = loc[0];
+        out.uvOfs[1] = loc[1];
+        out.uvScale[0] = scl[0];
+        out.uvScale[1] = scl[1];
+        // UV plane: Blender Mapping Rotation Z drives 2D UV rotate (radians).
+        out.uvRot = rot[2];
+        out.hasUvTrafo = true;
+        return true;
+    };
+    auto resolveInGraph = [&](const BlendNodeGraph &gg) -> bool {
+        if (!graphHasNode(gg, texNode)) {
+            return false;
+        }
+        for (std::shared_ptr<ElemBase> cur = texNode.inputs.first; cur;) {
+            const bNodeSocket *sock = BlendCastSocket(cur.get());
+            if (sock == nullptr) {
+                break;
+            }
+            if (!BlendSockNameIsAny(*sock, { "Vector", "Vector2" })) {
+                cur = sock->next;
+                continue;
+            }
+            const bNodeLink *l = gg.FindLinkToSocket(*sock);
+            if (l == nullptr) {
+                return false;
+            }
+            const bNode *src = BlendCastNode(l->fromnode.get());
+            for (int depth = 0; src != nullptr && depth < 12; ++depth) {
+                if (BlendNodeIsMapping(*src)) {
+                    return readMapping(gg, *src);
+                }
+                const bool passthrough =
+                        (src->idname[0] != '\0' &&
+                                (std::strcmp(src->idname, "NodeReroute") == 0 ||
+                                        std::strcmp(src->idname, "ShaderNodeVectorMath") == 0 ||
+                                        std::strcmp(src->idname, "ShaderNodeVectorTransform") == 0));
+                if (!passthrough) {
+                    break;
+                }
+                const bNodeLink *rl = nullptr;
+                for (std::shared_ptr<ElemBase> ic = src->inputs.first; ic;) {
+                    const bNodeSocket *is = BlendCastSocket(ic.get());
+                    if (is == nullptr) {
+                        break;
+                    }
+                    rl = gg.FindLinkToSocket(*is);
+                    if (rl) {
+                        break;
+                    }
+                    ic = is->next;
+                }
+                src = rl ? BlendCastNode(rl->fromnode.get()) : nullptr;
+            }
+            return false;
+        }
+        return false;
+    };
+    if (resolveInGraph(g)) {
+        return;
+    }
+    std::function<bool(const BlendNodeGraph &, int)> walkGroups;
+    walkGroups = [&](const BlendNodeGraph &gg, int depth) -> bool {
+        if (depth > 8) {
+            return false;
+        }
+        for (const bNode *n : gg.nodes) {
+            if (n == nullptr || !BlendNodeIsGroup(*n)) {
+                continue;
+            }
+            const bNodeTree *gt = BlendNodeGroupTree(*n);
+            if (gt == nullptr) {
+                continue;
+            }
+            const BlendNodeGraph sub = BlendBuildGraph(*gt);
+            if (resolveInGraph(sub)) {
+                return true;
+            }
+            if (walkGroups(sub, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    walkGroups(g, 0);
+}
+
 void BlendFillTexMap(const BlendNodeGraph &g, const Assimp::Blender::bNode *texNode, BlendTexMap &out) {
     out.img = nullptr;
+    out.hasUvTrafo = false;
     BlendCopyUvName(out.uvname, nullptr);
     if (texNode == nullptr) {
         return;
@@ -2331,6 +2551,7 @@ void BlendFillTexMap(const BlendNodeGraph &g, const Assimp::Blender::bNode *texN
     out.img = BlendNodeImage(*texNode);
     if (out.img) {
         BlendResolveTexImageUvName(g, *texNode, out.uvname);
+        BlendResolveTexImageUvTrafo(g, *texNode, out);
     }
 }
 
@@ -2880,11 +3101,11 @@ void BlendAttachNodeImage(aiMaterial *mout, const BlendTexMap &map, aiTextureTyp
     mout->AddProperty(&name, AI_MATKEY_TEXTURE(type, slot));
     const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
     BlendEmitUvWsrc(mout, type, slot, uvIndex);
+    BlendEmitUvTransformFromMap(mout, type, slot, map);
     // Fully typed = $tex.file + usage meta (inventory decommission only then).
-    if (usage != nullptr && usage[0] != '\0') {
-        aiString u(usage);
-        mout->AddProperty(&u, "$tex.blend.usage", type, slot);
-    }
+    // UNKNOWN slots still get usage/uvName so Host can parse later.
+    const char *u = (usage != nullptr && usage[0] != '\0') ? usage : (type == aiTextureType_UNKNOWN ? "unknown" : nullptr);
+    BlendEmitTexUsageMeta(mout, type, slot, u, 0, false, map.uvname);
 }
 
 /** Inventory: every ShaderNodeTexImage (incl. nested groups), linked or not. */
@@ -2989,6 +3210,40 @@ bool BlendClassifySocketUsage(const char *sockName, const Assimp::Blender::bNode
             std::strcmp(sockName, "Specular Tint") == 0) {
         out.type = aiTextureType_SPECULAR;
         out.usage = "specular";
+        return true;
+    }
+    if (std::strcmp(sockName, "Sheen") == 0 || std::strcmp(sockName, "Sheen Weight") == 0 ||
+            std::strcmp(sockName, "Sheen Color") == 0 || std::strcmp(sockName, "Sheen Roughness") == 0) {
+        out.type = aiTextureType_SHEEN;
+        out.usage = "sheen";
+        return true;
+    }
+    if (std::strcmp(sockName, "Coat Weight") == 0 || std::strcmp(sockName, "Clearcoat") == 0 ||
+            std::strcmp(sockName, "Coat Roughness") == 0 || std::strcmp(sockName, "Clearcoat Roughness") == 0 ||
+            std::strcmp(sockName, "Coat Normal") == 0 || std::strcmp(sockName, "Clearcoat Normal") == 0) {
+        out.type = aiTextureType_CLEARCOAT;
+        out.usage = "clearcoat";
+        return true;
+    }
+    if (std::strcmp(sockName, "Transmission") == 0 || std::strcmp(sockName, "Transmission Weight") == 0) {
+        out.type = aiTextureType_TRANSMISSION;
+        out.usage = "transmission";
+        return true;
+    }
+    if (std::strcmp(sockName, "Anisotropic") == 0 || std::strcmp(sockName, "Anisotropy") == 0) {
+        out.type = aiTextureType_ANISOTROPY;
+        out.usage = "anisotropy";
+        return true;
+    }
+    if (std::strcmp(sockName, "Ambient Occlusion") == 0 || std::strcmp(sockName, "AO") == 0) {
+        out.type = aiTextureType_AMBIENT_OCCLUSION;
+        out.usage = "ambientOcclusion";
+        return true;
+    }
+    // Volume / principled density maps - no dedicated Assimp type; UNKNOWN + usage for Host.
+    if (std::strcmp(sockName, "Density") == 0 || std::strcmp(sockName, "density") == 0) {
+        out.type = aiTextureType_UNKNOWN;
+        out.usage = "density";
         return true;
     }
     if (std::strcmp(sockName, "Height") == 0 || std::strcmp(sockName, "height") == 0) {
@@ -3206,7 +3461,7 @@ bool BlendMatHasFullyTypedFile(const aiMaterial *mout, const aiString &file) {
     if (mout == nullptr || file.length == 0) {
         return false;
     }
-    for (int ti = 1; ti <= static_cast<int>(aiTextureType_UNKNOWN); ++ti) {
+    for (int ti = 1; ti <= static_cast<int>(AI_TEXTURE_TYPE_MAX); ++ti) {
         const auto type = static_cast<aiTextureType>(ti);
         const unsigned n = mout->GetTextureCount(type);
         for (unsigned i = 0; i < n; ++i) {
@@ -3350,8 +3605,8 @@ void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
             mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(h.type, slot));
             const int uvIndex = BlendFindUvIndex(conv_data, matIndex, map.uvname);
             BlendEmitUvWsrc(mout, h.type, slot, uvIndex);
-            aiString usage(h.usage);
-            mout->AddProperty(&usage, "$tex.blend.usage", h.type, slot);
+            BlendEmitUvTransformFromMap(mout, h.type, slot, map);
+            BlendEmitTexUsageMeta(mout, h.type, slot, h.usage, 0, false, map.uvname);
             if (h.socket[0] != '\0') {
                 aiString sock(h.socket);
                 mout->AddProperty(&sock, "$tex.blend.socket", h.type, slot);
@@ -3366,7 +3621,8 @@ void BlendEmitInventoryTypedMaps(aiMaterial *mout, const BlendShaderFlat &flat,
                 const unsigned dslot = conv_data.next_texture[aiTextureType_DIFFUSE]++;
                 mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(aiTextureType_DIFFUSE, dslot));
                 BlendEmitUvWsrc(mout, aiTextureType_DIFFUSE, dslot, uvIndex);
-                mout->AddProperty(&usage, "$tex.blend.usage", aiTextureType_DIFFUSE, dslot);
+                BlendEmitUvTransformFromMap(mout, aiTextureType_DIFFUSE, dslot, map);
+                BlendEmitTexUsageMeta(mout, aiTextureType_DIFFUSE, dslot, h.usage, 0, false, map.uvname);
             }
         }
     }
@@ -4588,11 +4844,16 @@ enum BlendParticleMapto : int {
     BlendPamap_Life = 1 << 1,
     BlendPamap_Dens = 1 << 2,
     BlendPamap_Size = 1 << 3,
-    BlendPamap_IVel = 1 << 4,
-    BlendPamap_Kink = 1 << 5,
-    BlendPamap_Length = 1 << 6,
+    BlendPamap_Length = 1 << 4,
+    BlendPamap_IVel = 1 << 5,
+    BlendPamap_Field = 1 << 6,
     BlendPamap_Clump = 1 << 7,
+    BlendPamap_KinkFreq = 1 << 8,
     BlendPamap_Rough = 1 << 9,
+    BlendPamap_Gravity = 1 << 10,
+    BlendPamap_Damp = 1 << 11,
+    BlendPamap_KinkAmp = 1 << 12,
+    BlendPamap_Twist = 1 << 13,
 };
 
 /** DNA eMTex_TexCo - TEXCO_UV bit (makesdna DNA_material_types.h). */
@@ -4616,11 +4877,16 @@ static std::string BlendParticleInfluenceLabels(int mapBits) {
     add(BlendPamap_Life, "life");
     add(BlendPamap_Dens, "density");
     add(BlendPamap_Size, "size");
-    add(BlendPamap_IVel, "ivel");
-    add(BlendPamap_Kink, "kink");
     add(BlendPamap_Length, "length");
+    add(BlendPamap_IVel, "ivel");
+    add(BlendPamap_Field, "field");
     add(BlendPamap_Clump, "clump");
+    add(BlendPamap_KinkFreq, "kinkFreq");
     add(BlendPamap_Rough, "rough");
+    add(BlendPamap_Gravity, "gravity");
+    add(BlendPamap_Damp, "damp");
+    add(BlendPamap_KinkAmp, "kinkAmp");
+    add(BlendPamap_Twist, "twist");
     return out;
 }
 
@@ -4683,12 +4949,15 @@ static void BlendEmitParticleTypedMTexMaterials(Assimp::Blender::ConversionData 
             mout->AddProperty(&embedName, AI_MATKEY_TEXTURE(texType, slot));
 
             const int mapBits = static_cast<int>(mtx.mapto);
-            mout->AddProperty(&mapBits, 1, "$tex.blend.mapto", texType, slot);
+            const std::string influences = BlendParticleInfluenceLabels(mapBits);
+            // UNKNOWN typed slot: usage + mapto so Host can parse density/length/... later.
+            const char *usageLabel = influences.empty() ? "particle" : influences.c_str();
+            BlendEmitTexUsageMeta(mout, texType, slot, usageLabel, mapBits, true, mtx.uvname);
+            BlendEmitUvTransformFromMTex(mout, texType, slot, mtx);
             {
                 const int dnaSlot = static_cast<int>(ti);
                 mout->AddProperty(&dnaSlot, 1, "$tex.blend.mtexSlot", texType, slot);
             }
-            const std::string influences = BlendParticleInfluenceLabels(mapBits);
             if (!influences.empty()) {
                 aiString inf(influences);
                 mout->AddProperty(&inf, "$tex.blend.particleInfluence", texType, slot);
@@ -5444,10 +5713,10 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 partJson << ",\"childtype\":" << static_cast<int>(p.childtype);
                 const char *childKind = nullptr;
                 switch (p.childtype) {
-                    case ParticleSettings::Child_None: childKind = "none"; break;
-                    case ParticleSettings::Child_Particles: childKind = "particles"; break;
-                    case ParticleSettings::Child_Faces: childKind = "faces"; break;
-                    default: break;
+                case ParticleSettings::Child_None: childKind = "none"; break;
+                case ParticleSettings::Child_Particles: childKind = "particles"; break;
+                case ParticleSettings::Child_Faces: childKind = "faces"; break;
+                default: break;
                 }
                 if (childKind != nullptr) {
                     partJson << ",\"child_type\":\"" << childKind << '"';
@@ -5509,13 +5778,13 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 partJson << ",\"kink\":" << static_cast<int>(p.kink);
                 const char *kinkKind = nullptr;
                 switch (p.kink) {
-                    case ParticleSettings::Kink_No: kinkKind = "none"; break;
-                    case ParticleSettings::Kink_Curl: kinkKind = "curl"; break;
-                    case ParticleSettings::Kink_Radial: kinkKind = "radial"; break;
-                    case ParticleSettings::Kink_Wave: kinkKind = "wave"; break;
-                    case ParticleSettings::Kink_Braid: kinkKind = "braid"; break;
-                    case ParticleSettings::Kink_Spiral: kinkKind = "spiral"; break;
-                    default: break;
+                case ParticleSettings::Kink_No: kinkKind = "none"; break;
+                case ParticleSettings::Kink_Curl: kinkKind = "curl"; break;
+                case ParticleSettings::Kink_Radial: kinkKind = "radial"; break;
+                case ParticleSettings::Kink_Wave: kinkKind = "wave"; break;
+                case ParticleSettings::Kink_Braid: kinkKind = "braid"; break;
+                case ParticleSettings::Kink_Spiral: kinkKind = "spiral"; break;
+                default: break;
                 }
                 if (kinkKind != nullptr) {
                     partJson << ",\"kink_kind\":\"" << kinkKind << '"';
@@ -7712,58 +7981,107 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const MTex *tex, const Image *img, ConversionData &conv_data) {
+/** BI DNA eMTex_MapTo bit -> Assimp type + usage (multi-bit: one emit per influence). */
+struct BlendMTexMapHit {
+    aiTextureType type{ aiTextureType_UNKNOWN };
+    const char *usage{ "unmapped" };
+    bool bumpScale{ false };
+};
+
+static void BlendCollectMTexMapHits(const MTex *tex, std::vector<BlendMTexMapHit> &out) {
+    out.clear();
+    if (tex == nullptr) {
+        return;
+    }
+    const int map = static_cast<int>(tex->mapto);
+    auto add = [&](int bit, aiTextureType type, const char *usage, bool bump = false) {
+        if ((map & bit) == 0) {
+            return;
+        }
+        BlendMTexMapHit h;
+        h.type = type;
+        h.usage = usage;
+        h.bumpScale = bump;
+        out.push_back(h);
+    };
+    // Blender 2.79 RNA labels (DNA_material_types.h MAP_*).
+    add(MTex::MapType_COL, aiTextureType_DIFFUSE, "diffuse");
+    if ((map & MTex::MapType_NORM) != 0) {
+        BlendMTexMapHit h;
+        const bool normalmap = (tex->tex && (tex->tex->imaflag & Tex::ImageFlags_NORMALMAP) != 0);
+        h.type = normalmap ? aiTextureType_NORMALS : aiTextureType_HEIGHT;
+        h.usage = normalmap ? "normal" : "height";
+        h.bumpScale = true;
+        out.push_back(h);
+    }
+    add(MTex::MapType_COLSPEC, aiTextureType_SPECULAR, "specularColor");
+    add(MTex::MapType_COLMIR, aiTextureType_REFLECTION, "mirrorColor");
+    // Diffuse reflectivity intensity - no dedicated Assimp type.
+    add(MTex::MapType_REF, aiTextureType_UNKNOWN, "diffuseReflectivity");
+    // Specular intensity (not hardness).
+    add(MTex::MapType_SPEC, aiTextureType_SPECULAR, "specular");
+    add(MTex::MapType_EMIT, aiTextureType_EMISSIVE, "emission");
+    add(MTex::MapType_ALPHA, aiTextureType_OPACITY, "opacity");
+    // Hardness = shininess.
+    add(MTex::MapType_HAR, aiTextureType_SHININESS, "hardness");
+    add(MTex::MapType_RAYMIRR, aiTextureType_REFLECTION, "rayMirror");
+    add(MTex::MapType_TRANSLU, aiTextureType_TRANSMISSION, "translucency");
+    add(MTex::MapType_AMB, aiTextureType_AMBIENT, "ambient");
+    add(MTex::MapType_DISPLACE, aiTextureType_DISPLACEMENT, "displacement");
+    add(MTex::MapType_WARP, aiTextureType_UNKNOWN, "warp");
+    if (out.empty()) {
+        BlendMTexMapHit h;
+        h.type = aiTextureType_UNKNOWN;
+        h.usage = "unmapped";
+        out.push_back(h);
+    }
+}
+
+void BlenderImporter::ResolveImage(aiMaterial *out, const Material *mat, const MTex *tex, const Image *img,
+        ConversionData &conv_data, int mtexSlot) {
     aiString name;
     if (!BlendEnsureEmbeddedImage(img, conv_data, name)) {
         return;
     }
 
-    aiTextureType texture_type = aiTextureType_UNKNOWN;
-    MTex::MapType map_type = tex->mapto;
-
-    if (map_type & MTex::MapType_COL)
-        texture_type = aiTextureType_DIFFUSE;
-    else if (map_type & MTex::MapType_NORM) {
-        if (tex->tex->imaflag & Tex::ImageFlags_NORMALMAP) {
-            texture_type = aiTextureType_NORMALS;
-        } else {
-            texture_type = aiTextureType_HEIGHT;
-        }
-        out->AddProperty(&tex->norfac, 1, AI_MATKEY_BUMPSCALING);
-    } else if (map_type & MTex::MapType_COLSPEC)
-        texture_type = aiTextureType_SPECULAR;
-    else if (map_type & MTex::MapType_COLMIR)
-        texture_type = aiTextureType_REFLECTION;
-    // else if (map_type & MTex::MapType_REF)
-    else if (map_type & MTex::MapType_SPEC)
-        texture_type = aiTextureType_SHININESS;
-    else if (map_type & MTex::MapType_EMIT)
-        texture_type = aiTextureType_EMISSIVE;
-    // else if (map_type & MTex::MapType_ALPHA)
-    // else if (map_type & MTex::MapType_HAR)
-    // else if (map_type & MTex::MapType_RAYMIRR)
-    // else if (map_type & MTex::MapType_TRANSLU)
-    else if (map_type & MTex::MapType_AMB)
-        texture_type = aiTextureType_AMBIENT;
-    else if (map_type & MTex::MapType_DISPLACE)
-        texture_type = aiTextureType_DISPLACEMENT;
-    // else if (map_type & MTex::MapType_WARP)
+    std::vector<BlendMTexMapHit> hits;
+    BlendCollectMTexMapHits(tex, hits);
 
     const unsigned matIndex = BlendMaterialRawIndex(conv_data, mat);
     const int uvIndex = BlendFindUvIndex(conv_data, matIndex, tex->uvname);
-    const unsigned slot = conv_data.next_texture[texture_type]++;
-    out->AddProperty(&name, AI_MATKEY_TEXTURE(texture_type, slot));
-    BlendEmitUvWsrc(out, texture_type, slot, uvIndex);
-    // Typed PBR slot: BI COL maps are also BASE_COLOR for Host Looks.
-    if ((map_type & MTex::MapType_COL) != 0) {
-        const unsigned baseSlot = conv_data.next_texture[aiTextureType_BASE_COLOR]++;
-        out->AddProperty(&name, AI_MATKEY_TEXTURE(aiTextureType_BASE_COLOR, baseSlot));
-        BlendEmitUvWsrc(out, aiTextureType_BASE_COLOR, baseSlot, uvIndex);
+    const int mapBits = static_cast<int>(tex->mapto);
+    bool bumpEmitted = false;
+
+    auto emitOne = [&](aiTextureType texture_type, const char *usage) {
+        const unsigned slot = conv_data.next_texture[texture_type]++;
+        out->AddProperty(&name, AI_MATKEY_TEXTURE(texture_type, slot));
+        BlendEmitUvWsrc(out, texture_type, slot, uvIndex);
+        BlendEmitUvTransformFromMTex(out, texture_type, slot, *tex);
+        BlendEmitTexUsageMeta(out, texture_type, slot, usage, mapBits, true, tex->uvname);
+        if (mtexSlot >= 0) {
+            out->AddProperty(&mtexSlot, 1, "$tex.blend.mtexSlot", texture_type, slot);
+        }
+        // Mesh binding hint: material raw index used by aiMesh::mMaterialIndex.
+        const int mi = static_cast<int>(matIndex);
+        out->AddProperty(&mi, 1, "$tex.blend.matIndex", texture_type, slot);
+    };
+
+    for (const BlendMTexMapHit &h : hits) {
+        emitOne(h.type, h.usage);
+        if (h.bumpScale && !bumpEmitted) {
+            out->AddProperty(&tex->norfac, 1, AI_MATKEY_BUMPSCALING);
+            bumpEmitted = true;
+        }
+        // Typed PBR slot: BI COL maps are also BASE_COLOR for Host Looks.
+        if (h.type == aiTextureType_DIFFUSE && (mapBits & MTex::MapType_COL) != 0) {
+            emitOne(aiTextureType_BASE_COLOR, "baseColor");
+        }
     }
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ResolveTexture(aiMaterial *out, const Material *mat, const MTex *tex, ConversionData &conv_data) {
+void BlenderImporter::ResolveTexture(aiMaterial *out, const Material *mat, const MTex *tex, ConversionData &conv_data,
+        int mtexSlot) {
     const Tex *rtex = tex->tex.get();
     if (!rtex || !rtex->type) {
         return;
@@ -7801,7 +8119,7 @@ void BlenderImporter::ResolveTexture(aiMaterial *out, const Material *mat, const
             LogError("A texture claims to be an Image, but no image reference is given");
             break;
         }
-        ResolveImage(out, mat, tex, rtex->ima.get(), conv_data);
+        ResolveImage(out, mat, tex, rtex->ima.get(), conv_data, mtexSlot);
         break;
 
     default:
@@ -8029,7 +8347,7 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
                 continue;
             }
 
-            ResolveTexture(mout, mat.get(), mat->mtex[i].get(), conv_data);
+            ResolveTexture(mout, mat.get(), mat->mtex[i].get(), conv_data, static_cast<int>(i));
         }
 
         // Grease Pencil materials: DNA Material.gp_style -> fill/stroke Images (often packed).
