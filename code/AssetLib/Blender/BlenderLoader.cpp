@@ -3776,10 +3776,54 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         return {};
     }
     const BlendNodeGraph g = BlendBuildGraph(*mat.nodetree);
+
+    // Link DAG structure (Presence): roots = Material Output; parents = upstream
+    // (fromnode), children = downstream (tonode). Socket-level refs stay in links[].
+    // Typed Principled flatten is unchanged - this bag is HostEval only.
+    auto pushUnique = [](std::vector<std::string> &dst, const std::string &name) {
+        if (name.empty()) {
+            return;
+        }
+        if (std::find(dst.begin(), dst.end(), name) == dst.end()) {
+            dst.push_back(name);
+        }
+    };
+    std::map<std::string, std::vector<std::string>> parentsOf;
+    std::map<std::string, std::vector<std::string>> childrenOf;
+    std::vector<std::string> roots;
+    for (const bNode *n : g.nodes) {
+        if (n != nullptr && BlendNodeIsOutput(*n) && n->name[0] != '\0') {
+            pushUnique(roots, n->name);
+        }
+    }
+    for (const bNodeLink *l : g.links) {
+        if (l == nullptr) {
+            continue;
+        }
+        const bNode *fn = BlendCastNode(l->fromnode.get());
+        const bNode *tn = BlendCastNode(l->tonode.get());
+        if (fn == nullptr || tn == nullptr || fn->name[0] == '\0' || tn->name[0] == '\0') {
+            continue;
+        }
+        pushUnique(childrenOf[fn->name], tn->name);
+        pushUnique(parentsOf[tn->name], fn->name);
+    }
+
     std::ostringstream nj;
     // Host-eval policy: emit authored socket defaults + ColorBand + links so the
     // renderer Look can implement Brick/Ramp (no Assimp bake; no invent).
-    nj << "{\"schemaVersion\":1,\"eval\":\"host\",\"assimpEval\":false,\"nodes\":[";
+    nj << "{\"schemaVersion\":1,\"eval\":\"host\",\"assimpEval\":false";
+    if (!roots.empty()) {
+        nj << ",\"roots\":[";
+        for (size_t ri = 0; ri < roots.size(); ++ri) {
+            if (ri) {
+                nj << ',';
+            }
+            nj << '"' << BlendJsonEscape(roots[ri]) << '"';
+        }
+        nj << ']';
+    }
+    nj << ",\"nodes\":[";
     bool nfirst = true;
     bool sawBrick = false;
     bool sawRamp = false;
@@ -3799,6 +3843,30 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         }
         if (n->name[0] != '\0') {
             nj << ",\"name\":\"" << BlendJsonEscape(n->name) << '"';
+        }
+        if (n->name[0] != '\0') {
+            const auto pit = parentsOf.find(n->name);
+            if (pit != parentsOf.end() && !pit->second.empty()) {
+                nj << ",\"parents\":[";
+                for (size_t pi = 0; pi < pit->second.size(); ++pi) {
+                    if (pi) {
+                        nj << ',';
+                    }
+                    nj << '"' << BlendJsonEscape(pit->second[pi]) << '"';
+                }
+                nj << ']';
+            }
+            const auto cit = childrenOf.find(n->name);
+            if (cit != childrenOf.end() && !cit->second.empty()) {
+                nj << ",\"children\":[";
+                for (size_t ci = 0; ci < cit->second.size(); ++ci) {
+                    if (ci) {
+                        nj << ',';
+                    }
+                    nj << '"' << BlendJsonEscape(cit->second[ci]) << '"';
+                }
+                nj << ']';
+            }
         }
         if (BlendNodeIsTexBrick(*n)) {
             nj << ",\"procedural\":\"TexBrick\"";

@@ -436,6 +436,11 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
 - Emission sibling under Add: merge `emissionStrength` when resolved; procedural
   Emission Color stays in the network (no invent flat Ke).
 - `BLEND_shader_network` (`eval:"host"`, `assimpEval:false`):
+  - **Structure (link DAG, Presence):** `roots[]` = Material Output node names when
+    present; per node `parents[]` / `children[]` = unique upstream / downstream
+    neighbors from `bNodeLink` (omit empty). Socket-level refs remain in `links[]`.
+    Not typed `aiNode` children - Sidecar only. Typed Principled / image slots stay
+    on `aiMaterial` via the existing flatten path.
   - nodes: idname/name, `procedural`/`kind` (incl. `Mapping`), **unlinked input defaults**
     (`value` / `rgba` / `vector`), **ColorBand** stops for `ShaderNodeValToRGB`
   - **ShaderNodeMapping** Location/Rotation/Scale: Presence `vector` from SOCK_VECTOR
@@ -452,6 +457,8 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
 - Host Look may generate diffuse/emissive maps from that bag (Cityscapes facade /
   window lights). **Look-specific Bake/render** in the renderer remains an
   optional alternate path (not Assimp Authoring-Bake).
+- Scene `skipped[]` still lists `BLEND_shader_network_full_nodegraph`: Assimp does
+  **not** CPU-eval the graph; structure+params Presence is not full eval.
 
 ## USD / BLEND scene bag (C0 / S0-S8)
 
