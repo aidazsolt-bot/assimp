@@ -53,15 +53,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <map>
 #include <memory>
 
-// Block-id VERBOSE_DEBUG while parsing (not field-miss spam).
+// enable verbose log output. really verbose, so be careful.
 #ifdef ASSIMP_BUILD_DEBUG
 #define ASSIMP_BUILD_BLENDER_DEBUG
 #endif
 
-// set this to non-zero to dump BlenderDNA stuff to dna.txt AND to log routine
-// missing-field / Igno→Warn DNA gaps. Keep 0 in the repo so NORMAL builds match
-// other importers (no thousands of DNA Warn lines). Enable via -D on the
-// assimp build command line when debugging DNA mapping.
+// set this to non-zero to dump BlenderDNA stuff to dna.txt.
+// you could set it on the assimp build command line too without touching it here.
+// !!! please make sure this is set to 0 in the repo !!!
 #ifndef ASSIMP_BUILD_BLENDER_DEBUG_DNA
 #define ASSIMP_BUILD_BLENDER_DEBUG_DNA 0
 #endif
@@ -190,15 +189,14 @@ struct Field {
 enum ErrorPolicy {
     /** Substitute default value and ignore */
     ErrorPolicy_Igno,
-    /** Substitute default value; log only when ASSIMP_BUILD_BLENDER_DEBUG_DNA!=0. */
+    /** Substitute default value; no log (DNA version gaps are routine, not Warn spam). */
     ErrorPolicy_Warn,
     /** Substitute a massive error message and crash the whole matrix. Its time for another zion */
     ErrorPolicy_Fail
 };
 
-#if ASSIMP_BUILD_BLENDER_DEBUG_DNA
-#define ErrorPolicy_Igno ErrorPolicy_Warn
-#endif
+// Do NOT remap Igno→Warn under ASSIMP_BUILD_DEBUG: that flooded NORMAL/VERBOSE
+// logs with thousands of expected missing-field lines (unlike other importers).
 
 // -------------------------------------------------------------------------------
 /** Represents a data structure in a BLEND file. A Structure defines n fields
@@ -394,13 +392,9 @@ template <>
 struct Structure::_defaultInitializer<ErrorPolicy_Warn> {
     template <typename T>
     void operator()(T &out, const char *reason = "<add reason>") {
-        // Match other importers: NORMAL builds stay quiet. Missing DNA fields across
-        // Blender versions are expected Presence gaps - enable via BLENDER_DEBUG_DNA.
-#if ASSIMP_BUILD_BLENDER_DEBUG_DNA
-        ASSIMP_LOG_WARN(reason);
-#else
+        // Silent like Igno for volume: missing fields across Blender versions are
+        // expected. Real issues use explicit ASSIMP_LOG_WARN/ERROR elsewhere.
         (void)reason;
-#endif
 
         // ... and let the show go on
         _defaultInitializer<0 /*ErrorPolicy_Igno*/>()(out);
