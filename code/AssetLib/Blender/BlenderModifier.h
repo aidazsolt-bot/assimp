@@ -126,7 +126,7 @@ private:
 class BlenderModifier_Mirror final : public BlenderModifier {
 public:
     // --------------------
-    virtual bool IsActive( const ModifierData& modin);
+    bool IsActive( const ModifierData& modin) override;
 
     // --------------------
     const char *RequiredDnaType() const override {
@@ -134,12 +134,12 @@ public:
     }
 
     // --------------------
-    virtual void DoIt(aiNode& out,
+    void DoIt(aiNode& out,
         ConversionData& conv_data,
         const ElemBase& orig_modifier,
         const Scene& in,
         const Object& orig_object
-    ) ;
+    ) override;
 };
 
 // -------------------------------------------------------------------------------------------
@@ -149,7 +149,7 @@ class BlenderModifier_Subdivision final : public BlenderModifier {
 public:
 
     // --------------------
-    virtual bool IsActive( const ModifierData& modin);
+    bool IsActive( const ModifierData& modin) override;
 
     // --------------------
     const char *RequiredDnaType() const override {
@@ -157,12 +157,12 @@ public:
     }
 
     // --------------------
-    virtual void DoIt(aiNode& out,
+    void DoIt(aiNode& out,
         ConversionData& conv_data,
         const ElemBase& orig_modifier,
         const Scene& in,
         const Object& orig_object
-    ) ;
+    ) override;
 };
 
 }
