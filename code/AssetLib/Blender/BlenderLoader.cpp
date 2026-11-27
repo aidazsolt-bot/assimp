@@ -5357,6 +5357,236 @@ static void BlendAppendNodesModifierParticlePresence(std::ostringstream &setting
     }
 }
 
+/** DNA ModifierData.type -> short ASCII label (Presence; unknown -> typeN). */
+static void BlendModifierTypeLabel(int type, char out[32]) {
+    using namespace Assimp::Blender;
+    const char *lab = nullptr;
+    switch (type) {
+    case ModifierData::eModifierType_None: lab = "None"; break;
+    case ModifierData::eModifierType_Subsurf: lab = "Subsurf"; break;
+    case ModifierData::eModifierType_Lattice: lab = "Lattice"; break;
+    case ModifierData::eModifierType_Curve: lab = "Curve"; break;
+    case ModifierData::eModifierType_Build: lab = "Build"; break;
+    case ModifierData::eModifierType_Mirror: lab = "Mirror"; break;
+    case ModifierData::eModifierType_Decimate: lab = "Decimate"; break;
+    case ModifierData::eModifierType_Wave: lab = "Wave"; break;
+    case ModifierData::eModifierType_Armature: lab = "Armature"; break;
+    case ModifierData::eModifierType_Hook: lab = "Hook"; break;
+    case ModifierData::eModifierType_Softbody: lab = "Softbody"; break;
+    case ModifierData::eModifierType_Boolean: lab = "Boolean"; break;
+    case ModifierData::eModifierType_Array: lab = "Array"; break;
+    case ModifierData::eModifierType_EdgeSplit: lab = "EdgeSplit"; break;
+    case ModifierData::eModifierType_Displace: lab = "Displace"; break;
+    case ModifierData::eModifierType_UVProject: lab = "UVProject"; break;
+    case ModifierData::eModifierType_Smooth: lab = "Smooth"; break;
+    case ModifierData::eModifierType_Cast: lab = "Cast"; break;
+    case ModifierData::eModifierType_MeshDeform: lab = "MeshDeform"; break;
+    case ModifierData::eModifierType_ParticleSystem: lab = "ParticleSystem"; break;
+    case ModifierData::eModifierType_ParticleInstance: lab = "ParticleInstance"; break;
+    case ModifierData::eModifierType_Explode: lab = "Explode"; break;
+    case ModifierData::eModifierType_Cloth: lab = "Cloth"; break;
+    case ModifierData::eModifierType_Collision: lab = "Collision"; break;
+    case ModifierData::eModifierType_Bevel: lab = "Bevel"; break;
+    case ModifierData::eModifierType_Shrinkwrap: lab = "Shrinkwrap"; break;
+    case ModifierData::eModifierType_Fluidsim: lab = "Fluidsim"; break;
+    case ModifierData::eModifierType_Mask: lab = "Mask"; break;
+    case ModifierData::eModifierType_SimpleDeform: lab = "SimpleDeform"; break;
+    case ModifierData::eModifierType_Multires: lab = "Multires"; break;
+    case ModifierData::eModifierType_Smoke: lab = "Smoke"; break;
+    case ModifierData::eModifierType_Solidify: lab = "Solidify"; break;
+    case ModifierData::eModifierType_Ocean: lab = "Ocean"; break;
+    case ModifierData::eModifierType_DynamicPaint: lab = "DynamicPaint"; break;
+    case ModifierData::eModifierType_MeshCache: lab = "MeshCache"; break;
+    case ModifierData::eModifierType_MeshSequenceCache: lab = "MeshSequenceCache"; break;
+    case ModifierData::eModifierType_CorrectiveSmooth: lab = "CorrectiveSmooth"; break;
+    case ModifierData::eModifierType_SurfaceDeform: lab = "SurfaceDeform"; break;
+    case ModifierData::eModifierType_WeightedNormal: lab = "WeightedNormal"; break;
+    case ModifierData::eModifierType_LaplacianDeform: lab = "LaplacianDeform"; break;
+    case ModifierData::eModifierType_DataTransfer: lab = "DataTransfer"; break;
+    case ModifierData::eModifierType_NormalEdit: lab = "NormalEdit"; break;
+    case ModifierData::eModifierType_Fluid: lab = "Fluid"; break;
+    case ModifierData::eModifierType_Nodes: lab = "Nodes"; break;
+    default: break;
+    }
+    if (lab != nullptr) {
+        std::strncpy(out, lab, 31);
+        out[31] = '\0';
+        return;
+    }
+    std::snprintf(out, 32, "type%d", type);
+}
+
+/**
+ * Classify DNA modifier for Host: applied (baked into aiMesh), deferred (Physics bag),
+ * or unreadable (skipped[] only - no invent).
+ */
+static void BlendClassifyModifierEmit(int type, const char *modName, const char *&emitClass,
+        const char *&bagKey, bool &gnBlastUnreadable) {
+    using namespace Assimp::Blender;
+    emitClass = "unreadable";
+    bagKey = nullptr;
+    gnBlastUnreadable = false;
+    if (type == ModifierData::eModifierType_Mirror || type == ModifierData::eModifierType_Subsurf) {
+        emitClass = "applied";
+        return;
+    }
+    switch (type) {
+    case ModifierData::eModifierType_Softbody:
+        emitClass = "deferred";
+        bagKey = "softbody";
+        return;
+    case ModifierData::eModifierType_Cloth:
+        emitClass = "deferred";
+        bagKey = "cloth";
+        return;
+    case ModifierData::eModifierType_Fluidsim:
+    case ModifierData::eModifierType_Fluid:
+        emitClass = "deferred";
+        bagKey = "fluid";
+        return;
+    case ModifierData::eModifierType_Smoke:
+        emitClass = "deferred";
+        bagKey = "smoke";
+        return;
+    case ModifierData::eModifierType_ParticleSystem:
+        emitClass = "deferred";
+        bagKey = "particles";
+        return;
+    case ModifierData::eModifierType_Explode:
+        emitClass = "deferred";
+        bagKey = "blast";
+        return;
+    case ModifierData::eModifierType_Ocean:
+        emitClass = "deferred";
+        bagKey = "ocean";
+        return;
+    case ModifierData::eModifierType_DynamicPaint:
+        emitClass = "deferred";
+        bagKey = "dynamic_paint";
+        return;
+    case ModifierData::eModifierType_Solidify:
+        emitClass = "deferred";
+        bagKey = "solidify";
+        return;
+    case ModifierData::eModifierType_MeshCache:
+        emitClass = "deferred";
+        bagKey = "mesh_cache";
+        return;
+    case ModifierData::eModifierType_MeshSequenceCache:
+        emitClass = "deferred";
+        bagKey = "mesh_sequence_cache";
+        return;
+    case ModifierData::eModifierType_Collision:
+        emitClass = "deferred";
+        bagKey = "collision";
+        return;
+    case ModifierData::eModifierType_Curve:
+        emitClass = "deferred";
+        bagKey = "curve";
+        return;
+    case ModifierData::eModifierType_Nodes: {
+        // Name heuristic only (same spirit as CollectBlendPhysicsModifiers) - no Depsgraph.
+        std::string hay = modName ? modName : "";
+        for (char &c : hay) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (hay.find("fracture") != std::string::npos || hay.find("blast") != std::string::npos ||
+                hay.find("break") != std::string::npos) {
+            emitClass = "unreadable";
+            gnBlastUnreadable = true;
+            return;
+        }
+        if (hay.find("cloth") != std::string::npos) {
+            emitClass = "deferred";
+            bagKey = "cloth";
+            return;
+        }
+        if (hay.find("soft") != std::string::npos) {
+            emitClass = "deferred";
+            bagKey = "softbody";
+            return;
+        }
+        if (hay.find("fluid") != std::string::npos || hay.find("liquid") != std::string::npos ||
+                hay.find("smoke") != std::string::npos) {
+            emitClass = "deferred";
+            bagKey = "fluid";
+            return;
+        }
+        if (hay.find("particle") != std::string::npos || hay.find("hair") != std::string::npos) {
+            emitClass = "deferred";
+            bagKey = "particles";
+            return;
+        }
+        emitClass = "unreadable";
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+/**
+ * Owner Presence on typed aiNode: which DNA modifiers exist and how they bind.
+ * No Modifier:* children (Host 0af). Deferred detail stays in Physics bags.
+ */
+static void BlendEmitModifierStackOnNode(aiNode *node, const Assimp::Blender::Object *obj,
+        Assimp::Blender::ConversionData &conv) {
+    using namespace Assimp::Blender;
+    if (node == nullptr || obj == nullptr) {
+        return;
+    }
+    const char *objName = obj->id.name + 2;
+    std::ostringstream stack;
+    int count = 0;
+    const SharedModifierData *cur = static_cast<const SharedModifierData *>(obj->modifiers.first.get());
+    for (; cur; cur = static_cast<const SharedModifierData *>(cur->modifier.next.get()), ++count) {
+        const ModifierData &dat = cur->modifier;
+        const char *emitClass = "unreadable";
+        const char *bagKey = nullptr;
+        bool gnBlast = false;
+        BlendClassifyModifierEmit(dat.type, dat.name, emitClass, bagKey, gnBlast);
+        char typeLab[32];
+        BlendModifierTypeLabel(dat.type, typeLab);
+        if (count) {
+            stack << ';';
+        }
+        // slot:name:typeLabel:class[:bag]
+        stack << count << ':' << dat.name << ':' << typeLab << ':' << emitClass;
+        if (bagKey != nullptr) {
+            stack << ':' << bagKey;
+        }
+        if (std::strcmp(emitClass, "unreadable") == 0 && !gnBlast) {
+            // Specific blast GN token is emitted in CollectBlendPhysicsModifiers.
+            std::string sk = "BLEND_modifier_unreadable:";
+            sk += objName ? objName : "?";
+            sk += '/';
+            sk += dat.name[0] ? dat.name : typeLab;
+            sk += ':';
+            sk += typeLab;
+            conv.skippedCategories.push_back(sk);
+        }
+    }
+    if (count == 0) {
+        return;
+    }
+    if (node->mMetaData == nullptr) {
+        node->mMetaData = new aiMetadata();
+    }
+    node->mMetaData->Add("$mod.blend.count", count);
+    node->mMetaData->Add("$mod.blend.stack", aiString(stack.str()));
+    // Assimp-usual mesh bind: node owns mesh indices (same as sidecar meshes[]).
+    if (node->mNumMeshes > 0) {
+        std::ostringstream meshes;
+        for (unsigned i = 0; i < node->mNumMeshes; ++i) {
+            if (i) {
+                meshes << ',';
+            }
+            meshes << node->mMeshes[i];
+        }
+        node->mMetaData->Add("$mod.blend.meshes", aiString(meshes.str()));
+    }
+}
+
 void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Blender::ConversionData &conv,
         const aiNode *node) {
     using namespace Assimp::Blender;
@@ -6235,8 +6465,9 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         }
     }
 
+    int stackSlot = 0;
     const SharedModifierData *cur = static_cast<const SharedModifierData *>(obj->modifiers.first.get());
-    for (; cur; cur = static_cast<const SharedModifierData *>(cur->modifier.next.get())) {
+    for (; cur; cur = static_cast<const SharedModifierData *>(cur->modifier.next.get()), ++stackSlot) {
         const ModifierData &dat = cur->modifier;
         std::vector<ConversionData::PhysicsInvNode> *bag = nullptr;
         const char *bagKey = nullptr;
@@ -6720,7 +6951,9 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
         std::ostringstream nodeJson;
         nodeJson << "{\"name\":\"" << BlendJsonEscape(objName)
                  << "\",\"modifier\":\"" << BlendJsonEscape(dat.name)
-                 << "\",\"type\":\"" << bagKey << '"';
+                 << "\",\"type\":\"" << bagKey << '"'
+                 << ",\"stackSlot\":" << stackSlot
+                 << ",\"emitClass\":\"deferred\"";
         if (wantMeshMatBind) {
             BlendAppendNodeMeshMaterialBind(nodeJson, node, conv);
         }
@@ -9453,9 +9686,8 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
     // apply modifiers
     modifier_cache->ApplyModifiers(*node, conv_data, in, *obj);
     CollectBlendPhysicsModifiers(obj, conv_data, node.get());
-
-    // No Modifier:*/ParticleSystem:* marker children in typed hierarchy (Host 0af):
-    // bind stays in Physics sidecar emitter/emitterIndex/system only.
+    // Owner Presence: $mod.blend.* on typed aiNode (no Modifier:* children - Host 0af).
+    BlendEmitModifierStackOnNode(node.get(), obj, conv_data);
 
     // Asset Browser fields on Object ID (Presence).
     BlendEmitAssetBrowserMetadata(node->mMetaData, obj->id.asset_data.get(), false);
