@@ -48,6 +48,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef ASSIMP_BUILD_NO_BLEND_IMPORTER
 
+#include "BlenderAnimEmit.h"
 #include "BlenderBMesh.h"
 #include "BlenderCustomData.h"
 #include "BlenderIntermediate.h"
@@ -2427,7 +2428,7 @@ void BlenderImporter::InternReadFile(const std::string &pFile,
     Scene scene;
     ExtractScene(scene, file);
 
-    ConvertBlendFile(pScene, scene, file);
+    ConvertBlendFile(pScene, scene, file, pFile, pIOHandler);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -2578,8 +2579,16 @@ void BlenderImporter::ParseSubCollection(const Blender::Scene &in, aiNode *root,
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file) {
+void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const FileDatabase &file,
+        const std::string &pFile, IOSystem *pIOHandler) {
     ConversionData conv(file);
+    conv.io = pIOHandler;
+    {
+        const size_t slash = pFile.find_last_of("/\\");
+        if (slash != std::string::npos) {
+            conv.blendDirectory.assign(pFile, 0, slash);
+        }
+    }
 
     aiNode *root = out->mRootNode = new aiNode("<BlenderRoot>");
     // Blender 2.8+: objects live in master_collection. Hierarchy must follow Object.parent
@@ -2649,11 +2658,14 @@ void BlenderImporter::ConvertBlendFile(aiScene *out, const Scene &in, const File
         conv.textures.dismiss();
     }
 
-    // Camera Actions + Armature pose.bones Actions -> typed aiNodeAnim.
+    // Object TRS + Armature pose.bones + ShapeKey morph + MeshCache MDD -> typed anim.
     {
         std::vector<aiAnimation *> anims;
-        BlendConvertCameraAnimations(anims, conv);
-        BlendConvertArmatureAnimations(anims, conv);
+        Assimp::Blender::BlendConvertObjectAnimations(anims, conv);
+        Assimp::Blender::BlendConvertArmatureAnimations(anims, conv);
+        Assimp::Blender::BlendConvertShapeKeyAnimations(anims, conv);
+        anims.insert(anims.end(), conv.pendingMeshAnims.begin(), conv.pendingMeshAnims.end());
+        conv.pendingMeshAnims.clear();
         if (!anims.empty()) {
             out->mNumAnimations = static_cast<unsigned int>(anims.size());
             out->mAnimations = new aiAnimation *[out->mNumAnimations];
@@ -3065,7 +3077,7 @@ void BlenderImporter::NotSupportedObjectType(const Object *obj, const char *type
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, const Mesh *mesh,
+void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object *obj, const Mesh *mesh,
         ConversionData &conv_data, TempArray<std::vector, aiMesh> &temp) {
     // TODO: Resolve various problems with BMesh triangulation before re-enabling.
     //       See issues #400, #373, #318  #315 and #132.
@@ -3131,9 +3143,11 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
     temp->reserve(temp->size() + per_mat.size());
 
     std::map<size_t, size_t> mat_num_to_mesh_idx;
+    std::map<size_t, std::vector<int>> outToSrcByTempIdx;
     for (MyPair &it : per_mat) {
 
         mat_num_to_mesh_idx[it.first] = temp->size();
+        outToSrcByTempIdx[temp->size()].reserve(per_mat_verts[it.first]);
         temp->push_back(new aiMesh());
 
         aiMesh *out = temp->back();
@@ -3184,7 +3198,9 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
 
         const MFace &mf = mesh->mface[i];
 
-        aiMesh *const out = temp[mat_num_to_mesh_idx[mf.mat_nr]];
+        const size_t tidx = mat_num_to_mesh_idx[mf.mat_nr];
+        aiMesh *const out = temp[tidx];
+        std::vector<int> &outToSrc = outToSrcByTempIdx[tidx];
         aiFace &f = out->mFaces[out->mNumFaces++];
 
         f.mIndices = new unsigned int[f.mNumIndices = mf.v4 ? 4 : 3];
@@ -3208,6 +3224,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->y = v->no[1];
         vn->z = v->no[2];
         f.mIndices[0] = out->mNumVertices++;
+        outToSrc.push_back(mf.v1);
         ++vo;
         ++vn;
 
@@ -3223,6 +3240,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->y = v->no[1];
         vn->z = v->no[2];
         f.mIndices[1] = out->mNumVertices++;
+        outToSrc.push_back(mf.v2);
         ++vo;
         ++vn;
 
@@ -3238,6 +3256,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
         vn->y = v->no[1];
         vn->z = v->no[2];
         f.mIndices[2] = out->mNumVertices++;
+        outToSrc.push_back(mf.v3);
         ++vo;
         ++vn;
 
@@ -3254,6 +3273,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
             vn->y = v->no[1];
             vn->z = v->no[2];
             f.mIndices[3] = out->mNumVertices++;
+            outToSrc.push_back(static_cast<int>(mf.v4));
             ++vo;
             ++vn;
 
@@ -3270,7 +3290,9 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
 
         const MPoly &mf = mesh->mpoly[i];
 
-        aiMesh *const out = temp[mat_num_to_mesh_idx[mf.mat_nr]];
+        const size_t tidx = mat_num_to_mesh_idx[mf.mat_nr];
+        aiMesh *const out = temp[tidx];
+        std::vector<int> &outToSrc = outToSrcByTempIdx[tidx];
         aiFace &f = out->mFaces[out->mNumFaces++];
 
         f.mIndices = new unsigned int[f.mNumIndices = mf.totloop];
@@ -3304,6 +3326,7 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
             vn->y = v.no[1];
             vn->z = v.no[2];
             f.mIndices[j] = out->mNumVertices++;
+            outToSrc.push_back(loop.v);
 
             ++vo;
             ++vn;
@@ -3458,6 +3481,24 @@ void BlenderImporter::ConvertMesh(const Scene & /*in*/, const Object * /*obj*/, 
                 vo->g = ai_real(col.g) * scaleZeroToOne;
                 vo->b = ai_real(col.b) * scaleZeroToOne;
                 vo->a = ai_real(col.a) * scaleZeroToOne;
+            }
+        }
+    }
+
+    // Skinning / shape keys / MeshCache MDD (typed Assimp anim interfaces).
+    if (obj != nullptr) {
+        for (size_t ti = old; ti < temp->size(); ++ti) {
+            aiMesh *sub = temp[ti];
+            const std::vector<int> &map = outToSrcByTempIdx[ti];
+            if (map.empty() || sub == nullptr) {
+                continue;
+            }
+            Assimp::Blender::BlendAttachMeshBones(sub, *obj, *mesh, conv_data, map);
+            Assimp::Blender::BlendAttachShapeKeyTargets(sub, obj, *mesh, map, conv_data);
+            // MDD once per Object (first submesh); PC2 / unloadable stay unresolved.
+            if (ti == old) {
+                Assimp::Blender::BlendAttachMeshCacheAnim(sub, *obj, *mesh, conv_data, map,
+                        conv_data.pendingMeshAnims);
             }
         }
     }
@@ -3743,6 +3784,9 @@ aiNode *BlenderImporter::ConvertNode(const Scene &in, const Object *obj, Convers
     }
 
     std::unique_ptr<aiNode> node(new aiNode(obj->id.name + 2)); // skip over the name prefix 'OB'
+    if (obj->adt) {
+        conv_data.trs_anim_objects.push_back(obj);
+    }
     if (obj->data) {
         switch (obj->type) {
         case Object ::Type_EMPTY:

@@ -80,6 +80,42 @@ template <> void Structure :: Convert<TFace> (
     ) const
 ;
 
+template <> void Structure :: Convert<GenericModifierData> (
+    GenericModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<ArmatureModifierData> (
+    ArmatureModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<MeshCacheModifierData> (
+    MeshCacheModifierData& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<bDeformGroup> (
+    bDeformGroup& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<KeyBlock> (
+    KeyBlock& dest,
+    const FileDatabase& db
+    ) const
+;
+
+template <> void Structure :: Convert<Key> (
+    Key& dest,
+    const FileDatabase& db
+    ) const
+;
+
 template <> void Structure :: Convert<SubsurfModifierData> (
     SubsurfModifierData& dest,
     const FileDatabase& db

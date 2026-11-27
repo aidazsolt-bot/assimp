@@ -54,9 +54,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/material.h>
 
 struct aiTexture;
+struct aiAnimation;
 
 namespace Assimp {
+class IOSystem;
 namespace Blender {
+struct Key;
+struct Object;
 
     // --------------------------------------------------------------------
     /** Mini smart-array to avoid pulling in even more boost stuff. usable with vector and deque */
@@ -172,15 +176,32 @@ namespace Blender {
         // Dedupe embedded aiTexture by Blender Image* (packedfiles / packedfile).
         std::unordered_map<const Image *, unsigned int> embeddedImageTexIndex;
 
-        // Camera objects (for Action -> aiNodeAnim), filled during ConvertNode.
+        // Objects with AnimData (Object TRS -> aiNodeAnim), filled during ConvertNode.
+        std::vector<const Object *> trs_anim_objects;
+        // Camera objects (legacy list; also in trs_anim_objects).
         std::vector<const Object *> camera_objects;
         /** Armature objects (bone hierarchy + pose Action -> aiNodeAnim). */
         std::vector<const Object *> armature_objects;
+        /** Directory of the .blend (for // relative MeshCache paths). */
+        std::string blendDirectory;
+        /** Optional IO for MeshCache MDD load. */
+        IOSystem *io = nullptr;
         /**
          * Map Armature Object name -> bone rest name used as aiNode::mName
          * (unique: "ArmatureObj|BoneName") for pose channel targeting.
          */
         std::unordered_map<std::string, std::unordered_map<std::string, std::string>> armatureBoneNodeNames;
+
+        /** Shape-key targets attached to aiMeshes (for weight-curve morph anim). */
+        struct ShapeKeyMeshRef {
+            std::string meshName;
+            std::vector<std::string> keyNames; // index-aligned with aiMesh::mAnimMeshes
+            const Key *key = nullptr;
+            const Object *obj = nullptr;
+        };
+        std::vector<ShapeKeyMeshRef> shapeKeyMeshes;
+        /** MeshCache MDD -> aiMeshAnim produced during ConvertMesh. */
+        std::vector<aiAnimation *> pendingMeshAnims;
 
         // original file data
         const FileDatabase& db;
