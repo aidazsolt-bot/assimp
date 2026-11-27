@@ -41,6 +41,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /** @file  PLYLoader.h
  *  @brief Declaration of the .ply importer class.
+ *
+ *  Format notes (mesh faces vs. 3DGS f_dc_ / f_rest_): see doc/PLY.md
  */
 #pragma once
 #ifndef AI_PLYLOADER_H_INCLUDED
@@ -48,6 +50,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "PlyParser.h"
 #include <assimp/BaseImporter.h>
+#include <assimp/gaussian.h>
 #include <assimp/types.h>
 #include <vector>
 
@@ -81,41 +84,61 @@ public:
 
     // -------------------------------------------------------------------
     /// @brief Extract a face from the DOM
-    /// The function will also take care of the correct winding order of the triangles.
-    /// @param pcElement The element containing the face data
-    /// @param instElement The element instance containing the face data
-    /// @param pos The position of the face in the element instance. This is needed to correctly assign the face to the mesh.
     void LoadFace(const PLY::Element *pcElement, const PLY::ElementInstance *instElement, unsigned int pos);
 
-    /// @brief Will create a triangle from a triangle strip. 
-    /// The function will use the first three vertices of the strip to create the first triangle, then the second,
-    /// third and fourth vertex to create the second triangle and so on. The function will also take care of the correct 
-    /// winding order of the triangles.
-    /// @param instElement The element instance containing the triangle strip data
-    /// @param iProperty   The index of the property containing the triangle strip data
-    /// @param eType       The data type of the triangle strip data
+    /// @brief Will create a triangle from a triangle strip.
     void createFromeTriStrip(const Assimp::PLY::ElementInstance *instElement, unsigned int iProperty, Assimp::PLY::EDataType eType);
 
 protected:
-    // -------------------------------------------------------------------
     const aiImporterDesc *GetInfo() const override;
 
-    // -------------------------------------------------------------------
     void InternReadFile(const std::string &pFile, aiScene *pScene, IOSystem *pIOHandler) override;
 
-    // -------------------------------------------------------------------
-    /// @brief  Extract a material list from the DOM    
-    /// @param pvOut          The output material list. The function will fill the list with the extracted materials.
-    /// @param defaultTexture The default texture to use for the materials. This is needed to correctly assign the texture to the materials.
-    /// @param pointsOnly     Whether the file contains only points. This is needed to correctly assign the material properties.
     void LoadMaterial(std::vector<aiMaterial *> *pvOut, std::string &defaultTexture, const bool pointsOnly);
 
 private:
-    unsigned char *mBuffer{nullptr};
-    PLY::DOM *pcDOM{nullptr};
-    aiMesh *mGeneratedMesh{nullptr};
+    /// Detect 3DGS / 2DGS vertex layout and allocate side-channel storage once.
+    void PrepareGaussianIfNeeded(const PLY::Element *pcElement);
+
+    /// Fill one Gaussian from the current vertex instance (if active).
+    void LoadGaussianVertex(const PLY::ElementInstance *instElement, unsigned int pos);
+
+    /// Detect PlayCanvas / SuperSplat compressed PLY (element chunk + packed_*).
+    void PreparePlayCanvasCompressedIfNeeded(const PLY::Element *pcElement);
+
+    /// Unpack one compressed vertex into mesh + aiGaussianSplat.
+    void LoadPlayCanvasCompressedVertex(const PLY::ElementInstance *instElement, unsigned int pos);
+
+    unsigned char *mBuffer{ nullptr };
+    PLY::DOM *pcDOM{ nullptr };
+    aiMesh *mGeneratedMesh{ nullptr };
+
+    bool mGaussianChecked{ false };
+    bool mGaussianActive{ false };
+    /** True when layout is 2DGS (scale_0/1 only; scale_2 absent). */
+    bool mGaussianIs2dgs{ false };
+    aiGaussianSplat *mGaussianSplat{ nullptr };
+
+    // Property indices into Element::alProperties / ElementInstance::alProperties
+    int mGsDc[3]{ -1, -1, -1 };
+    int mGsScale[3]{ -1, -1, -1 };
+    int mGsRot[4]{ -1, -1, -1, -1 };
+    int mGsOpacity{ -1 };
+    std::vector<int> mGsRest; // index per f_rest_i, -1 if missing
+
+    // PlayCanvas compressed PLY (chunk AABB + packed uints per vertex).
+    bool mPcCompressedChecked{ false };
+    bool mPcCompressedActive{ false };
+    int mPcPackedPos{ -1 };
+    int mPcPackedRot{ -1 };
+    int mPcPackedScale{ -1 };
+    int mPcPackedColor{ -1 };
+    std::vector<float> mPcMinX, mPcMaxX, mPcMinY, mPcMaxY, mPcMinZ, mPcMaxZ;
+    std::vector<float> mPcMinSX, mPcMaxSX, mPcMinSY, mPcMaxSY, mPcMinSZ, mPcMaxSZ;
+    std::vector<float> mPcMinR, mPcMaxR, mPcMinG, mPcMaxG, mPcMinB, mPcMaxB;
+    bool mPcHasColorBounds{ false };
 };
 
 } // end of namespace Assimp
 
-#endif // AI_3DSIMPORTER_H_INC
+#endif // AI_PLYLOADER_H_INCLUDED

@@ -186,6 +186,9 @@ namespace glTF2 {
                         case AnimationPath_WEIGHTS:
                             valTarget.AddMember("path", "weights", w.mAl);
                             break;
+                        case AnimationPath_POINTER:
+                            // Import-only today; exporter does not emit KHR_animation_pointer.
+                            break;
                     }
                 }
                 valChannel.AddMember("target", valTarget, w.mAl);

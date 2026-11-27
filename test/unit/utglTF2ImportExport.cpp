@@ -48,6 +48,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/postprocess.h>
 #include <assimp/config.h>
 #include <assimp/scene.h>
+#include <assimp/sidecar.h>
+#include <assimp/gaussian.h>
+#include <string>
 #include <assimp/Exporter.hpp>
 #include <assimp/Importer.hpp>
 #include <assimp/LogStream.hpp>
@@ -56,6 +59,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/schema.h>
 
 #include <array>
+#include <cstring>
+#include <functional>
 #include <fstream>
 #include <sstream>
 
@@ -1239,6 +1244,377 @@ TEST_F(utglTF2ImportExport, importMalformedSparseAccessor) {
     // ASSERTION: The thrown parser error must match our custom fail-fast string
     std::string errorString = importer.GetErrorString();
     EXPECT_NE(errorString.find("Invalid sparse accessor: missing required 'values' object."), std::string::npos);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_MeshSidecarCustomAttrAndExtras) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarCustomAttr/SidecarCustomAttr.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_GE(scene->mNumMeshes, 1u);
+
+    EXPECT_TRUE(aiSceneHasMeshSidecar(scene));
+    const aiMeshSidecar *sc = aiGetMeshSidecar(scene, 0);
+    ASSERT_NE(nullptr, sc);
+    EXPECT_EQ(nullptr, aiGetMeshSidecar(scene, 1));
+
+    ASSERT_EQ(1u, sc->mNumBuffers);
+    ASSERT_NE(nullptr, sc->mBuffers);
+    const aiSidecarBuffer &buf = sc->mBuffers[0];
+    EXPECT_STREQ("_SCALE", buf.mName.C_Str());
+    EXPECT_EQ(scene->mMeshes[0]->mNumVertices, buf.mNumElements);
+    EXPECT_EQ(3u, buf.mNumComponents);
+    EXPECT_EQ(static_cast<unsigned int>(aiSidecarComponentType_Float), buf.mComponentType);
+    ASSERT_NE(nullptr, buf.mData);
+    EXPECT_EQ(static_cast<size_t>(buf.mNumElements) * 3u * sizeof(float), buf.mByteLength);
+
+    const float *scale = reinterpret_cast<const float *>(buf.mData);
+    EXPECT_FLOAT_EQ(1.f, scale[0]);
+    EXPECT_FLOAT_EQ(2.f, scale[1]);
+    EXPECT_FLOAT_EQ(3.f, scale[2]);
+    EXPECT_FLOAT_EQ(4.f, scale[3]);
+    EXPECT_FLOAT_EQ(5.f, scale[4]);
+    EXPECT_FLOAT_EQ(6.f, scale[5]);
+    EXPECT_FLOAT_EQ(7.f, scale[6]);
+    EXPECT_FLOAT_EQ(8.f, scale[7]);
+    EXPECT_FLOAT_EQ(9.f, scale[8]);
+
+    ASSERT_NE(nullptr, sc->mExtrasJson);
+    const std::string extras(sc->mExtrasJson, sc->mExtrasJsonLength);
+    EXPECT_NE(std::string::npos, extras.find("babylonHint"));
+    EXPECT_NE(std::string::npos, extras.find("sidecar-test"));
+    EXPECT_NE(std::string::npos, extras.find("primitiveTag"));
+    EXPECT_NE(std::string::npos, extras.find("priority"));
+
+    bool metaFlag = false;
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_MESH_SIDECAR, metaFlag));
+    EXPECT_TRUE(metaFlag);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_MeshSidecarAbsentOnPlainMesh) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/glTF-Asset-Generator/Mesh_PrimitiveMode/Mesh_PrimitiveMode_00.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    EXPECT_FALSE(aiSceneHasMeshSidecar(scene));
+    EXPECT_EQ(nullptr, aiGetMeshSidecar(scene, 0));
+    EXPECT_FALSE(aiSceneHasMaterialSidecar(scene));
+    EXPECT_EQ(nullptr, aiGetMaterialSidecar(scene, 0));
+    EXPECT_FALSE(aiSceneHasAnimationSidecar(scene));
+    EXPECT_EQ(nullptr, aiGetAnimationSidecar(scene, 0));
+    EXPECT_FALSE(aiSceneHasPhysicsSidecar(scene));
+    EXPECT_EQ(nullptr, aiGetPhysicsSidecar(scene));
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_MaterialSidecarIridescenceFactors) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarIridescence/IridescenceFactors.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_GE(scene->mNumMaterials, 1u);
+
+    EXPECT_TRUE(aiSceneHasMaterialSidecar(scene));
+    const aiMaterialSidecar *sc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, sc);
+    ASSERT_NE(nullptr, sc->mExtensionsJson);
+    const std::string json(sc->mExtensionsJson, sc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("KHR_materials_iridescence"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceFactor"));
+    EXPECT_NE(std::string::npos, json.find("0.5"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceIor"));
+    EXPECT_NE(std::string::npos, json.find("1.5"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceThicknessMinimum"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceThicknessMaximum"));
+    // Must not live on mesh sidecar
+    EXPECT_FALSE(aiSceneHasMeshSidecar(scene));
+
+    bool metaFlag = false;
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_MATERIAL_SIDECAR, metaFlag));
+    EXPECT_TRUE(metaFlag);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_MaterialSidecarIridescenceTextures) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarIridescence/IridescenceTextures.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+
+    const aiMaterialSidecar *sc = aiGetMaterialSidecar(scene, 0);
+    ASSERT_NE(nullptr, sc);
+    ASSERT_NE(nullptr, sc->mExtensionsJson);
+    const std::string json(sc->mExtensionsJson, sc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("iridescenceTexture"));
+    EXPECT_NE(std::string::npos, json.find("iridescenceThicknessTexture"));
+    EXPECT_NE(std::string::npos, json.find("\"path\""));
+    // weight texture authored texCoord:0; thickness texture omitted texCoord -> absent in JSON
+    EXPECT_NE(std::string::npos, json.find("texCoord"));
+    // Embedded image path should be *N
+    EXPECT_NE(std::string::npos, json.find("\"*"));
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_KHR_gaussian_splatting) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/KHR_gaussian_splatting/KHR_gaussian_splatting_dc.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_EQ(1u, scene->mNumMeshes);
+    EXPECT_EQ(aiPrimitiveType_POINT, scene->mMeshes[0]->mPrimitiveTypes);
+    EXPECT_EQ(2u, scene->mMeshes[0]->mNumVertices);
+
+    EXPECT_TRUE(aiSceneHasGaussianSplat(scene));
+    const aiGaussianSplat *gs = aiGetGaussianSplat(scene, 0);
+    ASSERT_NE(nullptr, gs);
+    EXPECT_EQ(2u, gs->mNumPoints);
+    EXPECT_EQ(0u, gs->mNumRestCoeffs);
+    EXPECT_STREQ("ellipse", gs->mKernel.C_Str());
+    EXPECT_STREQ("srgb_rec709_display", gs->mColorSpace.C_Str());
+
+    EXPECT_NEAR(1.0f, gs->mDC[0].x, 1e-5f);
+    EXPECT_NEAR(0.5f, gs->mOpacity[0], 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mScale[0].x, 1e-5f);
+    EXPECT_NEAR(0.0f, gs->mRotation[0].r, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mRotation[0].a, 1e-5f);
+
+    EXPECT_NEAR(0.0f, gs->mDC[1].x, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mDC[1].y, 1e-5f);
+    EXPECT_NEAR(1.0f, gs->mOpacity[1], 1e-5f);
+    EXPECT_NEAR(2.0f, gs->mScale[1].x, 1e-5f);
+
+    // Promoted attrs must not remain as mesh-sidecar custom buffers.
+    if (aiSceneHasMeshSidecar(scene)) {
+        const aiMeshSidecar *msc = aiGetMeshSidecar(scene, 0);
+        ASSERT_NE(nullptr, msc);
+        for (unsigned int i = 0; i < msc->mNumBuffers; ++i) {
+            const std::string name(msc->mBuffers[i].mName.C_Str());
+            EXPECT_EQ(std::string::npos, name.find("KHR_gaussian_splatting:"));
+        }
+        ASSERT_NE(nullptr, msc->mExtensionsJson);
+        const std::string ext(msc->mExtensionsJson, msc->mExtensionsJsonLength);
+        EXPECT_NE(std::string::npos, ext.find("KHR_gaussian_splatting"));
+        EXPECT_NE(std::string::npos, ext.find("ellipse"));
+    }
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_AnimationSidecarPointerMaterial) {
+    Assimp::Importer importer;
+    // Pointer-only animations have mNumChannels==0; ValidateDataStructure allows that when
+    // an animation sidecar is present (see Validation).
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarAnimPointerMaterial/SidecarAnimPointerMaterial.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_EQ(1u, scene->mNumAnimations);
+    EXPECT_EQ(0u, scene->mAnimations[0]->mNumChannels);
+    EXPECT_NEAR(1000.0, scene->mAnimations[0]->mDuration, 1e-3);
+
+    EXPECT_TRUE(aiSceneHasAnimationSidecar(scene));
+    const aiAnimationSidecar *asc = aiGetAnimationSidecar(scene, 0);
+    ASSERT_NE(nullptr, asc);
+    ASSERT_NE(nullptr, asc->mExtensionsJson);
+    const std::string json(asc->mExtensionsJson, asc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("KHR_animation_pointer"));
+    EXPECT_NE(std::string::npos, json.find("/materials/0/pbrMetallicRoughness/baseColorFactor"));
+    EXPECT_NE(std::string::npos, json.find("sampler_0_input"));
+    EXPECT_NE(std::string::npos, json.find("sampler_0_output"));
+    EXPECT_NE(std::string::npos, json.find("\"outputComponents\":4"));
+
+    ASSERT_EQ(2u, asc->mNumBuffers);
+    const aiSidecarBuffer *inBuf = nullptr;
+    const aiSidecarBuffer *outBuf = nullptr;
+    for (unsigned int i = 0; i < asc->mNumBuffers; ++i) {
+        if (std::strcmp(asc->mBuffers[i].mName.C_Str(), "sampler_0_input") == 0) {
+            inBuf = &asc->mBuffers[i];
+        } else if (std::strcmp(asc->mBuffers[i].mName.C_Str(), "sampler_0_output") == 0) {
+            outBuf = &asc->mBuffers[i];
+        }
+    }
+    ASSERT_NE(nullptr, inBuf);
+    ASSERT_NE(nullptr, outBuf);
+    EXPECT_EQ(2u, inBuf->mNumElements);
+    EXPECT_EQ(1u, inBuf->mNumComponents);
+    EXPECT_EQ(static_cast<unsigned int>(aiSidecarComponentType_Float), inBuf->mComponentType);
+    EXPECT_EQ(2u, outBuf->mNumElements);
+    EXPECT_EQ(4u, outBuf->mNumComponents);
+    const float *times = reinterpret_cast<const float *>(inBuf->mData);
+    const float *cols = reinterpret_cast<const float *>(outBuf->mData);
+    EXPECT_FLOAT_EQ(0.f, times[0]);
+    EXPECT_FLOAT_EQ(1.f, times[1]);
+    EXPECT_FLOAT_EQ(1.f, cols[0]);
+    EXPECT_FLOAT_EQ(0.f, cols[1]);
+    EXPECT_FLOAT_EQ(0.f, cols[2]);
+    EXPECT_FLOAT_EQ(1.f, cols[3]);
+    EXPECT_FLOAT_EQ(0.f, cols[4]);
+    EXPECT_FLOAT_EQ(1.f, cols[5]);
+
+    bool metaFlag = false;
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_ANIMATION_SIDECAR, metaFlag));
+    EXPECT_TRUE(metaFlag);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_AnimationSidecarPointerTexTransform) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarAnimPointerTexTransform/SidecarAnimPointerTexTransform.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_EQ(1u, scene->mNumAnimations);
+    EXPECT_EQ(0u, scene->mAnimations[0]->mNumChannels);
+
+    const aiAnimationSidecar *asc = aiGetAnimationSidecar(scene, 0);
+    ASSERT_NE(nullptr, asc);
+    const std::string json(asc->mExtensionsJson, asc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("KHR_texture_transform/offset"));
+    EXPECT_NE(std::string::npos, json.find("\"outputComponents\":2"));
+
+    const aiSidecarBuffer *outBuf = nullptr;
+    for (unsigned int i = 0; i < asc->mNumBuffers; ++i) {
+        if (std::strcmp(asc->mBuffers[i].mName.C_Str(), "sampler_0_output") == 0) {
+            outBuf = &asc->mBuffers[i];
+        }
+    }
+    ASSERT_NE(nullptr, outBuf);
+    EXPECT_EQ(2u, outBuf->mNumElements);
+    EXPECT_EQ(2u, outBuf->mNumComponents);
+    const float *offs = reinterpret_cast<const float *>(outBuf->mData);
+    EXPECT_FLOAT_EQ(0.f, offs[0]);
+    EXPECT_FLOAT_EQ(0.f, offs[1]);
+    EXPECT_FLOAT_EQ(0.5f, offs[2]);
+    EXPECT_FLOAT_EQ(0.25f, offs[3]);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_AnimationSidecarPointerMixed) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarAnimPointerMixed/SidecarAnimPointerMixed.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+    ASSERT_EQ(1u, scene->mNumAnimations);
+    // Classic node translation still on aiNodeAnim
+    ASSERT_EQ(1u, scene->mAnimations[0]->mNumChannels);
+    ASSERT_NE(nullptr, scene->mAnimations[0]->mChannels[0]);
+    EXPECT_EQ(2u, scene->mAnimations[0]->mChannels[0]->mNumPositionKeys);
+
+    const aiAnimationSidecar *asc = aiGetAnimationSidecar(scene, 0);
+    ASSERT_NE(nullptr, asc);
+    const std::string json(asc->mExtensionsJson, asc->mExtensionsJsonLength);
+    EXPECT_NE(std::string::npos, json.find("/materials/0/pbrMetallicRoughness/baseColorFactor"));
+    // Node TRS pointer path must not appear as sidecar channel (classic path used).
+    EXPECT_EQ(std::string::npos, json.find("/nodes/0/translation"));
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_PhysicsSidecarRigidBodies) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/glTF2/SidecarPhysicsRigidBodies/SidecarPhysicsRigidBodies.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+
+    EXPECT_TRUE(aiSceneHasPhysicsSidecar(scene));
+    const aiPhysicsSidecar *psc = aiGetPhysicsSidecar(scene);
+    ASSERT_NE(nullptr, psc);
+    ASSERT_NE(nullptr, psc->mExtensionsJson);
+
+    // Walk the sidecar generically (same idea as material lists): parse JSON and
+    // iterate nodes[] collected from the file - no author-specific name literals.
+    rapidjson::Document doc;
+    doc.Parse(psc->mExtensionsJson, psc->mExtensionsJsonLength);
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_TRUE(doc.IsObject());
+    ASSERT_TRUE(doc.HasMember("KHR_implicit_shapes"));
+    ASSERT_TRUE(doc["KHR_implicit_shapes"].IsObject());
+    ASSERT_TRUE(doc["KHR_implicit_shapes"].HasMember("shapes"));
+    ASSERT_TRUE(doc["KHR_implicit_shapes"]["shapes"].IsArray());
+    EXPECT_GE(doc["KHR_implicit_shapes"]["shapes"].Size(), 1u);
+
+    ASSERT_TRUE(doc.HasMember("KHR_physics_rigid_bodies"));
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"].IsObject());
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"].HasMember("physicsMaterials"));
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"]["physicsMaterials"].IsArray());
+    EXPECT_GE(doc["KHR_physics_rigid_bodies"]["physicsMaterials"].Size(), 1u);
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"].HasMember("collisionFilters"));
+    ASSERT_TRUE(doc["KHR_physics_rigid_bodies"]["collisionFilters"].IsArray());
+
+    ASSERT_TRUE(doc.HasMember("nodes"));
+    ASSERT_TRUE(doc["nodes"].IsArray());
+    ASSERT_TRUE(doc.HasMember("nodeNames"));
+    ASSERT_TRUE(doc["nodeNames"].IsArray());
+    const rapidjson::Value &nodes = doc["nodes"];
+    const rapidjson::Value &nodeNames = doc["nodeNames"];
+    ASSERT_GE(nodes.Size(), 1u);
+    ASSERT_EQ(nodes.Size(), nodeNames.Size());
+
+    unsigned int dynamicCount = 0;
+    unsigned int kinematicMeshColliderCount = 0;
+
+    for (rapidjson::SizeType i = 0; i < nodes.Size(); ++i) {
+        const rapidjson::Value &entry = nodes[i];
+        ASSERT_TRUE(entry.IsObject());
+        ASSERT_TRUE(entry.HasMember("index"));
+        ASSERT_TRUE(entry["index"].IsUint());
+        ASSERT_TRUE(entry.HasMember("name"));
+        ASSERT_TRUE(entry["name"].IsString());
+        ASSERT_TRUE(nodeNames[i].IsString());
+        EXPECT_STREQ(entry["name"].GetString(), nodeNames[i].GetString());
+        ASSERT_TRUE(entry.HasMember("KHR_physics_rigid_bodies"));
+        ASSERT_TRUE(entry["KHR_physics_rigid_bodies"].IsObject());
+
+        const rapidjson::Value &phys = entry["KHR_physics_rigid_bodies"];
+        if (phys.HasMember("motion") && phys["motion"].IsObject()) {
+            const rapidjson::Value &motion = phys["motion"];
+            if (motion.HasMember("mass") && motion["mass"].IsNumber() && motion["mass"].GetDouble() > 0.0) {
+                ++dynamicCount;
+            }
+            const bool kinematic = motion.HasMember("isKinematic") && motion["isKinematic"].IsBool() &&
+                    motion["isKinematic"].GetBool();
+            const bool hasAngVel = motion.HasMember("angularVelocity") && motion["angularVelocity"].IsArray();
+            bool hasMeshCollider = false;
+            if (phys.HasMember("collider") && phys["collider"].IsObject()) {
+                const rapidjson::Value &col = phys["collider"];
+                if (col.HasMember("geometry") && col["geometry"].IsObject() &&
+                        col["geometry"].HasMember("mesh")) {
+                    hasMeshCollider = true;
+                }
+            }
+            if (kinematic && hasAngVel && hasMeshCollider) {
+                ++kinematicMeshColliderCount;
+
+                // Resolve aiNode via sidecar-collected name (walkable list), not a hard-coded author string.
+                const char *bodyName = entry["name"].GetString();
+                const aiNode *matched = nullptr;
+                std::function<void(const aiNode *)> walk;
+                walk = [&](const aiNode *n) {
+                    if (n == nullptr) {
+                        return;
+                    }
+                    if (std::strcmp(n->mName.C_Str(), bodyName) == 0) {
+                        matched = n;
+                    }
+                    for (unsigned int c = 0; c < n->mNumChildren; ++c) {
+                        walk(n->mChildren[c]);
+                    }
+                };
+                walk(scene->mRootNode);
+                ASSERT_NE(nullptr, matched) << bodyName;
+                EXPECT_EQ(0u, matched->mNumMeshes) << bodyName;
+            }
+        }
+    }
+
+    EXPECT_GE(dynamicCount, 1u);
+    EXPECT_GE(kinematicMeshColliderCount, 1u);
+
+    bool metaFlag = false;
+    ASSERT_NE(nullptr, scene->mMetaData);
+    ASSERT_TRUE(scene->mMetaData->Get(AI_METADATA_PHYSICS_SIDECAR, metaFlag));
+    EXPECT_TRUE(metaFlag);
 }
 
 TEST_F(utglTF2ImportExport, importAnimationInterpolationIsPreserved) {

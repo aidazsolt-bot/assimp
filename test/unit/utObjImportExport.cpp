@@ -540,6 +540,57 @@ TEST_F(utObjImportExport, issue2355_mtl_texture_prefix) {
     EXPECT_STREQ("folder/image.jpg", texturePath.C_Str());
 }
 
+// Regression: OBJ MTL "refl" must populate aiTextureType_REFLECTION.
+// Historically broken by an early return that skipped getTextureOption (-type sphere).
+// Non-standard "map_refl" is ignored (Wavefront documents "refl" only).
+TEST_F(utObjImportExport, mtl_reflection_sphere_and_map_refl) {
+    ::Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+            ASSIMP_TEST_MODELS_DIR "/OBJ/reflection_sphere.obj", 0);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_GE(scene->mNumMaterials, 3U);
+
+    auto findMat = [&](const char *name) -> const aiMaterial * {
+        for (unsigned i = 0; i < scene->mNumMaterials; ++i) {
+            aiString n;
+            scene->mMaterials[i]->Get(AI_MATKEY_NAME, n);
+            if (std::strcmp(n.C_Str(), name) == 0) {
+                return scene->mMaterials[i];
+            }
+        }
+        return nullptr;
+    };
+
+    auto expectRefl = [](const aiMaterial *mat, const char *expectPath) {
+        ASSERT_NE(nullptr, mat);
+        EXPECT_GE(mat->GetTextureCount(aiTextureType_REFLECTION), 1U);
+        aiString path;
+        ASSERT_EQ(AI_SUCCESS, mat->GetTexture(aiTextureType_REFLECTION, 0, &path));
+        // Path may be prefixed with directory; match basename suffix.
+        const std::string p(path.C_Str());
+        EXPECT_NE(p.find(expectPath), std::string::npos) << p;
+    };
+
+    expectRefl(findMat("ChromeSphere"), "chrome_env.jpg");
+    expectRefl(findMat("ChromeBare"), "bare_env.jpg");
+
+    const aiMaterial *mapReflMat = findMat("ChromeMapRefl");
+    ASSERT_NE(nullptr, mapReflMat);
+    EXPECT_EQ(mapReflMat->GetTextureCount(aiTextureType_REFLECTION), 0U);
+
+    // Clara.io / community PBR tokens are logged and not imported.
+    const aiMaterial *pbrMat = findMat("CommunityPbr");
+    ASSERT_NE(nullptr, pbrMat);
+    ai_real roughness = -1.0f;
+    ai_real metallic = -1.0f;
+    EXPECT_NE(AI_SUCCESS, pbrMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness));
+    EXPECT_NE(AI_SUCCESS, pbrMat->Get(AI_MATKEY_METALLIC_FACTOR, metallic));
+    EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_DIFFUSE_ROUGHNESS), 0U);
+    EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_METALNESS), 0U);
+    EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_SHEEN), 0U);
+    EXPECT_EQ(pbrMat->GetTextureCount(aiTextureType_NORMALS), 0U);
+}
+
 TEST_F(utObjImportExport, face_index_too_large_for_int_is_rejected) {
     // 4294967297 used to overflow int while parsing and silently wrap to a
     // valid vertex index. The out-of-range index must now fail the import.

@@ -592,36 +592,43 @@ void ObjFileImporter::createMaterials(const ObjFile::Model *pModel, aiScene *pSc
         ObjFile::Material *pCurrentMaterial = it->second;
         mat->AddProperty(&pCurrentMaterial->MaterialName, AI_MATKEY_NAME);
 
-        // convert illumination model
-        int sm = 0;
-        switch (pCurrentMaterial->illumination_model) {
-        case 0:
-            sm = aiShadingMode_NoShading;
-            break;
-        case 1:
-            sm = aiShadingMode_Gouraud;
-            break;
-        case 2:
-            sm = aiShadingMode_Phong;
-            break;
-        default:
-            sm = aiShadingMode_Gouraud;
-            ASSIMP_LOG_ERROR("OBJ: unexpected illumination model (0-2 recognized)");
+        // convert illumination model (only when illum was authored)
+        if (pCurrentMaterial->has_illumination_model) {
+            int sm = 0;
+            switch (pCurrentMaterial->illumination_model) {
+            case 0:
+                sm = aiShadingMode_NoShading;
+                break;
+            case 1:
+                sm = aiShadingMode_Gouraud;
+                break;
+            case 2:
+                sm = aiShadingMode_Phong;
+                break;
+            default:
+                sm = aiShadingMode_Gouraud;
+                ASSIMP_LOG_ERROR("OBJ: unexpected illumination model (0-2 recognized)");
+            }
+
+            mat->AddProperty<int>(&sm, 1, AI_MATKEY_SHADING_MODEL);
+            mat->AddProperty<int>(&pCurrentMaterial->illumination_model, 1, AI_MATKEY_OBJ_ILLUM);
         }
 
-        mat->AddProperty<int>(&sm, 1, AI_MATKEY_SHADING_MODEL);
-
-        // Preserve the original illum value
-        mat->AddProperty<int>(&pCurrentMaterial->illumination_model, 1, AI_MATKEY_OBJ_ILLUM);
-
-        // Adding material colors
-        mat->AddProperty(&pCurrentMaterial->ambient, 1, AI_MATKEY_COLOR_AMBIENT);
-        mat->AddProperty(&pCurrentMaterial->diffuse, 1, AI_MATKEY_COLOR_DIFFUSE);
-        mat->AddProperty(&pCurrentMaterial->specular, 1, AI_MATKEY_COLOR_SPECULAR);
-        mat->AddProperty(&pCurrentMaterial->emissive, 1, AI_MATKEY_COLOR_EMISSIVE);
-        mat->AddProperty(&pCurrentMaterial->shineness, 1, AI_MATKEY_SHININESS);
-        mat->AddProperty(&pCurrentMaterial->alpha, 1, AI_MATKEY_OPACITY);
-        mat->AddProperty(&pCurrentMaterial->transparent, 1, AI_MATKEY_COLOR_TRANSPARENT);
+        // Authored MTL tokens only - do not invent Ka/Kd/Ks/Ke/d/Ns/Ni/aniso defaults.
+        if (pCurrentMaterial->has_ambient)
+            mat->AddProperty(&pCurrentMaterial->ambient, 1, AI_MATKEY_COLOR_AMBIENT);
+        if (pCurrentMaterial->has_diffuse)
+            mat->AddProperty(&pCurrentMaterial->diffuse, 1, AI_MATKEY_COLOR_DIFFUSE);
+        if (pCurrentMaterial->has_specular)
+            mat->AddProperty(&pCurrentMaterial->specular, 1, AI_MATKEY_COLOR_SPECULAR);
+        if (pCurrentMaterial->has_emissive)
+            mat->AddProperty(&pCurrentMaterial->emissive, 1, AI_MATKEY_COLOR_EMISSIVE);
+        if (pCurrentMaterial->has_shineness)
+            mat->AddProperty(&pCurrentMaterial->shineness, 1, AI_MATKEY_SHININESS);
+        if (pCurrentMaterial->has_alpha)
+            mat->AddProperty(&pCurrentMaterial->alpha, 1, AI_MATKEY_OPACITY);
+        if (pCurrentMaterial->has_transparent)
+            mat->AddProperty(&pCurrentMaterial->transparent, 1, AI_MATKEY_COLOR_TRANSPARENT);
         if (pCurrentMaterial->roughness)
             mat->AddProperty(&pCurrentMaterial->roughness.Get(), 1, AI_MATKEY_ROUGHNESS_FACTOR);
         if (pCurrentMaterial->metallic)
@@ -632,10 +639,11 @@ void ObjFileImporter::createMaterials(const ObjFile::Model *pModel, aiScene *pSc
             mat->AddProperty(&pCurrentMaterial->clearcoat_thickness.Get(), 1, AI_MATKEY_CLEARCOAT_FACTOR);
         if (pCurrentMaterial->clearcoat_roughness)
             mat->AddProperty(&pCurrentMaterial->clearcoat_roughness.Get(), 1, AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR);
-        mat->AddProperty(&pCurrentMaterial->anisotropy, 1, AI_MATKEY_ANISOTROPY_FACTOR);
+        if (pCurrentMaterial->has_anisotropy)
+            mat->AddProperty(&pCurrentMaterial->anisotropy, 1, AI_MATKEY_ANISOTROPY_FACTOR);
 
-        // Adding refraction index
-        mat->AddProperty(&pCurrentMaterial->ior, 1, AI_MATKEY_REFRACTI);
+        if (pCurrentMaterial->has_ior)
+            mat->AddProperty(&pCurrentMaterial->ior, 1, AI_MATKEY_REFRACTI);
 
         // Adding textures
         const int uvwIndex = 0;

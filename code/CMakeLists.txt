@@ -67,6 +67,7 @@ SET( PUBLIC_HEADERS
   ${CMAKE_CURRENT_BINARY_DIR}/../include/assimp/config.h
   ${HEADER_PATH}/ColladaMetaData.h
   ${HEADER_PATH}/commonMetaData.h
+  ${HEADER_PATH}/gaussian.h
   ${HEADER_PATH}/defs.h
   ${HEADER_PATH}/cfileio.h
   ${HEADER_PATH}/light.h
@@ -84,6 +85,7 @@ SET( PUBLIC_HEADERS
   ${HEADER_PATH}/quaternion.h
   ${HEADER_PATH}/quaternion.inl
   ${HEADER_PATH}/scene.h
+  ${HEADER_PATH}/sidecar.h
   ${HEADER_PATH}/metadata.h
   ${HEADER_PATH}/texture.h
   ${HEADER_PATH}/types.h
@@ -193,6 +195,8 @@ SET( Common_SRCS
   Common/SceneCombiner.cpp
   Common/ScenePreprocessor.cpp
   Common/ScenePreprocessor.h
+  Common/GaussianSplat.cpp
+  Common/Sidecar.cpp
   Common/SkeletonMeshBuilder.cpp
   Common/StackAllocator.h
   Common/StackAllocator.inl
@@ -509,6 +513,13 @@ ADD_ASSIMP_IMPORTER( OBJ
   AssetLib/Obj/ObjTools.h
 )
 
+ADD_ASSIMP_IMPORTER( GEO
+  AssetLib/GEO/GEOLoader.cpp
+  AssetLib/GEO/GEOLoader.h
+  AssetLib/GEO/GEOHelper.h
+  AssetLib/GEO/GEOColorTable.h
+)
+
 IF(((CMAKE_CXX_COMPILER_ID MATCHES "GNU") AND NOT MINGW AND NOT HAIKU) AND CMAKE_CXX_COMPILER_VERSION EQUAL 14)
   message(STATUS "GCC14 detected disabling \"-Wmaybe-uninitialized\" for"
       " AssetLib/Obj/ObjFileParser.cpp as it appears to be a false positive")
@@ -543,6 +554,154 @@ ADD_ASSIMP_IMPORTER( PLY
   AssetLib/Ply/PlyParser.h
 )
 
+# Niantic Labs .spz (contrib/spz) needs libzstd for NGSP v4.
+# Prefer system zstd; otherwise build vendored contrib/zstd (Android / offline).
+find_path(ASSIMP_ZSTD_INCLUDE_DIR zstd.h)
+find_library(ASSIMP_ZSTD_LIBRARY NAMES zstd libzstd)
+set(ASSIMP_USE_BUNDLED_ZSTD FALSE)
+if(ASSIMP_ZSTD_INCLUDE_DIR AND ASSIMP_ZSTD_LIBRARY AND NOT ANDROID)
+  set(ASSIMP_HAS_ZSTD TRUE)
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/zstd/lib/zstd.h")
+  message(STATUS "Using bundled contrib/zstd for SPZ importer")
+  set(ASSIMP_HAS_ZSTD TRUE)
+  set(ASSIMP_USE_BUNDLED_ZSTD TRUE)
+  set(ASSIMP_ZSTD_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/zstd/lib")
+else()
+  set(ASSIMP_HAS_ZSTD FALSE)
+endif()
+if(NOT ASSIMP_HAS_ZSTD)
+  if(NOT DEFINED ASSIMP_BUILD_SPZ_IMPORTER OR ASSIMP_BUILD_SPZ_IMPORTER)
+    message(STATUS "libzstd not found - SPZ importer disabled")
+    set(ASSIMP_BUILD_SPZ_IMPORTER OFF CACHE BOOL "SPZ importer requires libzstd" FORCE)
+  endif()
+endif()
+
+ADD_ASSIMP_IMPORTER( SPZ
+  AssetLib/SPZ/SPZLoader.cpp
+  AssetLib/SPZ/SPZLoader.h
+)
+
+ADD_ASSIMP_IMPORTER( SPLAT
+  AssetLib/SPLAT/SPLATLoader.cpp
+  AssetLib/SPLAT/SPLATLoader.h
+)
+
+# SOG (PlayCanvas Spatially Ordered Gaussians) needs libwebp for WebP textures.
+# Android NDK: never pick host /usr libwebp; use Filament vendored sources.
+set(ASSIMP_FILAMENT_WEBP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../filament/third_party/libwebp")
+set(ASSIMP_HAS_WEBP FALSE)
+set(ASSIMP_USE_BUNDLED_WEBP FALSE)
+if(NOT ANDROID)
+  find_path(ASSIMP_WEBP_INCLUDE_DIR webp/decode.h
+    PATHS /usr/include /usr/local/include
+  )
+  find_library(ASSIMP_WEBP_LIBRARY NAMES webpdecoder webp
+    PATHS /usr/lib /usr/lib64 /usr/local/lib
+  )
+  if(ASSIMP_WEBP_INCLUDE_DIR AND ASSIMP_WEBP_LIBRARY)
+    set(ASSIMP_HAS_WEBP TRUE)
+  endif()
+endif()
+if(NOT ASSIMP_HAS_WEBP AND EXISTS "${ASSIMP_FILAMENT_WEBP_ROOT}/CMakeLists.txt")
+  message(STATUS "Using Filament vendored libwebp for SOG importer")
+  set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_GIF2WEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_IMG2WEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_VWEBP OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_WEBPINFO OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "" FORCE)
+  set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+  add_subdirectory(${ASSIMP_FILAMENT_WEBP_ROOT} ${CMAKE_BINARY_DIR}/assimp_webp EXCLUDE_FROM_ALL)
+  set(ASSIMP_WEBP_INCLUDE_DIR "${ASSIMP_FILAMENT_WEBP_ROOT}/src")
+  set(ASSIMP_WEBP_LIBRARY webpdecoder)
+  set(ASSIMP_HAS_WEBP TRUE)
+  set(ASSIMP_USE_BUNDLED_WEBP TRUE)
+  if(TARGET webpdecoder)
+    # Filament libwebp follows BUILD_SHARED_LIBS, so this is a DLL. Its default
+    # output dir is the webp build tree, which is not next to assimp.dll.
+    TARGET_USE_COMMON_OUTPUT_DIRECTORY(webpdecoder)
+  endif()
+endif()
+if(NOT ASSIMP_HAS_WEBP)
+  if(NOT DEFINED ASSIMP_BUILD_SOG_IMPORTER OR ASSIMP_BUILD_SOG_IMPORTER)
+    message(STATUS "libwebp not found - SOG importer disabled")
+    set(ASSIMP_BUILD_SOG_IMPORTER OFF CACHE BOOL "SOG importer requires libwebp" FORCE)
+  endif()
+endif()
+
+ADD_ASSIMP_IMPORTER( SOG
+  AssetLib/SOG/SOGLoader.cpp
+  AssetLib/SOG/SOGLoader.h
+)
+
+string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SOG" ASSIMP_SOG_ENABLED_POS)
+if(NOT ASSIMP_SOG_ENABLED_POS EQUAL -1)
+  include_directories(${ASSIMP_WEBP_INCLUDE_DIR})
+  if(ASSIMP_WEBP_LIBRARY)
+    set(ASSIMP_SOG_WEBP_LIBRARY ${ASSIMP_WEBP_LIBRARY} CACHE INTERNAL "libwebp for SOG")
+  endif()
+endif()
+
+ADD_ASSIMP_IMPORTER( KSPLAT
+  AssetLib/KSPLAT/KSplatLoader.cpp
+  AssetLib/KSPLAT/KSplatLoader.h
+)
+
+# Vendored nianticlabs/spz decode sources (MIT) when SPZ importer is on.
+string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SPZ" ASSIMP_SPZ_ENABLED_POS)
+if(NOT ASSIMP_SPZ_ENABLED_POS EQUAL -1)
+  list(APPEND ASSIMP_LOADER_SRCS
+    ../contrib/spz/src/cc/load-spz.cc
+    ../contrib/spz/src/cc/splat-types.cc
+    ../contrib/spz/src/cc/splat-c-types.cc
+  )
+  # Vendored third-party: keep out of warnings-as-errors (MSVC /W4 /WX and GCC/Clang -Werror).
+  if(MSVC)
+    set_source_files_properties(
+      ../contrib/spz/src/cc/load-spz.cc
+      ../contrib/spz/src/cc/splat-types.cc
+      ../contrib/spz/src/cc/splat-c-types.cc
+      PROPERTIES COMPILE_FLAGS "/W0 /WX-")
+  else()
+    set_source_files_properties(
+      ../contrib/spz/src/cc/load-spz.cc
+      ../contrib/spz/src/cc/splat-types.cc
+      ../contrib/spz/src/cc/splat-c-types.cc
+      PROPERTIES COMPILE_FLAGS "-w")
+  endif()
+  # Compile bundled zstd into assimp (avoids install(EXPORT) of a separate target).
+  if(ASSIMP_USE_BUNDLED_ZSTD)
+    file(GLOB ASSIMP_ZSTD_SRCS
+      ../contrib/zstd/lib/common/*.c
+      ../contrib/zstd/lib/compress/*.c
+      ../contrib/zstd/lib/decompress/*.c
+      ../contrib/zstd/lib/dictBuilder/*.c
+    )
+    list(APPEND ASSIMP_LOADER_SRCS ${ASSIMP_ZSTD_SRCS})
+    source_group(contrib\\zstd FILES ${ASSIMP_ZSTD_SRCS})
+    add_definitions(-DZSTD_DISABLE_ASM -DZSTD_MULTITHREAD=0 -DXXH_NAMESPACE=ZSTD_)
+  endif()
+  source_group(contrib\\spz FILES
+    ../contrib/spz/src/cc/load-spz.cc
+    ../contrib/spz/src/cc/load-spz.h
+    ../contrib/spz/src/cc/splat-types.cc
+    ../contrib/spz/src/cc/splat-types.h
+    ../contrib/spz/src/cc/splat-c-types.cc
+    ../contrib/spz/src/cc/splat-c-types.h
+    ../contrib/spz/src/cc/splat-utils.h
+  )
+  include_directories(
+    ../contrib/spz/src/cc
+    ${ASSIMP_ZSTD_INCLUDE_DIR}
+  )
+  if(ASSIMP_USE_BUNDLED_ZSTD)
+    include_directories(../contrib/zstd/lib/common)
+  endif()
+endif()
+
 ADD_ASSIMP_IMPORTER( MS3D
   AssetLib/MS3D/MS3DLoader.cpp
   AssetLib/MS3D/MS3DLoader.h
@@ -576,6 +735,8 @@ ADD_ASSIMP_IMPORTER( BLEND
   AssetLib/Blender/BlenderCustomData.cpp
   AssetLib/Blender/BlenderMeshAttributes.h
   AssetLib/Blender/BlenderMeshAttributes.cpp
+  AssetLib/Blender/BlenderParticleDistribute.h
+  AssetLib/Blender/BlenderParticleDistribute.cpp
 )
 
 # Blender 3+ writes .blend as Zstandard by default. Prefer system libzstd;
@@ -874,6 +1035,9 @@ ADD_ASSIMP_IMPORTER( USD
   AssetLib/USD/USDLoader.cpp
   AssetLib/USD/USDLoader.h
   AssetLib/USD/USDLoaderImplTinyusdz.cpp
+  AssetLib/USD/USDSidecarEmit.cpp
+  AssetLib/USD/USDGprimMesh.cpp
+  AssetLib/USD/USDGprimMesh.h
   AssetLib/USD/USDLoaderImplTinyusdz.h
   AssetLib/USD/USDLoaderImplTinyusdzHelper.cpp
   AssetLib/USD/USDLoaderImplTinyusdzHelper.h
@@ -1060,10 +1224,11 @@ IF (ASSIMP_BUILD_USD_IMPORTER)
         message("\n\n**** Cloning legacy tinyusdz repo, git tag ${TINYUSDZ_GIT_TAG}\n\n")
     endif () # if (ASSIMP_USD_BETA)
 
-    # Patch required to build arm32 on android
-    set(TINYUSDZ_PATCHFILE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/tinyusdz/patches/tinyusdz.patch")
-    set(TINYUSDZ_PATCH_CMD git apply ${TINYUSDZ_PATCHFILE_PATH})
-
+    # Patches: (1) arm32 android stb stub (2) ignore unknown metas + UsdPhysics tokens.
+    # Idempotent cmake -P apply (safe on reconfigure / already-patched _deps; works on MSVC).
+    set(TINYUSDZ_PATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/tinyusdz/patches")
+    set(TINYUSDZ_PATCH_CMAKE "${TINYUSDZ_PATCH_DIR}/apply-tinyusdz-patches.cmake")
+    find_package(Git REQUIRED)
     # Note: CMake's "FetchContent" (which executes at configure time) is much better for this use case
     #       than "ExternalProject" (which executes at build time); we just want to clone a repo and
     #       block (wait) as long as necessary until cloning is complete, so we immediately have full
@@ -1076,9 +1241,21 @@ IF (ASSIMP_BUILD_USD_IMPORTER)
             EXCLUDE_FROM_ALL TRUE
             GIT_REPOSITORY "https://github.com/lighttransport/tinyusdz"
             GIT_TAG        ${TINYUSDZ_GIT_TAG}
-            PATCH_COMMAND  ${TINYUSDZ_PATCH_CMD}
+            PATCH_COMMAND  ${CMAKE_COMMAND}
+                -DTINYUSDZ_SRC=<SOURCE_DIR>
+                -DTINYUSDZ_PATCH_DIR=${TINYUSDZ_PATCH_DIR}
+                -P ${TINYUSDZ_PATCH_CMAKE}
     )
     FetchContent_MakeAvailable(tinyusdz_repo)
+    # Fail loud if patches did not land (common when an old disconnected _deps tree is reused).
+    file(READ "${CMAKE_BINARY_DIR}/_deps/tinyusdz_repo-src/src/prim-types.hh" TINYUSDZ_PRIM_TYPES_HH)
+    string(FIND "${TINYUSDZ_PRIM_TYPES_HH}" "kilogramsPerUnit" TINYUSDZ_KG_POS)
+    if (TINYUSDZ_KG_POS EQUAL -1)
+        message(FATAL_ERROR
+            "TinyUSDZ patches not applied (missing kilogramsPerUnit / Physics*API). "
+            "Delete \"${CMAKE_BINARY_DIR}/_deps/tinyusdz_repo-src\" and "
+            "\"${CMAKE_BINARY_DIR}/_deps/tinyusdz_repo-subbuild\", then reconfigure.")
+    endif ()
     message("**** Finished cloning tinyusdz repo")
     message("****")
 
@@ -1749,6 +1926,26 @@ ELSE()
   endif()
 ENDIF()
 
+# SPZ importer: link system libzstd when not bundled (+ pthread for std::async).
+string(FIND "${ASSIMP_IMPORTERS_ENABLED}" "SPZ" ASSIMP_SPZ_LINK_POS)
+if(NOT ASSIMP_SPZ_LINK_POS EQUAL -1)
+  if(NOT ASSIMP_USE_BUNDLED_ZSTD AND ASSIMP_ZSTD_LIBRARY)
+    target_link_libraries(assimp ${ASSIMP_ZSTD_LIBRARY})
+  endif()
+  find_package(Threads)
+  if(Threads_FOUND)
+    target_link_libraries(assimp Threads::Threads)
+  endif()
+  if(ANDROID)
+    target_link_libraries(assimp log)
+  endif()
+endif()
+
+# SOG importer: link libwebp / libwebpdecoder when available.
+if(ASSIMP_SOG_WEBP_LIBRARY)
+  target_link_libraries(assimp ${ASSIMP_SOG_WEBP_LIBRARY})
+endif()
+
 if(ASSIMP_ANDROID_JNIIOSYSTEM)
   set(ASSIMP_ANDROID_JNIIOSYSTEM_PATH port/AndroidJNI)
   add_subdirectory(../${ASSIMP_ANDROID_JNIIOSYSTEM_PATH}/ ../${ASSIMP_ANDROID_JNIIOSYSTEM_PATH}/)
@@ -1805,6 +2002,46 @@ if (MINGW)
   )
   if (NOT BUILD_SHARED_LIBS)
     TARGET_LINK_LIBRARIES ( assimp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lwinpthread ) # winpthread is for libminizip.
+  else ()
+    # Shared MinGW links winpthread/zlib dynamically; copy runtime DLLs next to
+    # libassimp / tools / samples (ASSIMP_RUNTIME_OUTPUT_DIRECTORY). CMake does
+    # not stage sysroot DLLs automatically.
+    set(_assimp_mingw_runtime_dll_names
+      libwinpthread-1.dll
+      zlib1.dll
+    )
+    set(_assimp_mingw_runtime_search_dirs "")
+    if (DEFINED MINGW_DEPS_PREFIX AND EXISTS "${MINGW_DEPS_PREFIX}/bin")
+      list(APPEND _assimp_mingw_runtime_search_dirs "${MINGW_DEPS_PREFIX}/bin")
+    endif ()
+    if (CMAKE_CXX_COMPILER)
+      get_filename_component(_assimp_mingw_cxx_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+      list(APPEND _assimp_mingw_runtime_search_dirs "${_assimp_mingw_cxx_bin}")
+    endif ()
+    list(APPEND _assimp_mingw_runtime_search_dirs
+      "/usr/x86_64-w64-mingw32/sys-root/mingw/bin"
+      "/usr/i686-w64-mingw32/sys-root/mingw/bin"
+    )
+    foreach (_assimp_mingw_dll ${_assimp_mingw_runtime_dll_names})
+      set(_assimp_mingw_dll_path "${_assimp_mingw_dll}-NOTFOUND")
+      foreach (_assimp_mingw_dir ${_assimp_mingw_runtime_search_dirs})
+        if (EXISTS "${_assimp_mingw_dir}/${_assimp_mingw_dll}")
+          set(_assimp_mingw_dll_path "${_assimp_mingw_dir}/${_assimp_mingw_dll}")
+          break ()
+        endif ()
+      endforeach ()
+      if (_assimp_mingw_dll_path AND NOT _assimp_mingw_dll_path STREQUAL "${_assimp_mingw_dll}-NOTFOUND")
+        add_custom_command(TARGET assimp POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_assimp_mingw_dll_path}"
+            "$<TARGET_FILE_DIR:assimp>/${_assimp_mingw_dll}"
+          COMMENT "Copy MinGW runtime ${_assimp_mingw_dll} next to assimp"
+          VERBATIM)
+        message(STATUS "MinGW runtime DLL for bin/: ${_assimp_mingw_dll_path}")
+      else ()
+        message(WARNING "MinGW runtime DLL not found (will not copy to bin/): ${_assimp_mingw_dll}")
+      endif ()
+    endforeach ()
   endif ()
 endif()
 

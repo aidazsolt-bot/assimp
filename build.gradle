@@ -1,0 +1,18 @@
+buildscript {
+      repositories {
+          google()
+          mavenCentral()
+      }
+      dependencies {
+          classpath 'com.android.tools.build:gradle:8.6.1'  // passend zu Gradle version (https://developer.android.com/build/releases/about-agp?hl=de)
+      }
+  }
+apply plugin:'com.android.library'
+apply from: "${rootDir}/android_common.gradle"
+
+android.defaultConfig.externalNativeBuild.cmake.targets = ["assimp"]
+android.buildTypes.release.shrinkResources false
+
+android {
+	namespace 'com.assimp'
+}

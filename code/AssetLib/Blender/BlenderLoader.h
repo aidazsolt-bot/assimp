@@ -117,9 +117,10 @@ protected:
     void InternReadFile(const std::string &pFile, aiScene *pScene, IOSystem *pIOHandler) override;
     void ParseBlendFile(Blender::FileDatabase &out, std::shared_ptr<IOStream> stream);
     void ExtractScene(Blender::Scene &out, const Blender::FileDatabase &file);
-    void ParseSubCollection(const Blender::Scene &in, aiNode *root, const std::shared_ptr<Blender::Collection>& collection, Blender::ConversionData &conv_data);
+    void ParseSubCollection(const Blender::Scene &in, aiNode *root, const std::shared_ptr<Blender::Collection> &collection, Blender::ConversionData &conv_data);
+    /** @param blenderVersion Header file version string (e.g. "4.20"), or empty. */
     void ConvertBlendFile(aiScene *out, const Blender::Scene &in, const Blender::FileDatabase &file,
-            const std::string &pFile, IOSystem *pIOHandler);
+            const char *blenderVersion, const std::string &pFile, IOSystem *pIOHandler);
 
 private:
     aiNode *ConvertNode(const Blender::Scene &in,
@@ -164,7 +165,8 @@ private:
             aiMaterial *out,
             const Blender::Material *mat,
             const Blender::MTex *tex,
-            Blender::ConversionData &conv_data);
+            Blender::ConversionData &conv_data,
+            int mtexSlot = -1);
 
     // --------------------
     void ResolveImage(
@@ -172,7 +174,8 @@ private:
             const Blender::Material *mat,
             const Blender::MTex *tex,
             const Blender::Image *img,
-            Blender::ConversionData &conv_data);
+            Blender::ConversionData &conv_data,
+            int mtexSlot = -1);
 
     // TODO: Move to a std::variant, once c++17 is supported.
     struct StreamOrError {

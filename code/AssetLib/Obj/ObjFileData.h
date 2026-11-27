@@ -153,24 +153,33 @@ struct Material {
     };
     bool clamp[TextureTypeCount];
 
-    ///< Ambient color
+    ///< Ambient color (emit only when Ka authored)
     aiColor3D ambient{};
-    ///< Diffuse color
+    bool has_ambient{false};
+    ///< Diffuse color (emit only when Kd authored; parser default unused for aiMaterial)
     aiColor3D diffuse = aiColor3D(0.6f, 0.6f, 0.6f);
+    bool has_diffuse{false};
     ///< Specular color
     aiColor3D specular{};
+    bool has_specular{false};
     ///< Emissive color
     aiColor3D emissive{};
+    bool has_emissive{false};
     ///< Alpha value
     ai_real alpha{1};
+    bool has_alpha{false};
     ///< Shineness factor
     ai_real shineness = ai_real(0.0);
+    bool has_shineness{false};
     ///< Illumination model
     int illumination_model{1};
+    bool has_illumination_model{false};
     ///< Index of refraction
     ai_real ior{1};
+    bool has_ior{false};
     ///< Transparency color
     aiColor3D transparent = aiColor3D(1.0f, 1.0f, 1.0f);
+    bool has_transparent{false};
     ///< Ambient occlusion
     Maybe<ai_real> ambient_occlusion{};
     ///< PBR Roughness
@@ -193,6 +202,7 @@ struct Material {
     Maybe<ai_real> clearcoat_gloss{};
     ///< PBR Anisotropy
     ai_real anisotropy{0};
+    bool has_anisotropy{false};
     ///< PBR Anisotropy Rotation
     Maybe<ai_real> anisotropy_rotation{};
     ///< PBR Subsurface Scattering

@@ -53,9 +53,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/importerdesc.h>
 #include <assimp/scene.h>
 #include <assimp/IOSystem.hpp>
+#include <assimp/material.h>
+#include <assimp/metadata.h>
+#include <assimp/gaussian.h>
+#include <assimp/DefaultLogger.hpp>
+#include <assimp/LogAux.h>
+
+#include "Common/ScenePrivate.h"
 
 // other headers
+#include <cmath>
 #include <memory>
+#include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <algorithm>
+#include <cstdint>
 
 namespace Assimp {
 
@@ -85,6 +98,17 @@ namespace Assimp {
             }
 
             return props[idx];
+        }
+
+        // ------------------------------------------------------------------------------------------------
+        // Property instance must carry at least one value (Kulling-week empty-prop class).
+        const PLY::PropertyInstance::ValueUnion &GetPropertyFront(
+                const std::vector<PLY::PropertyInstance> &props, int idx) {
+            const PLY::PropertyInstance &pi = GetProperty(props, idx);
+            if (pi.avList.empty()) {
+                throw DeadlyImportError("Invalid .ply file: Empty property value");
+            }
+            return pi.avList.front();
         }
 
         // ------------------------------------------------------------------------------------------------
@@ -143,26 +167,26 @@ namespace Assimp {
             if (NotSet == positions[0]) {
                 clrOut->r = 0.0f;
             } else {
-                clrOut->r = NormalizeColorValue(GetProperty(avList, positions[0]).avList.front(), types[0]);
+                clrOut->r = NormalizeColorValue(GetPropertyFront(avList, static_cast<int>(positions[0])), types[0]);
             }
 
             if (NotSet == positions[1]) {
                 clrOut->g = 0.0f;
             } else {
-                clrOut->g = NormalizeColorValue(GetProperty(avList, positions[1]).avList.front(), types[1]);
+                clrOut->g = NormalizeColorValue(GetPropertyFront(avList, static_cast<int>(positions[1])), types[1]);
             }
 
             if (NotSet == positions[2]) {
                 clrOut->b = 0.0f;
             } else {
-                clrOut->b = NormalizeColorValue(GetProperty(avList, positions[2]).avList.front(), types[2]);
+                clrOut->b = NormalizeColorValue(GetPropertyFront(avList, static_cast<int>(positions[2])), types[2]);
             }
 
             // assume 1.0 for the alpha channel ifit is not set
             if (NotSet == positions[3]) {
                 clrOut->a = 1.0f;
             } else {
-                clrOut->a = NormalizeColorValue(GetProperty(avList, positions[3]).avList.front(), types[3]);
+                clrOut->a = NormalizeColorValue(GetPropertyFront(avList, static_cast<int>(positions[3])), types[3]);
             }
         }
 
@@ -171,6 +195,7 @@ namespace Assimp {
     // ------------------------------------------------------------------------------------------------
     PLYImporter::~PLYImporter() {
         delete mGeneratedMesh;
+        delete mGaussianSplat;
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -188,6 +213,44 @@ namespace Assimp {
     // ------------------------------------------------------------------------------------------------
     // Imports the given file into the given scene structure.
     void PLYImporter::InternReadFile(const std::string &pFile, aiScene *pScene, IOSystem *pIOHandler) {
+        // Reset per-import Gaussian state (importer instances are reused).
+        mGaussianChecked = false;
+        mGaussianActive = false;
+        mGaussianIs2dgs = false;
+        delete mGaussianSplat;
+        mGaussianSplat = nullptr;
+        mGsRest.clear();
+        mGsOpacity = -1;
+        for (int i = 0; i < 3; ++i) {
+            mGsDc[i] = -1;
+            mGsScale[i] = -1;
+        }
+        for (int i = 0; i < 4; ++i) {
+            mGsRot[i] = -1;
+        }
+        mPcCompressedChecked = false;
+        mPcCompressedActive = false;
+        mPcPackedPos = mPcPackedRot = mPcPackedScale = mPcPackedColor = -1;
+        mPcMinX.clear();
+        mPcMaxX.clear();
+        mPcMinY.clear();
+        mPcMaxY.clear();
+        mPcMinZ.clear();
+        mPcMaxZ.clear();
+        mPcMinSX.clear();
+        mPcMaxSX.clear();
+        mPcMinSY.clear();
+        mPcMaxSY.clear();
+        mPcMinSZ.clear();
+        mPcMaxSZ.clear();
+        mPcMinR.clear();
+        mPcMaxR.clear();
+        mPcMinG.clear();
+        mPcMaxG.clear();
+        mPcMinB.clear();
+        mPcMaxB.clear();
+        mPcHasColorBounds = false;
+
         const std::string mode = "rb";
         std::unique_ptr<IOStream> fileStream(pIOHandler->Open(pFile, mode));
         if (!fileStream) {
@@ -279,11 +342,19 @@ namespace Assimp {
             throw DeadlyImportError("Invalid .ply file: Unable to extract mesh data ");
         }
 
-        // if no face list is existing we assume that the vertex
-        // list is containing a list of points
+        // No face element → point cloud (same as OBJ/glTF/DXF: one 1-index face
+        // per vertex so ValidateDataStructure / default postprocess accept it).
         bool pointsOnly = mGeneratedMesh->mFaces == nullptr ? true : false;
         if (pointsOnly) {
             mGeneratedMesh->mPrimitiveTypes = aiPrimitiveType::aiPrimitiveType_POINT;
+            const unsigned int n = mGeneratedMesh->mNumVertices;
+            mGeneratedMesh->mNumFaces = n;
+            mGeneratedMesh->mFaces = new aiFace[n];
+            for (unsigned int i = 0; i < n; ++i) {
+                mGeneratedMesh->mFaces[i].mNumIndices = 1;
+                mGeneratedMesh->mFaces[i].mIndices = new unsigned int[1];
+                mGeneratedMesh->mFaces[i].mIndices[0] = i;
+            }
         }
 
         // now load a list of all materials
@@ -303,22 +374,531 @@ namespace Assimp {
         pScene->mMeshes = new aiMesh *[pScene->mNumMeshes];
         pScene->mMeshes[0] = mGeneratedMesh;
 
+        // Name mesh from file stem (Assimp info / tooling); PLY has no mesh names.
+        {
+            std::string::size_type slash = pFile.find_last_of("/\\");
+            std::string stem = (slash == std::string::npos) ? pFile : pFile.substr(slash + 1);
+            const std::string::size_type dot = stem.find_last_of('.');
+            if (dot != std::string::npos) {
+                stem.resize(dot);
+            }
+            if (stem.empty()) {
+                stem = "PLY";
+            }
+            mGeneratedMesh->mName.Set(stem);
+        }
+
         // Move the mesh ownership into the scene instance
         mGeneratedMesh = nullptr;
 
         // generate a simple node structure
         pScene->mRootNode = new aiNode();
+        pScene->mRootNode->mName.Set("<PLYRoot>");
         pScene->mRootNode->mNumMeshes = pScene->mNumMeshes;
         pScene->mRootNode->mMeshes = new unsigned int[pScene->mNumMeshes];
 
         for (unsigned int i = 0; i < pScene->mRootNode->mNumMeshes; ++i) {
             pScene->mRootNode->mMeshes[i] = i;
         }
+
+        // Attach 3DGS side data (ABI-safe: scene-private, not aiMesh fields).
+        // Do not bake f_dc_/opacity/… into aiMaterial Kd/Ks/opacity — see doc/PLY.md.
+        if (mGaussianActive && mGaussianSplat != nullptr) {
+            const int32_t restCount = static_cast<int32_t>(mGaussianSplat->mNumRestCoeffs);
+            const aiString layout(mGaussianIs2dgs ? AI_GAUSSIAN_LAYOUT_2DGS : AI_GAUSSIAN_LAYOUT_3DGS);
+            AttachGaussianSplat(pScene, 0, mGaussianSplat);
+            mGaussianSplat = nullptr; // ownership moved
+
+            if (pScene->mMetaData == nullptr) {
+                pScene->mMetaData = new aiMetadata();
+            }
+            pScene->mMetaData->Add(AI_METADATA_GAUSSIAN_SPLAT, true);
+            pScene->mMetaData->Add(AI_METADATA_GAUSSIAN_SH_REST_COUNT, restCount);
+            pScene->mMetaData->Add(AI_METADATA_GAUSSIAN_LAYOUT, layout);
+
+            if (pScene->mRootNode->mMetaData == nullptr) {
+                pScene->mRootNode->mMetaData = new aiMetadata();
+            }
+            pScene->mRootNode->mMetaData->Add(AI_METADATA_GAUSSIAN_SPLAT, true);
+            pScene->mRootNode->mMetaData->Add(AI_METADATA_GAUSSIAN_LAYOUT, layout);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    void PLYImporter::PrepareGaussianIfNeeded(const Element *pcElement) {
+        if (mGaussianChecked || pcElement == nullptr) {
+            return;
+        }
+        mGaussianChecked = true;
+
+        int dc[3] = { -1, -1, -1 };
+        int scale[3] = { -1, -1, -1 };
+        int rot[4] = { -1, -1, -1, -1 };
+        int opacity = -1;
+        int maxRest = -1;
+        std::vector<int> restSlots;
+
+        auto matchPrefixedIndex = [](const std::string &name, const char *prefix) -> int {
+            const size_t plen = std::strlen(prefix);
+            if (name.size() <= plen || name.compare(0, plen, prefix) != 0) {
+                return -1;
+            }
+            char *end = nullptr;
+            const long idx = std::strtol(name.c_str() + plen, &end, 10);
+            if (end == name.c_str() + plen || *end != '\0' || idx < 0 || idx > 64) {
+                return -1;
+            }
+            return static_cast<int>(idx);
+        };
+
+        unsigned int propIndex = 0;
+        for (const Property &prop : pcElement->alProperties) {
+            if (prop.bIsList) {
+                ++propIndex;
+                continue;
+            }
+
+            if (prop.Semantic == EST_Opacity || prop.szName == "opacity") {
+                opacity = static_cast<int>(propIndex);
+            } else if (!prop.szName.empty()) {
+                int idx = matchPrefixedIndex(prop.szName, "f_dc_");
+                if (idx >= 0 && idx < 3) {
+                    dc[idx] = static_cast<int>(propIndex);
+                }
+                idx = matchPrefixedIndex(prop.szName, "scale_");
+                if (idx >= 0 && idx < 3) {
+                    scale[idx] = static_cast<int>(propIndex);
+                }
+                idx = matchPrefixedIndex(prop.szName, "rot_");
+                if (idx >= 0 && idx < 4) {
+                    rot[idx] = static_cast<int>(propIndex);
+                }
+                idx = matchPrefixedIndex(prop.szName, "f_rest_");
+                if (idx >= 0) {
+                    if (idx > maxRest) {
+                        maxRest = idx;
+                        restSlots.resize(static_cast<size_t>(maxRest) + 1u, -1);
+                    }
+                    restSlots[static_cast<size_t>(idx)] = static_cast<int>(propIndex);
+                }
+            }
+            ++propIndex;
+        }
+
+        const bool haveCommon =
+                dc[0] >= 0 && dc[1] >= 0 && dc[2] >= 0 &&
+                scale[0] >= 0 && scale[1] >= 0 &&
+                rot[0] >= 0 && rot[1] >= 0 && rot[2] >= 0 && rot[3] >= 0 &&
+                opacity >= 0;
+        const bool have3d = haveCommon && scale[2] >= 0;
+        // Huang / hbb1 2DGS PLY: same core attrs but only scale_0 / scale_1 (no scale_2).
+        const bool have2d = haveCommon && scale[2] < 0;
+
+        if (!have3d && !have2d) {
+            return;
+        }
+
+        // Require contiguous f_rest_0 .. f_rest_max when any rest is present.
+        const unsigned int restCount = (maxRest >= 0) ? static_cast<unsigned int>(maxRest + 1) : 0u;
+        for (unsigned int i = 0; i < restCount; ++i) {
+            if (restSlots[i] < 0) {
+                ASSIMP_LOG_WARN("PLY: incomplete f_rest_* set; skipping Gaussian side data");
+                return;
+            }
+        }
+
+        mGsDc[0] = dc[0];
+        mGsDc[1] = dc[1];
+        mGsDc[2] = dc[2];
+        mGsScale[0] = scale[0];
+        mGsScale[1] = scale[1];
+        mGsScale[2] = scale[2]; // -1 when 2DGS
+        mGsRot[0] = rot[0];
+        mGsRot[1] = rot[1];
+        mGsRot[2] = rot[2];
+        mGsRot[3] = rot[3];
+        mGsOpacity = opacity;
+        mGsRest = std::move(restSlots);
+
+        mGaussianSplat = new aiGaussianSplat();
+        mGaussianSplat->mNumPoints = pcElement->NumOccur;
+        mGaussianSplat->mNumRestCoeffs = restCount;
+        mGaussianSplat->mDC = new aiVector3D[pcElement->NumOccur];
+        mGaussianSplat->mScale = new aiVector3D[pcElement->NumOccur];
+        mGaussianSplat->mRotation = new aiColor4D[pcElement->NumOccur];
+        mGaussianSplat->mOpacity = new ai_real[pcElement->NumOccur];
+        if (restCount > 0) {
+            const size_t restTotal = static_cast<size_t>(pcElement->NumOccur) * static_cast<size_t>(restCount);
+            mGaussianSplat->mRest = new ai_real[restTotal];
+        }
+
+        mGaussianActive = true;
+        mGaussianIs2dgs = have2d;
+        if (have2d) {
+            // Do not invent scale_2; renderer selects 2DGS pipe from layout meta.
+            ASSIMP_LOG_INFO("PLY: 2DGS detected (planar surfel layout; scale_0/1 only)");
+        } else {
+            ASSIMP_LOG_INFO("PLY: detected 3D Gaussian Splatting vertex layout");
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    void PLYImporter::LoadGaussianVertex(const ElementInstance *instElement, unsigned int pos) {
+        if (!mGaussianActive || mGaussianSplat == nullptr || instElement == nullptr) {
+            return;
+        }
+        if (pos >= mGaussianSplat->mNumPoints) {
+            throw DeadlyImportError("Invalid .ply file: Too many Gaussian vertices");
+        }
+
+        auto readFloat = [&](int propIndex) -> ai_real {
+            const PropertyInstance &pi = GetProperty(instElement->alProperties, propIndex);
+            if (pi.avList.empty()) {
+                throw DeadlyImportError("Invalid .ply file: Empty Gaussian property value");
+            }
+            return PropertyInstance::ConvertTo<ai_real>(pi.avList.front(), EDT_Float);
+        };
+
+        // Convert graphdeco / INRIA PLY training logits into KHR_gaussian_splatting
+        // value space (linear opacity/scale, glTF xyzw unit quat). SH coeffs stay as authored.
+        mGaussianSplat->mDC[pos].x = readFloat(mGsDc[0]);
+        mGaussianSplat->mDC[pos].y = readFloat(mGsDc[1]);
+        mGaussianSplat->mDC[pos].z = readFloat(mGsDc[2]);
+
+        const ai_real sx = readFloat(mGsScale[0]);
+        const ai_real sy = readFloat(mGsScale[1]);
+        mGaussianSplat->mScale[pos].x = static_cast<ai_real>(std::exp(static_cast<double>(sx)));
+        mGaussianSplat->mScale[pos].y = static_cast<ai_real>(std::exp(static_cast<double>(sy)));
+        if (mGaussianIs2dgs || mGsScale[2] < 0) {
+            // Paper S = diag(su, sv, 0). Do not invent a third authored scale.
+            mGaussianSplat->mScale[pos].z = static_cast<ai_real>(0);
+        } else {
+            const ai_real sz = readFloat(mGsScale[2]);
+            mGaussianSplat->mScale[pos].z = static_cast<ai_real>(std::exp(static_cast<double>(sz)));
+        }
+
+        // PLY rot_0..3 is graphdeco wxyz -> store KHR/glTF xyzw as (r,g,b,a).
+        const ai_real qw = readFloat(mGsRot[0]);
+        const ai_real qx = readFloat(mGsRot[1]);
+        const ai_real qy = readFloat(mGsRot[2]);
+        const ai_real qz = readFloat(mGsRot[3]);
+        const double qlen = std::sqrt(static_cast<double>(qx) * qx + static_cast<double>(qy) * qy +
+                                      static_cast<double>(qz) * qz + static_cast<double>(qw) * qw);
+        if (qlen > 0.0) {
+            const ai_real inv = static_cast<ai_real>(1.0 / qlen);
+            mGaussianSplat->mRotation[pos].r = qx * inv;
+            mGaussianSplat->mRotation[pos].g = qy * inv;
+            mGaussianSplat->mRotation[pos].b = qz * inv;
+            mGaussianSplat->mRotation[pos].a = qw * inv;
+        } else {
+            mGaussianSplat->mRotation[pos].r = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].g = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].b = static_cast<ai_real>(0);
+            mGaussianSplat->mRotation[pos].a = static_cast<ai_real>(1);
+        }
+
+        const ai_real opacityLogit = readFloat(mGsOpacity);
+        const double sig = 1.0 / (1.0 + std::exp(-static_cast<double>(opacityLogit)));
+        ai_real opacity = static_cast<ai_real>(sig);
+        if (opacity < static_cast<ai_real>(0)) {
+            opacity = static_cast<ai_real>(0);
+        } else if (opacity > static_cast<ai_real>(1)) {
+            opacity = static_cast<ai_real>(1);
+        }
+        mGaussianSplat->mOpacity[pos] = opacity;
+
+        if (mGaussianSplat->mNumRestCoeffs > 0 && mGaussianSplat->mRest != nullptr) {
+            ai_real *dst = mGaussianSplat->mRest +
+                           static_cast<size_t>(pos) * static_cast<size_t>(mGaussianSplat->mNumRestCoeffs);
+            for (unsigned int i = 0; i < mGaussianSplat->mNumRestCoeffs; ++i) {
+                dst[i] = readFloat(mGsRest[static_cast<size_t>(i)]);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    void PLYImporter::PreparePlayCanvasCompressedIfNeeded(const Element *pcElement) {
+        if (mPcCompressedChecked || pcElement == nullptr || pcDOM == nullptr) {
+            return;
+        }
+        mPcCompressedChecked = true;
+
+        auto findProp = [](const Element &el, const char *name) -> int {
+            for (unsigned int i = 0; i < el.alProperties.size(); ++i) {
+                if (!el.alProperties[i].bIsList && el.alProperties[i].szName == name) {
+                    return static_cast<int>(i);
+                }
+            }
+            return -1;
+        };
+        mPcPackedPos = findProp(*pcElement, "packed_position");
+        mPcPackedRot = findProp(*pcElement, "packed_rotation");
+        mPcPackedScale = findProp(*pcElement, "packed_scale");
+        mPcPackedColor = findProp(*pcElement, "packed_color");
+        if (mPcPackedPos < 0 || mPcPackedRot < 0 || mPcPackedScale < 0 || mPcPackedColor < 0) {
+            return;
+        }
+
+        // Chunk element is stored as EEST_INVALID with szName "chunk" (parsed before vertex).
+        const ElementInstanceList *chunkList = nullptr;
+        const Element *chunkEl = nullptr;
+        for (size_t ei = 0; ei < pcDOM->alElements.size(); ++ei) {
+            const Element &el = pcDOM->alElements[ei];
+            if (el.eSemantic == EEST_INVALID && el.szName == "chunk") {
+                if (ei < pcDOM->alElementData.size()) {
+                    chunkEl = &el;
+                    chunkList = &pcDOM->alElementData[ei];
+                }
+                break;
+            }
+        }
+        if (chunkEl == nullptr || chunkList == nullptr || chunkList->alInstances.empty()) {
+            ASSIMP_LOG_WARN("PLY: packed_* layout without chunk element; skipping PlayCanvas compressed decode");
+            return;
+        }
+
+        const int iMinX = findProp(*chunkEl, "min_x");
+        const int iMaxX = findProp(*chunkEl, "max_x");
+        const int iMinY = findProp(*chunkEl, "min_y");
+        const int iMaxY = findProp(*chunkEl, "max_y");
+        const int iMinZ = findProp(*chunkEl, "min_z");
+        const int iMaxZ = findProp(*chunkEl, "max_z");
+        const int iMinSX = findProp(*chunkEl, "min_scale_x");
+        const int iMaxSX = findProp(*chunkEl, "max_scale_x");
+        const int iMinSY = findProp(*chunkEl, "min_scale_y");
+        const int iMaxSY = findProp(*chunkEl, "max_scale_y");
+        const int iMinSZ = findProp(*chunkEl, "min_scale_z");
+        const int iMaxSZ = findProp(*chunkEl, "max_scale_z");
+        if (iMinX < 0 || iMaxX < 0 || iMinY < 0 || iMaxY < 0 || iMinZ < 0 || iMaxZ < 0 ||
+                iMinSX < 0 || iMaxSX < 0 || iMinSY < 0 || iMaxSY < 0 || iMinSZ < 0 || iMaxSZ < 0) {
+            ASSIMP_LOG_WARN("PLY: PlayCanvas chunk missing position/scale bounds");
+            return;
+        }
+
+        const int iMinR = findProp(*chunkEl, "min_r");
+        const int iMaxR = findProp(*chunkEl, "max_r");
+        const int iMinG = findProp(*chunkEl, "min_g");
+        const int iMaxG = findProp(*chunkEl, "max_g");
+        const int iMinB = findProp(*chunkEl, "min_b");
+        const int iMaxB = findProp(*chunkEl, "max_b");
+        mPcHasColorBounds = (iMinR >= 0 && iMaxR >= 0 && iMinG >= 0 && iMaxG >= 0 && iMinB >= 0 && iMaxB >= 0);
+
+        const size_t nChunks = chunkList->alInstances.size();
+        auto loadF = [&](int propIdx, std::vector<float> &out) {
+            out.resize(nChunks);
+            for (size_t c = 0; c < nChunks; ++c) {
+                const PropertyInstance &pi = GetProperty(chunkList->alInstances[c].alProperties, propIdx);
+                if (pi.avList.empty()) {
+                    throw DeadlyImportError("Invalid .ply file: Empty PlayCanvas chunk property value");
+                }
+                out[c] = PropertyInstance::ConvertTo<float>(pi.avList.front(), chunkEl->alProperties[static_cast<size_t>(propIdx)].eType);
+            }
+        };
+        loadF(iMinX, mPcMinX);
+        loadF(iMaxX, mPcMaxX);
+        loadF(iMinY, mPcMinY);
+        loadF(iMaxY, mPcMaxY);
+        loadF(iMinZ, mPcMinZ);
+        loadF(iMaxZ, mPcMaxZ);
+        loadF(iMinSX, mPcMinSX);
+        loadF(iMaxSX, mPcMaxSX);
+        loadF(iMinSY, mPcMinSY);
+        loadF(iMaxSY, mPcMaxSY);
+        loadF(iMinSZ, mPcMinSZ);
+        loadF(iMaxSZ, mPcMaxSZ);
+        if (mPcHasColorBounds) {
+            loadF(iMinR, mPcMinR);
+            loadF(iMaxR, mPcMaxR);
+            loadF(iMinG, mPcMinG);
+            loadF(iMaxG, mPcMaxG);
+            loadF(iMinB, mPcMinB);
+            loadF(iMaxB, mPcMaxB);
+        }
+
+        mGaussianSplat = new aiGaussianSplat();
+        mGaussianSplat->mNumPoints = pcElement->NumOccur;
+        mGaussianSplat->mNumRestCoeffs = 0;
+        mGaussianSplat->mDC = new aiVector3D[pcElement->NumOccur];
+        mGaussianSplat->mScale = new aiVector3D[pcElement->NumOccur];
+        mGaussianSplat->mRotation = new aiColor4D[pcElement->NumOccur];
+        mGaussianSplat->mOpacity = new ai_real[pcElement->NumOccur];
+
+        mPcCompressedActive = true;
+        mGaussianActive = true;
+        ASSIMP_LOG_INFO("PLY: detected PlayCanvas / SuperSplat compressed Gaussian layout (",
+                nChunks, " chunks, ", pcElement->NumOccur, " vertices)");
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    void PLYImporter::LoadPlayCanvasCompressedVertex(const ElementInstance *instElement, unsigned int pos) {
+        if (!mPcCompressedActive || mGaussianSplat == nullptr || instElement == nullptr) {
+            return;
+        }
+        if (pos >= mGaussianSplat->mNumPoints) {
+            throw DeadlyImportError("Invalid .ply file: Too many PlayCanvas compressed vertices");
+        }
+        if (mPcMinX.empty()) {
+            throw DeadlyImportError("Invalid .ply file: PlayCanvas chunk bounds missing");
+        }
+
+        auto readU32 = [&](int propIndex) -> uint32_t {
+            const PropertyInstance &pi = GetProperty(instElement->alProperties, propIndex);
+            if (pi.avList.empty()) {
+                throw DeadlyImportError("Invalid .ply file: Empty PlayCanvas packed_* property value");
+            }
+            // packed_* are authored as uint; ValueUnion already stores iUInt.
+            return pi.avList.front().iUInt;
+        };
+
+        const uint32_t packedPos = readU32(mPcPackedPos);
+        const uint32_t packedRot = readU32(mPcPackedRot);
+        const uint32_t packedScale = readU32(mPcPackedScale);
+        const uint32_t packedColor = readU32(mPcPackedColor);
+
+        const size_t chunkIndex = static_cast<size_t>(pos / 256u);
+        if (chunkIndex >= mPcMinX.size()) {
+            throw DeadlyImportError("Invalid .ply file: PlayCanvas vertex chunk index out of range");
+        }
+
+        auto unpackUnorm = [](uint32_t value, unsigned bits) -> float {
+            const uint32_t t = (1u << bits) - 1u;
+            return float(value & t) / float(t);
+        };
+        auto lerp = [](float a, float b, float t) -> float {
+            return a * (1.f - t) + b * t;
+        };
+
+        // Position: 11-10-11 unorm -> lerp chunk AABB
+        const float px = unpackUnorm(packedPos >> 21, 11);
+        const float py = unpackUnorm(packedPos >> 11, 10);
+        const float pz = unpackUnorm(packedPos, 11);
+        aiVector3D vOut;
+        vOut.x = lerp(mPcMinX[chunkIndex], mPcMaxX[chunkIndex], px);
+        vOut.y = lerp(mPcMinY[chunkIndex], mPcMaxY[chunkIndex], py);
+        vOut.z = lerp(mPcMinZ[chunkIndex], mPcMaxZ[chunkIndex], pz);
+
+        // Scale: 11-10-11 unorm in log space, then exp (linear for KHR)
+        const float sxu = unpackUnorm(packedScale >> 21, 11);
+        const float syu = unpackUnorm(packedScale >> 11, 10);
+        const float szu = unpackUnorm(packedScale, 11);
+        float sx = std::exp(lerp(mPcMinSX[chunkIndex], mPcMaxSX[chunkIndex], sxu));
+        float sy = std::exp(lerp(mPcMinSY[chunkIndex], mPcMaxSY[chunkIndex], syu));
+        float sz = std::exp(lerp(mPcMinSZ[chunkIndex], mPcMaxSZ[chunkIndex], szu));
+        if (sx < 0.f) {
+            sx = 0.f;
+        }
+        if (sy < 0.f) {
+            sy = 0.f;
+        }
+        if (sz < 0.f) {
+            sz = 0.f;
+        }
+        mGaussianSplat->mScale[pos].x = sx;
+        mGaussianSplat->mScale[pos].y = sy;
+        mGaussianSplat->mScale[pos].z = sz;
+
+        // Rotation: 2+10+10+10 largest-component quaternion -> glTF xyzw
+        {
+            const float norm = 1.f / (std::sqrt(2.f) * 0.5f);
+            const float a = (unpackUnorm(packedRot >> 20, 10) - 0.5f) * norm;
+            const float b = (unpackUnorm(packedRot >> 10, 10) - 0.5f) * norm;
+            const float c = (unpackUnorm(packedRot, 10) - 0.5f) * norm;
+            float m = 1.f - (a * a + b * b + c * c);
+            m = (m > 0.f) ? std::sqrt(m) : 0.f;
+            float qx = 0.f, qy = 0.f, qz = 0.f, qw = 1.f;
+            switch (packedRot >> 30) {
+            case 0:
+                qx = m;
+                qy = a;
+                qz = b;
+                qw = c;
+                break;
+            case 1:
+                qx = a;
+                qy = m;
+                qz = b;
+                qw = c;
+                break;
+            case 2:
+                qx = a;
+                qy = b;
+                qz = m;
+                qw = c;
+                break;
+            default:
+                qx = a;
+                qy = b;
+                qz = c;
+                qw = m;
+                break;
+            }
+            const double qlen = std::sqrt(double(qx) * qx + double(qy) * qy + double(qz) * qz + double(qw) * qw);
+            if (qlen > 0.0) {
+                const float inv = static_cast<float>(1.0 / qlen);
+                qx *= inv;
+                qy *= inv;
+                qz *= inv;
+                qw *= inv;
+            } else {
+                qx = qy = qz = 0.f;
+                qw = 1.f;
+            }
+            mGaussianSplat->mRotation[pos].r = qx;
+            mGaussianSplat->mRotation[pos].g = qy;
+            mGaussianSplat->mRotation[pos].b = qz;
+            mGaussianSplat->mRotation[pos].a = qw;
+        }
+
+        // Color: 8-8-8-8 unorm; optional chunk RGB extremes. Recover SH DC from display RGB.
+        float cr = unpackUnorm(packedColor >> 24, 8);
+        float cg = unpackUnorm(packedColor >> 16, 8);
+        float cb = unpackUnorm(packedColor >> 8, 8);
+        float ca = unpackUnorm(packedColor, 8);
+        if (mPcHasColorBounds) {
+            cr = lerp(mPcMinR[chunkIndex], mPcMaxR[chunkIndex], cr);
+            cg = lerp(mPcMinG[chunkIndex], mPcMaxG[chunkIndex], cg);
+            cb = lerp(mPcMinB[chunkIndex], mPcMaxB[chunkIndex], cb);
+        }
+        cr = std::max(0.f, std::min(1.f, cr));
+        cg = std::max(0.f, std::min(1.f, cg));
+        cb = std::max(0.f, std::min(1.f, cb));
+        ca = std::max(0.f, std::min(1.f, ca));
+        constexpr float kShC0 = 0.28209479177387814f;
+        mGaussianSplat->mDC[pos].x = (cr - 0.5f) / kShC0;
+        mGaussianSplat->mDC[pos].y = (cg - 0.5f) / kShC0;
+        mGaussianSplat->mDC[pos].z = (cb - 0.5f) / kShC0;
+        mGaussianSplat->mOpacity[pos] = ca;
+
+        if (mGeneratedMesh == nullptr) {
+            mGeneratedMesh = new aiMesh();
+            mGeneratedMesh->mMaterialIndex = 0;
+            mGeneratedMesh->mName.Set("PLY_PlayCanvas_Gaussians");
+        }
+        if (mGeneratedMesh->mVertices == nullptr) {
+            mGeneratedMesh->mNumVertices = mGaussianSplat->mNumPoints;
+            mGeneratedMesh->mVertices = new aiVector3D[mGeneratedMesh->mNumVertices];
+        }
+        if (pos >= mGeneratedMesh->mNumVertices) {
+            throw DeadlyImportError("Invalid .ply file: Too many vertices");
+        }
+        mGeneratedMesh->mVertices[pos] = vOut;
+        if (mGeneratedMesh->mColors[0] == nullptr) {
+            mGeneratedMesh->mColors[0] = new aiColor4D[mGeneratedMesh->mNumVertices];
+        }
+        mGeneratedMesh->mColors[0][pos] = aiColor4D(cr, cg, cb, ca);
     }
 
     void PLYImporter::LoadVertex(const Element *pcElement, const ElementInstance *instElement, unsigned int pos) {
         ai_assert(nullptr != pcElement);
         ai_assert(nullptr != instElement);
+
+        PreparePlayCanvasCompressedIfNeeded(pcElement);
+        if (mPcCompressedActive) {
+            LoadPlayCanvasCompressedVertex(instElement, pos);
+            return;
+        }
+
+        PrepareGaussianIfNeeded(pcElement);
 
         ai_uint aiPositions[3] = { NotSet, NotSet, NotSet };
         EDataType aiTypes[3] = { EDT_Char, EDT_Char, EDT_Char };
@@ -400,17 +980,17 @@ namespace Assimp {
             aiVector3D vOut;
             if (NotSet != aiPositions[0]) {
                 vOut.x = PropertyInstance::ConvertTo<ai_real>(
-                        GetProperty(instElement->alProperties, aiPositions[0]).avList.front(), aiTypes[0]);
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiPositions[0])), aiTypes[0]);
             }
 
             if (NotSet != aiPositions[1]) {
                 vOut.y = PropertyInstance::ConvertTo<ai_real>(
-                        GetProperty(instElement->alProperties, aiPositions[1]).avList.front(), aiTypes[1]);
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiPositions[1])), aiTypes[1]);
             }
 
             if (NotSet != aiPositions[2]) {
                 vOut.z = PropertyInstance::ConvertTo<ai_real>(
-                        GetProperty(instElement->alProperties, aiPositions[2]).avList.front(), aiTypes[2]);
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiPositions[2])), aiTypes[2]);
             }
 
             // Normals
@@ -418,19 +998,19 @@ namespace Assimp {
             bool haveNormal = false;
             if (NotSet != aiNormal[0]) {
                 nOut.x = PropertyInstance::ConvertTo<ai_real>(
-                        GetProperty(instElement->alProperties, aiNormal[0]).avList.front(), aiNormalTypes[0]);
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiNormal[0])), aiNormalTypes[0]);
                 haveNormal = true;
             }
 
             if (NotSet != aiNormal[1]) {
                 nOut.y = PropertyInstance::ConvertTo<ai_real>(
-                        GetProperty(instElement->alProperties, aiNormal[1]).avList.front(), aiNormalTypes[1]);
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiNormal[1])), aiNormalTypes[1]);
                 haveNormal = true;
             }
 
             if (NotSet != aiNormal[2]) {
                 nOut.z = PropertyInstance::ConvertTo<ai_real>(
-                        GetProperty(instElement->alProperties, aiNormal[2]).avList.front(), aiNormalTypes[2]);
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiNormal[2])), aiNormalTypes[2]);
                 haveNormal = true;
             }
 
@@ -438,25 +1018,22 @@ namespace Assimp {
             aiColor4D cOut;
             bool haveColor = false;
             if (NotSet != aiColors[0]) {
-                cOut.r = NormalizeColorValue(GetProperty(instElement->alProperties,
-                                                    aiColors[0])
-                                                    .avList.front(),
+                cOut.r = NormalizeColorValue(
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiColors[0])),
                         aiColorsTypes[0]);
                 haveColor = true;
             }
 
             if (NotSet != aiColors[1]) {
-                cOut.g = NormalizeColorValue(GetProperty(instElement->alProperties,
-                                                    aiColors[1])
-                                                    .avList.front(),
+                cOut.g = NormalizeColorValue(
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiColors[1])),
                         aiColorsTypes[1]);
                 haveColor = true;
             }
 
             if (NotSet != aiColors[2]) {
-                cOut.b = NormalizeColorValue(GetProperty(instElement->alProperties,
-                                                    aiColors[2])
-                                                    .avList.front(),
+                cOut.b = NormalizeColorValue(
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiColors[2])),
                         aiColorsTypes[2]);
                 haveColor = true;
             }
@@ -465,9 +1042,8 @@ namespace Assimp {
             if (NotSet == aiColors[3]) {
                 cOut.a = 1.0;
             } else {
-                cOut.a = NormalizeColorValue(GetProperty(instElement->alProperties,
-                                                    aiColors[3])
-                                                    .avList.front(),
+                cOut.a = NormalizeColorValue(
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiColors[3])),
                         aiColorsTypes[3]);
 
                 haveColor = true;
@@ -479,13 +1055,13 @@ namespace Assimp {
             bool haveTextureCoords = false;
             if (NotSet != aiTexcoord[0]) {
                 tOut.x = PropertyInstance::ConvertTo<ai_real>(
-                        GetProperty(instElement->alProperties, aiTexcoord[0]).avList.front(), aiTexcoordTypes[0]);
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiTexcoord[0])), aiTexcoordTypes[0]);
                 haveTextureCoords = true;
             }
 
             if (NotSet != aiTexcoord[1]) {
                 tOut.y = PropertyInstance::ConvertTo<ai_real>(
-                        GetProperty(instElement->alProperties, aiTexcoord[1]).avList.front(), aiTexcoordTypes[1]);
+                        GetPropertyFront(instElement->alProperties, static_cast<int>(aiTexcoord[1])), aiTexcoordTypes[1]);
                 haveTextureCoords = true;
             }
 
@@ -524,6 +1100,11 @@ namespace Assimp {
                 }
                 mGeneratedMesh->mTextureCoords[0][pos] = tOut;
             }
+
+            LoadGaussianVertex(instElement, pos);
+        } else if (mGaussianActive) {
+            // Positions missing but splat layout present — still fill side data if possible.
+            LoadGaussianVertex(instElement, pos);
         }
     }
 
@@ -613,7 +1194,11 @@ namespace Assimp {
                             GetProperty(instElement->alProperties, iProperty).avList.begin();
 
                     for (unsigned int a = 0; a < iNum; ++a, ++p) {
-                        mGeneratedMesh->mFaces[pos].mIndices[a] = PropertyInstance::ConvertTo<unsigned int>(*p, eType);
+                        const unsigned int vi = PropertyInstance::ConvertTo<unsigned int>(*p, eType);
+                        if (vi >= mGeneratedMesh->mNumVertices) {
+                            throw DeadlyImportError("Invalid .ply file: Face vertex index out of range");
+                        }
+                        mGeneratedMesh->mFaces[pos].mIndices[a] = vi;
                     }
                 }
 
@@ -687,12 +1272,18 @@ namespace Assimp {
                 aiTable[1] = p;
                 continue;
             }
+            if (aiTable[0] < 0 || aiTable[1] < 0 || p < 0 ||
+                    static_cast<unsigned int>(aiTable[0]) >= mGeneratedMesh->mNumVertices ||
+                    static_cast<unsigned int>(aiTable[1]) >= mGeneratedMesh->mNumVertices ||
+                    static_cast<unsigned int>(p) >= mGeneratedMesh->mNumVertices) {
+                throw DeadlyImportError("Invalid .ply file: Triangle-strip vertex index out of range");
+            }
             aiFace face;
             face.mNumIndices = 3;
             face.mIndices = new unsigned int[3];
-            face.mIndices[0] = aiTable[0];
-            face.mIndices[1] = aiTable[1];
-            face.mIndices[2] = p;
+            face.mIndices[0] = static_cast<unsigned int>(aiTable[0]);
+            face.mIndices[1] = static_cast<unsigned int>(aiTable[1]);
+            face.mIndices[2] = static_cast<unsigned int>(p);
             if (flip) {
                 std::swap(face.mIndices[0], face.mIndices[1]);
             }
@@ -817,22 +1408,28 @@ namespace Assimp {
                 aiColor4D clrOut;
                 aiMaterial *pcHelper = new aiMaterial();
 
-                // build the diffuse material color
-                GetMaterialColor((*i).alProperties, aaiPositions[0], aaiTypes[0], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_DIFFUSE);
-
-                // build the specular material color
-                GetMaterialColor((*i).alProperties, aaiPositions[1], aaiTypes[1], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_SPECULAR);
-
-                // build the ambient material color
-                GetMaterialColor((*i).alProperties, aaiPositions[2], aaiTypes[2], &clrOut);
-                pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_AMBIENT);
+                // Emit only channels present in the material element - no invented black/zeros.
+                auto channelAuthored = [](const unsigned int positions[4]) {
+                    return positions[0] != NotSet || positions[1] != NotSet || positions[2] != NotSet;
+                };
+                if (channelAuthored(aaiPositions[0])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[0], aaiTypes[0], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_DIFFUSE);
+                }
+                if (channelAuthored(aaiPositions[1])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[1], aaiTypes[1], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_SPECULAR);
+                }
+                if (channelAuthored(aaiPositions[2])) {
+                    GetMaterialColor((*i).alProperties, aaiPositions[2], aaiTypes[2], &clrOut);
+                    pcHelper->AddProperty<aiColor4D>(&clrOut, 1, AI_MATKEY_COLOR_AMBIENT);
+                }
 
                 // handle phong power and shading mode
                 int iMode = aiShadingMode_Gouraud;
                 if (0xFFFFFFFF != iPhong) {
-                    ai_real fSpec = PropertyInstance::ConvertTo<ai_real>(GetProperty((*i).alProperties, iPhong).avList.front(), ePhong);
+                    ai_real fSpec = PropertyInstance::ConvertTo<ai_real>(
+                            GetPropertyFront((*i).alProperties, static_cast<int>(iPhong)), ePhong);
 
                     // if shininess is 0 (and the pow() calculation would therefore always
                     // become 1, not depending on the angle), use gouraud lighting
@@ -846,9 +1443,9 @@ namespace Assimp {
                 }
                 pcHelper->AddProperty<int>(&iMode, 1, AI_MATKEY_SHADING_MODEL);
 
-                // handle opacity
+                // handle opacity (authored property only)
                 if (0xFFFFFFFF != iOpacity) {
-                    ai_real fOpacity = PropertyInstance::ConvertTo<ai_real>(GetProperty((*i).alProperties, iPhong).avList.front(), eOpacity);
+                    ai_real fOpacity = PropertyInstance::ConvertTo<ai_real>(GetProperty((*i).alProperties, iOpacity).avList.front(), eOpacity);
                     pcHelper->AddProperty<ai_real>(&fOpacity, 1, AI_MATKEY_OPACITY);
                 }
 
@@ -880,42 +1477,48 @@ namespace Assimp {
             // generate a default material
             aiMaterial *pcHelper = new aiMaterial();
 
-            // fill in a default material
-            int iMode = aiShadingMode_Gouraud;
-            pcHelper->AddProperty<int>(&iMode, 1, AI_MATKEY_SHADING_MODEL);
-
-            // generate white material most 3D engine just multiply ambient / diffuse color with actual ambient / light color
-            aiColor3D clr;
-            clr.b = clr.g = clr.r = 1.0f;
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_SPECULAR);
-
-            clr.b = clr.g = clr.r = 1.0f;
-            pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_AMBIENT);
-
-            // The face order is absolutely undefined for PLY, so we have to
-            // use two-sided rendering to be sure it's ok.
-            if (!pointsOnly) {
-                const int two_sided = 1;
-                pcHelper->AddProperty(&two_sided, 1, AI_MATKEY_TWOSIDED);
-            }
-
-            // default texture
-            if (!defaultTexture.empty()) {
-                const aiString name(defaultTexture.c_str());
-                pcHelper->AddProperty(&name, _AI_MATKEY_TEXTURE_BASE, aiTextureType_DIFFUSE, 0);
-            } else {
+            // GS / splat PLY: name only - do not invent white Kd/Ks/Ka (color lives on aiGaussianSplat).
+            if (mGaussianActive) {
                 const aiString name(AI_DEFAULT_MATERIAL_NAME);
                 pcHelper->AddProperty(&name, AI_MATKEY_NAME);
-            }
+                if (pointsOnly) {
+                    constexpr int wireframe = 1;
+                    pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
+                }
+                pvOut->push_back(pcHelper);
+            } else {
+                // Classic mesh PLY: keep historical white defaults for ValidateDS.
+                int iMode = aiShadingMode_Gouraud;
+                pcHelper->AddProperty<int>(&iMode, 1, AI_MATKEY_SHADING_MODEL);
 
-            // set to wireframe, so when using this material info we can switch to points rendering
-            if (pointsOnly) {
-                constexpr int wireframe = 1;
-                pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
-            }
+                aiColor3D clr;
+                clr.b = clr.g = clr.r = 1.0f;
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_DIFFUSE);
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_SPECULAR);
 
-            pvOut->push_back(pcHelper);
+                clr.b = clr.g = clr.r = 1.0f;
+                pcHelper->AddProperty<aiColor3D>(&clr, 1, AI_MATKEY_COLOR_AMBIENT);
+
+                if (!pointsOnly) {
+                    const int two_sided = 1;
+                    pcHelper->AddProperty(&two_sided, 1, AI_MATKEY_TWOSIDED);
+                }
+
+                if (!defaultTexture.empty()) {
+                    const aiString name(defaultTexture.c_str());
+                    pcHelper->AddProperty(&name, _AI_MATKEY_TEXTURE_BASE, aiTextureType_DIFFUSE, 0);
+                } else {
+                    const aiString name(AI_DEFAULT_MATERIAL_NAME);
+                    pcHelper->AddProperty(&name, AI_MATKEY_NAME);
+                }
+
+                if (pointsOnly) {
+                    constexpr int wireframe = 1;
+                    pcHelper->AddProperty(&wireframe, 1, AI_MATKEY_ENABLE_WIREFRAME);
+                }
+
+                pvOut->push_back(pcHelper);
+            }
         }
     }
 

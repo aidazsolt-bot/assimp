@@ -49,6 +49,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/document.h>
 #include <rapidjson/schema.h>
 #include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
+
+#include <cmath>
+#include <set>
+#include <sstream>
+#include <vector>
 
 // clang-format off
 #ifdef ASSIMP_ENABLE_DRACO
@@ -99,6 +105,7 @@ using glTFCommon::MemberOrDefault;
 using glTFCommon::ReadMember;
 using glTFCommon::FindMember;
 using glTFCommon::FindObject;
+using glTFCommon::FindString;
 using glTFCommon::FindUInt;
 using glTFCommon::FindArray;
 using glTFCommon::FindArray;
@@ -1484,7 +1491,141 @@ inline void Material::Read(Value &material, Asset &r) {
             }
         }
 
+        // Parse iridescence when present on the material (even if extensionsUsed omitted it).
+        if (Value *curMaterialIridescence = FindObject(*extensions, "KHR_materials_iridescence")) {
+            MaterialIridescence iri;
+
+            auto readFiniteFloat = [](Value &obj, const char *key, Nullable<float> &out) {
+                Value *num = FindNumberInContext(obj, key, "KHR_materials_iridescence");
+                if (num == nullptr || !num->IsNumber()) {
+                    return;
+                }
+                const double d = num->GetDouble();
+                if (!std::isfinite(d)) {
+                    return;
+                }
+                out.value = static_cast<float>(d);
+                out.isPresent = true;
+            };
+
+            readFiniteFloat(*curMaterialIridescence, "iridescenceFactor", iri.iridescenceFactor);
+            readFiniteFloat(*curMaterialIridescence, "iridescenceIor", iri.iridescenceIor);
+            readFiniteFloat(*curMaterialIridescence, "iridescenceThicknessMinimum", iri.iridescenceThicknessMinimum);
+            readFiniteFloat(*curMaterialIridescence, "iridescenceThicknessMaximum", iri.iridescenceThicknessMaximum);
+
+            if (Value *texProp = FindMember(*curMaterialIridescence, "iridescenceTexture")) {
+                if (texProp->IsObject()) {
+                    iri.hasIridescenceTexture = true;
+                    SetTextureProperties(r, texProp, iri.iridescenceTexture);
+                    if (FindUInt(*texProp, "texCoord") != nullptr) {
+                        iri.hasIridescenceTexCoord = true;
+                    }
+                    if (Value *xform = FindExtension(*texProp, "KHR_texture_transform")) {
+                        if (FindArray(*xform, "scale") != nullptr) {
+                            iri.hasIridescenceTransformScale = true;
+                        }
+                    }
+                }
+            }
+
+            if (Value *texProp = FindMember(*curMaterialIridescence, "iridescenceThicknessTexture")) {
+                if (texProp->IsObject()) {
+                    iri.hasThicknessTexture = true;
+                    SetTextureProperties(r, texProp, iri.iridescenceThicknessTexture);
+                    if (FindUInt(*texProp, "texCoord") != nullptr) {
+                        iri.hasThicknessTexCoord = true;
+                    }
+                    if (Value *xform = FindExtension(*texProp, "KHR_texture_transform")) {
+                        if (FindArray(*xform, "scale") != nullptr) {
+                            iri.hasThicknessTransformScale = true;
+                        }
+                    }
+                }
+            }
+
+            this->materialIridescence = Nullable<MaterialIridescence>(iri);
+        }
+
+        if (Value *curDispersion = FindObject(*extensions, "KHR_materials_dispersion")) {
+            MaterialDispersion disp;
+            Value *num = FindNumberInContext(*curDispersion, "dispersion", "KHR_materials_dispersion");
+            if (num != nullptr && num->IsNumber()) {
+                const double d = num->GetDouble();
+                if (std::isfinite(d)) {
+                    disp.dispersion.value = static_cast<float>(d);
+                    disp.dispersion.isPresent = true;
+                    this->materialDispersion = Nullable<MaterialDispersion>(disp);
+                }
+            }
+        }
+
+        if (Value *curDiffTx = FindObject(*extensions, "KHR_materials_diffuse_transmission")) {
+            MaterialDiffuseTransmission dtx;
+
+            auto readFiniteFloat = [](Value &obj, const char *key, Nullable<float> &out) {
+                Value *num = FindNumberInContext(obj, key, "KHR_materials_diffuse_transmission");
+                if (num == nullptr || !num->IsNumber()) {
+                    return;
+                }
+                const double d = num->GetDouble();
+                if (!std::isfinite(d)) {
+                    return;
+                }
+                out.value = static_cast<float>(d);
+                out.isPresent = true;
+            };
+            readFiniteFloat(*curDiffTx, "diffuseTransmissionFactor", dtx.diffuseTransmissionFactor);
+
+            if (Value *colorArr = FindArray(*curDiffTx, "diffuseTransmissionColorFactor")) {
+                if (colorArr->Size() >= 3 && (*colorArr)[0].IsNumber() && (*colorArr)[1].IsNumber() &&
+                        (*colorArr)[2].IsNumber()) {
+                    dtx.diffuseTransmissionColorFactor[0] = (*colorArr)[0].GetFloat();
+                    dtx.diffuseTransmissionColorFactor[1] = (*colorArr)[1].GetFloat();
+                    dtx.diffuseTransmissionColorFactor[2] = (*colorArr)[2].GetFloat();
+                    dtx.hasColorFactor = true;
+                }
+            }
+
+            if (Value *texProp = FindMember(*curDiffTx, "diffuseTransmissionTexture")) {
+                if (texProp->IsObject()) {
+                    dtx.hasDiffuseTransmissionTexture = true;
+                    SetTextureProperties(r, texProp, dtx.diffuseTransmissionTexture);
+                    if (FindUInt(*texProp, "texCoord") != nullptr) {
+                        dtx.hasDiffuseTransmissionTexCoord = true;
+                    }
+                    if (Value *xform = FindExtension(*texProp, "KHR_texture_transform")) {
+                        if (FindArray(*xform, "scale") != nullptr) {
+                            dtx.hasDiffuseTransmissionTransformScale = true;
+                        }
+                    }
+                }
+            }
+            if (Value *texProp = FindMember(*curDiffTx, "diffuseTransmissionColorTexture")) {
+                if (texProp->IsObject()) {
+                    dtx.hasColorTexture = true;
+                    SetTextureProperties(r, texProp, dtx.diffuseTransmissionColorTexture);
+                    if (FindUInt(*texProp, "texCoord") != nullptr) {
+                        dtx.hasColorTexCoord = true;
+                    }
+                    if (Value *xform = FindExtension(*texProp, "KHR_texture_transform")) {
+                        if (FindArray(*xform, "scale") != nullptr) {
+                            dtx.hasColorTransformScale = true;
+                        }
+                    }
+                }
+            }
+
+            if (dtx.diffuseTransmissionFactor.isPresent || dtx.hasColorFactor ||
+                    dtx.hasDiffuseTransmissionTexture || dtx.hasColorTexture) {
+                this->materialDiffuseTransmission = Nullable<MaterialDiffuseTransmission>(dtx);
+            }
+        }
+
         unlit = nullptr != FindObject(*extensions, "KHR_materials_unlit");
+
+        // Keep authored material extensions for unmapped sidecar emission (path-resolved
+        // where needed). Does not invent defaults for omitted keys.
+        this->customExtensions = glTF2::ReadExtensions("extensions", *extensions);
     }
 }
 
@@ -1584,8 +1725,18 @@ inline void Mesh::Read(Value &pJSON_Object, Asset &pAsset_Root) {
                         }
                         (*vec).resize(idx + 1);
                         (*vec)[idx] = pAsset_Root.accessors.Retrieve(it->value.GetUint());
+                    } else {
+                        // Keep unknown / underscore attributes for the ABI-safe mesh sidecar.
+                        prim.attributes.custom.emplace_back(attr, pAsset_Root.accessors.Retrieve(it->value.GetUint()));
                     }
                 }
+            }
+
+            if (Value *primExtras = FindObject(primitive, "extras")) {
+                prim.extras = glTF2::ReadExtras(*primExtras);
+            }
+            if (Value *primExt = FindObject(primitive, "extensions")) {
+                prim.customExtensions = glTF2::ReadExtensions("extensions", *primExt);
             }
 
 #ifdef ASSIMP_ENABLE_DRACO
@@ -1664,7 +1815,7 @@ inline void Mesh::Read(Value &pJSON_Object, Asset &pAsset_Root) {
                             continue;
                         }
                         const char *attr = it->name.GetString();
-                        // Valid attribute semantics include POSITION, NORMAL, TANGENT
+                        // Core morph: POSITION, NORMAL, TANGENT. Extension attrs -> custom.
                         int undPos = 0;
                         Mesh::AccessorList *vec = nullptr;
                         if (GetAttribTargetVector(prim, j, attr, vec, undPos)) {
@@ -1673,6 +1824,9 @@ inline void Mesh::Read(Value &pJSON_Object, Asset &pAsset_Root) {
                                 (*vec).resize(idx + 1);
                             }
                             (*vec)[idx] = pAsset_Root.accessors.Retrieve(it->value.GetUint());
+                        } else {
+                            prim.targets[j].custom.emplace_back(
+                                    attr, pAsset_Root.accessors.Retrieve(it->value.GetUint()));
                         }
                     }
                 }
@@ -1964,6 +2118,15 @@ inline void Animation::Read(Value &obj, Asset &r) {
                         c.target.path = AnimationPath_SCALE;
                     } else if (p == "weights") {
                         c.target.path = AnimationPath_WEIGHTS;
+                    } else if (p == "pointer") {
+                        c.target.path = AnimationPath_POINTER;
+                        if (Value *extensions = FindObject(*target, "extensions")) {
+                            if (Value *kap = FindObject(*extensions, "KHR_animation_pointer")) {
+                                if (Value *ptr = FindString(*kap, "pointer")) {
+                                    c.target.pointer = ptr->GetString();
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2151,6 +2314,100 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
     ReadExtensionsUsed(doc);
     ReadExtensionsRequired(doc);
 
+    // Collect collider.geometry.mesh indices while Document is alive (SC4 orphans).
+    std::set<unsigned int> physicsColliderMeshIndices;
+    auto collectColliderMesh = [&](Value &physObj) {
+        Value *col = FindObject(physObj, "collider");
+        if (!col) {
+            return;
+        }
+        Value *geo = FindObject(*col, "geometry");
+        if (!geo) {
+            return;
+        }
+        // FindUInt(Document&) overload shadows Value*; use member lookup.
+        auto it = geo->FindMember("mesh");
+        if (it != geo->MemberEnd() && it->value.IsUint()) {
+            physicsColliderMeshIndices.insert(it->value.GetUint());
+        }
+    };
+    if (Value *docNodes = FindArray(doc, "nodes")) {
+        for (rapidjson::SizeType i = 0; i < docNodes->Size(); ++i) {
+            Value &node = (*docNodes)[i];
+            if (!node.IsObject()) {
+                continue;
+            }
+            Value *nodeExt = FindObject(node, "extensions");
+            if (!nodeExt) {
+                continue;
+            }
+            Value *nodePhys = FindObject(*nodeExt, "KHR_physics_rigid_bodies");
+            if (nodePhys) {
+                collectColliderMesh(*nodePhys);
+            }
+        }
+    }
+
+    // Build physics sidecar JSON while Document is alive (host Bullet / SV semantics).
+    physicsSidecarJson.clear();
+    if (extensionsUsed.KHR_implicit_shapes || extensionsUsed.KHR_physics_rigid_bodies) {
+        rapidjson::Document out;
+        out.SetObject();
+        rapidjson::Document::AllocatorType &al = out.GetAllocator();
+        if (Value *extRoot = FindObject(doc, "extensions")) {
+            if (Value *imp = FindObject(*extRoot, "KHR_implicit_shapes")) {
+                rapidjson::Value copy(*imp, al);
+                out.AddMember("KHR_implicit_shapes", copy, al);
+            }
+            if (Value *prb = FindObject(*extRoot, "KHR_physics_rigid_bodies")) {
+                rapidjson::Value copy(*prb, al);
+                out.AddMember("KHR_physics_rigid_bodies", copy, al);
+            }
+        }
+        // Walk glTF nodes[]; collect every physics body generically (no author-specific names).
+        rapidjson::Value nodesArr(rapidjson::kArrayType);
+        rapidjson::Value nodeNamesArr(rapidjson::kArrayType);
+        // Local name must not shadow Asset::nodes (MSVC C4458 under /W4 /WX).
+        if (Value *docNodes = FindArray(doc, "nodes")) {
+            for (rapidjson::SizeType i = 0; i < docNodes->Size(); ++i) {
+                Value &node = (*docNodes)[i];
+                if (!node.IsObject()) {
+                    continue;
+                }
+                Value *nodeExt = FindObject(node, "extensions");
+                if (!nodeExt) {
+                    continue;
+                }
+                Value *nodePhys = FindObject(*nodeExt, "KHR_physics_rigid_bodies");
+                if (!nodePhys) {
+                    continue;
+                }
+                rapidjson::Value entry(rapidjson::kObjectType);
+                entry.AddMember("index", static_cast<unsigned>(i), al);
+                if (Value *name = glTFCommon::FindString(node, "name")) {
+                    entry.AddMember("name", rapidjson::Value(name->GetString(), al).Move(), al);
+                    nodeNamesArr.PushBack(rapidjson::Value(name->GetString(), al).Move(), al);
+                } else {
+                    // Stable fallback so hosts can always walk a name list.
+                    const std::string generated = "node_" + ai_to_string(static_cast<unsigned>(i));
+                    entry.AddMember("name", rapidjson::Value(generated.c_str(), al).Move(), al);
+                    nodeNamesArr.PushBack(rapidjson::Value(generated.c_str(), al).Move(), al);
+                }
+                rapidjson::Value physCopy(*nodePhys, al);
+                entry.AddMember("KHR_physics_rigid_bodies", physCopy, al);
+                nodesArr.PushBack(entry, al);
+            }
+        }
+        if (!nodesArr.Empty()) {
+            out.AddMember("nodes", nodesArr, al);
+            out.AddMember("nodeNames", nodeNamesArr, al);
+        }
+        rapidjson::StringBuffer sbuf;
+        rapidjson::Writer<rapidjson::StringBuffer> writer(sbuf);
+        out.Accept(writer);
+        physicsSidecarJson = sbuf.GetString();
+    }
+
 #ifndef ASSIMP_ENABLE_DRACO
     // Is Draco required?
     if (extensionsRequired.KHR_draco_mesh_compression) {
@@ -2194,6 +2451,139 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
     if (Value *animsArray = FindArray(doc, "animations")) {
         for (unsigned int i = 0; i < animsArray->Size(); ++i) {
             animations.Retrieve(i);
+        }
+    }
+
+    // SC4: Force-Retrieve orphan collider meshes + embed triangle soups in physics sidecar.
+    // Must stay after AttachToDocument / scene retrieve; before DetachFromDocument.
+    if (!physicsColliderMeshIndices.empty() && !physicsSidecarJson.empty()) {
+        rapidjson::Document bag;
+        bag.Parse(physicsSidecarJson.c_str());
+        if (!bag.HasParseError() && bag.IsObject()) {
+            rapidjson::Document::AllocatorType &cal = bag.GetAllocator();
+            rapidjson::Value meshesArr(rapidjson::kArrayType);
+            unsigned embedded = 0;
+
+            for (unsigned int meshId : physicsColliderMeshIndices) {
+                Ref<Mesh> meshRef = meshes.Retrieve(meshId);
+                if (!meshRef) {
+                    continue;
+                }
+                Mesh &mesh = *meshRef;
+                if (mesh.primitives.empty()) {
+                    continue;
+                }
+                // Collider proxies are authored as a single triangle primitive.
+                Mesh::Primitive &prim = mesh.primitives[0];
+                if (prim.attributes.position.empty() || !prim.attributes.position[0]) {
+                    continue;
+                }
+
+                aiVector3D *verts = nullptr;
+                size_t nVerts = 0;
+                try {
+                    nVerts = prim.attributes.position[0]->ExtractData(verts);
+                } catch (...) {
+                    delete[] verts;
+                    continue;
+                }
+                if (verts == nullptr || nVerts == 0) {
+                    delete[] verts;
+                    continue;
+                }
+
+                std::vector<unsigned int> indices;
+                if (prim.indices) {
+                    Accessor::Indexer indexer = prim.indices->GetIndexer();
+                    if (indexer.IsValid()) {
+                        indices.resize(prim.indices->count);
+                        for (size_t ii = 0; ii < prim.indices->count; ++ii) {
+                            indices[ii] = indexer.GetUInt(static_cast<unsigned int>(ii));
+                        }
+                    }
+                } else {
+                    indices.resize(nVerts);
+                    for (size_t ii = 0; ii < nVerts; ++ii) {
+                        indices[ii] = static_cast<unsigned int>(ii);
+                    }
+                }
+
+                // Expand to triangle list (TRIANGLES / strip / fan); default TRIANGLES.
+                std::vector<unsigned int> triIndices;
+                const PrimitiveMode mode = prim.mode;
+                if (mode == PrimitiveMode_TRIANGLE_STRIP && indices.size() >= 3) {
+                    const size_t nFaces = indices.size() - 2;
+                    triIndices.reserve(nFaces * 3);
+                    for (size_t i = 0; i < nFaces; ++i) {
+                        if ((i + 1) % 2 == 0) {
+                            triIndices.push_back(indices[i + 1]);
+                            triIndices.push_back(indices[i]);
+                            triIndices.push_back(indices[i + 2]);
+                        } else {
+                            triIndices.push_back(indices[i]);
+                            triIndices.push_back(indices[i + 1]);
+                            triIndices.push_back(indices[i + 2]);
+                        }
+                    }
+                } else if (mode == PrimitiveMode_TRIANGLE_FAN && indices.size() >= 3) {
+                    const size_t nFaces = indices.size() - 2;
+                    triIndices.reserve(nFaces * 3);
+                    for (size_t i = 0; i < nFaces; ++i) {
+                        triIndices.push_back(indices[0]);
+                        triIndices.push_back(indices[i + 1]);
+                        triIndices.push_back(indices[i + 2]);
+                    }
+                } else {
+                    // TRIANGLES (and unknown): keep triples; drop trailing leftovers.
+                    const size_t nFaces = indices.size() / 3;
+                    triIndices.assign(indices.begin(), indices.begin() + nFaces * 3);
+                }
+
+                if (nVerts < 3 || triIndices.size() < 3) {
+                    delete[] verts;
+                    continue;
+                }
+
+                rapidjson::Value entry(rapidjson::kObjectType);
+                entry.AddMember("index", meshId, cal);
+                const std::string meshName = mesh.name.empty() ? mesh.id : mesh.name;
+                entry.AddMember("name", rapidjson::Value(meshName.c_str(), cal).Move(), cal);
+
+                rapidjson::Value posArr(rapidjson::kArrayType);
+                posArr.Reserve(static_cast<rapidjson::SizeType>(nVerts * 3), cal);
+                for (size_t v = 0; v < nVerts; ++v) {
+                    posArr.PushBack(verts[v].x, cal);
+                    posArr.PushBack(verts[v].y, cal);
+                    posArr.PushBack(verts[v].z, cal);
+                }
+                entry.AddMember("positions", posArr, cal);
+
+                rapidjson::Value idxArr(rapidjson::kArrayType);
+                idxArr.Reserve(static_cast<rapidjson::SizeType>(triIndices.size()), cal);
+                for (unsigned int idx : triIndices) {
+                    idxArr.PushBack(idx, cal);
+                }
+                entry.AddMember("indices", idxArr, cal);
+
+                meshesArr.PushBack(entry, cal);
+                ++embedded;
+                delete[] verts;
+            }
+
+            if (embedded > 0) {
+                rapidjson::Value coll(rapidjson::kObjectType);
+                coll.AddMember("meshes", meshesArr, cal);
+                if (bag.HasMember("KHR_physics_collider_meshes")) {
+                    bag.RemoveMember("KHR_physics_collider_meshes");
+                }
+                bag.AddMember("KHR_physics_collider_meshes", coll, cal);
+                rapidjson::StringBuffer sbuf;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(sbuf);
+                bag.Accept(writer);
+                physicsSidecarJson = sbuf.GetString();
+                ASSIMP_LOG_INFO("GLTF: SC4 embedded ", embedded,
+                        " orphan physics collider mesh soup(s) in sidecar");
+            }
         }
     }
 
@@ -2274,6 +2664,11 @@ inline void Asset::ReadExtensionsUsed(Document &doc) {
     CHECK_EXT(KHR_materials_ior);
     CHECK_EXT(KHR_materials_emissive_strength);
     CHECK_EXT(KHR_materials_anisotropy);
+    CHECK_EXT(KHR_materials_iridescence);
+    CHECK_EXT(KHR_gaussian_splatting);
+    CHECK_EXT(KHR_animation_pointer);
+    CHECK_EXT(KHR_implicit_shapes);
+    CHECK_EXT(KHR_physics_rigid_bodies);
     CHECK_EXT(KHR_draco_mesh_compression);
     CHECK_EXT(KHR_texture_basisu);
     CHECK_EXT(EXT_texture_webp);

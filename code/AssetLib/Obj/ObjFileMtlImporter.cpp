@@ -51,6 +51,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/material.h>
 #include <stdlib.h>
 #include <assimp/DefaultLogger.hpp>
+#include <string_view>
 
 namespace Assimp {
 
@@ -66,13 +67,22 @@ static constexpr char BumpTexture2[] = "bump";
 static constexpr char NormalTextureV1[] = "map_Kn";
 static constexpr char NormalTextureV2[] = "norm";
 static constexpr char ReflectionTexture[] = "refl";
+static constexpr char MapReflectionTexture[] = "map_refl";
 static constexpr char DisplacementTexture1[] = "map_disp";
 static constexpr char DisplacementTexture2[] = "disp";
 static constexpr char SpecularityTexture[] = "map_ns";
 static constexpr char RoughnessTexture[] = "map_Pr";
 static constexpr char MetallicTexture[] = "map_Pm";
 static constexpr char SheenTexture[] = "map_Ps";
-static constexpr char RMATexture[] = "map_Ps";
+static constexpr char RMATexture[] = "map_RMA";
+static constexpr char ORMTexture[] = "map_ORM";
+
+// Community / PBR MTL extensions (Clara.io, DirectXMesh, etc.) - recognize, log, do not import.
+static void LogIgnoreCommunityMtlToken(std::string_view token) {
+    ASSIMP_LOG_WARN(
+            "OBJ/MTL: ", token, " is not Wavefront MTL and is ignored "
+                                "(community/PBR extension, e.g. Clara.io).");
+}
 
 // texture option specific token
 static constexpr char BlendUOption[] = "-blendu";
@@ -135,22 +145,26 @@ void ObjFileMtlImporter::load() {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->ambient);
+                        mModel->mCurrentMaterial->has_ambient = true;
                     }
                 } else if (*mDataIt == 'd') {
                     // Diffuse color
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->diffuse);
+                        mModel->mCurrentMaterial->has_diffuse = true;
                     }
                 } else if (*mDataIt == 's') {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->specular);
+                        mModel->mCurrentMaterial->has_specular = true;
                     }
                 } else if (*mDataIt == 'e') {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->emissive);
+                        mModel->mCurrentMaterial->has_emissive = true;
                     }
                 }
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
@@ -162,6 +176,7 @@ void ObjFileMtlImporter::load() {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getColorRGBA(&mModel->mCurrentMaterial->transparent);
+                        mModel->mCurrentMaterial->has_transparent = true;
                     }
                 } else if (*mDataIt == 'r')  {
                     // Material transmission alpha value
@@ -170,6 +185,7 @@ void ObjFileMtlImporter::load() {
                     getFloatValue(d);
                     if (mModel->mCurrentMaterial != nullptr) {
                         mModel->mCurrentMaterial->alpha = static_cast<ai_real>(1.0) - d;
+                        mModel->mCurrentMaterial->has_alpha = true;
                     }
                 }
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
@@ -183,6 +199,7 @@ void ObjFileMtlImporter::load() {
                     ++mDataIt;
                     if (mModel->mCurrentMaterial != nullptr) {
                         getFloatValue(mModel->mCurrentMaterial->alpha);
+                        mModel->mCurrentMaterial->has_alpha = true;
                     }
                     mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
                 }
@@ -196,12 +213,14 @@ void ObjFileMtlImporter::load() {
                         ++mDataIt;
                         if (mModel->mCurrentMaterial != nullptr) {
                             getFloatValue(mModel->mCurrentMaterial->shineness);
+                            mModel->mCurrentMaterial->has_shineness = true;
                         }
                         break;
                     case 'i': // Index Of refraction
                         ++mDataIt;
                         if (mModel->mCurrentMaterial != nullptr) {
                             getFloatValue(mModel->mCurrentMaterial->ior);
+                            mModel->mCurrentMaterial->has_ior = true;
                         }
                         break;
                     case 'e': // New material
@@ -215,67 +234,33 @@ void ObjFileMtlImporter::load() {
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
             } break;
 
-            case 'P':
-                {
-                    ++mDataIt;
-                    switch(*mDataIt) {
-                    case 'r':
-                        ++mDataIt;
-                        if (mModel->mCurrentMaterial != nullptr) {
-                            getFloatValue(mModel->mCurrentMaterial->roughness);
-                        }
-                        break;
-                    case 'm':
-                        ++mDataIt;
-                        if (mModel->mCurrentMaterial != nullptr) {
-                            getFloatValue(mModel->mCurrentMaterial->metallic);
-                        }
-                        break;
-                    case 's':
-                        ++mDataIt;
-                        if (mModel->mCurrentMaterial != nullptr) {
-                            getColorRGBA(mModel->mCurrentMaterial->sheen);
-                        }
-                        break;
-                    case 'c':
-                        ++mDataIt;
-                        if (*mDataIt == 'r') {
-                            ++mDataIt;
-                            if (mModel->mCurrentMaterial != nullptr) {
-                                getFloatValue(mModel->mCurrentMaterial->clearcoat_roughness);
-                            }
-                        } else if (*mDataIt == 't') {
-                            ++mDataIt;
-                            if (mModel->mCurrentMaterial != nullptr) {
-                                getFloatValue(mModel->mCurrentMaterial->clearcoat_thickness);
-                            }
-                        } else {
-                            if (mModel->mCurrentMaterial != nullptr) {
-                                getFloatValue(mModel->mCurrentMaterial->clearcoat);
-                            }
-                        }
-                        break;
-                    }
-                    mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
+            case 'P': {
+                // Clara.io / community PBR scalars: Pr Pm Ps Pc Pcr - log, do not import.
+                auto tokenStart = mDataIt;
+                auto tokenEnd = getNextDelimiter(mDataIt, mDataItEnd);
+                std::string_view svKeyword(&(*tokenStart), static_cast<size_t>(&(*tokenEnd) - &(*tokenStart)));
+                if (svKeyword == "Pr" || svKeyword == "Pm" || svKeyword == "Ps" ||
+                        svKeyword == "Pc" || svKeyword == "Pcr") {
+                    LogIgnoreCommunityMtlToken(svKeyword);
+                } else {
+                    ASSIMP_LOG_WARN("OBJ/MTL: Unhandled keyword: ", svKeyword);
                 }
-                break;
-            
-            case 'm': // Texture or metallic
+                mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
+            } break;
+
+            case 'm': // Texture maps (map_*) or community "metallic" alias
             {
-                // Save start of token (after 'm')
-                auto tokenStart = mDataIt;  // points to 'm'
-                auto tokenEnd = getNextDelimiter(mDataIt, mDataItEnd); // move iterator to end of token
+                auto tokenStart = mDataIt; // points to 'm'
+                auto tokenEnd = getNextDelimiter(mDataIt, mDataItEnd);
 
                 std::string_view svKeyword(&(*tokenStart), static_cast<size_t>(&(*tokenEnd) - &(*tokenStart)));
-                mDataIt = getNextWord(tokenEnd, mDataItEnd); // advance iterator
+                mDataIt = getNextWord(tokenEnd, mDataItEnd);
 
                 if (svKeyword.size() >= 3 && svKeyword.compare(0, 3, "map") == 0) {
-                    // starts with "map", treat as texture map
                     mDataIt = tokenStart;
                     getTexture();
                 } else if (svKeyword == "metallic" || svKeyword == "metal" || svKeyword == "metalness") {
-                    // parse metallic float value instead of texture
-                    getFloatIfMaterialValid(&ObjFile::Material::metallic);
+                    LogIgnoreCommunityMtlToken(svKeyword);
                 }
 
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
@@ -287,15 +272,15 @@ void ObjFileMtlImporter::load() {
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
             } break;
 
-            case 'r': // refl (map) or roughness (float)
+            case 'r': // Wavefront refl, or community roughness alias
             {
-                auto tokenStart = mDataIt;  // points to 'r'
+                auto tokenStart = mDataIt; // points to 'r'
                 auto tokenEnd = getNextDelimiter(mDataIt, mDataItEnd);
                 std::string_view svKeyword(&(*tokenStart), static_cast<size_t>(&(*tokenEnd) - &(*tokenStart)));
                 mDataIt = getNextWord(tokenEnd, mDataItEnd);
 
                 if (svKeyword == "roughness" || svKeyword == "rough") {
-                    getFloatIfMaterialValid(&ObjFile::Material::roughness);
+                    LogIgnoreCommunityMtlToken(svKeyword);
                 } else if (svKeyword == "refl" || svKeyword == "reflection") {
                     mDataIt = tokenStart;
                     getTexture();
@@ -309,6 +294,7 @@ void ObjFileMtlImporter::load() {
                 mDataIt = getNextToken<DataArrayIt>(mDataIt, mDataItEnd);
                 if (mModel->mCurrentMaterial != nullptr) {
                     getIlluminationModel(mModel->mCurrentMaterial->illumination_model);
+                    mModel->mCurrentMaterial->has_illumination_model = true;
                 }
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
             } break;
@@ -319,14 +305,12 @@ void ObjFileMtlImporter::load() {
                 std::string_view svKeyword(&(*tokenStart), static_cast<size_t>(&(*tokenEnd) - &(*tokenStart)));
                 mDataIt = getNextWord(tokenEnd, mDataItEnd);
 
-                if (svKeyword == "aniso" || svKeyword == "anisotropy") {
-                    getFloatIfMaterialValid(&ObjFile::Material::anisotropy);
-                } else if (svKeyword == "ao") {
-                    getFloatIfMaterialValid(&ObjFile::Material::ambient_occlusion);
-                } else if (svKeyword == "anisor" || svKeyword == "anisotropicrotation") {
-                    getFloatIfMaterialValid(&ObjFile::Material::anisotropy_rotation);
+                const std::string keywordLower = ai_stdStrToLower(std::string(svKeyword));
+                if (svKeyword == "aniso" || svKeyword == "anisotropy" || svKeyword == "ao" ||
+                        svKeyword == "anisor" || keywordLower == "anisotropicrotation") {
+                    LogIgnoreCommunityMtlToken(svKeyword);
                 } else {
-                    ASSIMP_LOG_WARN("Unhandled keyword: ", svKeyword);
+                    ASSIMP_LOG_WARN("OBJ/MTL: Unhandled keyword: ", svKeyword);
                 }
 
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
@@ -338,16 +322,13 @@ void ObjFileMtlImporter::load() {
                 std::string_view svKeyword(&(*tokenStart), static_cast<size_t>(&(*tokenEnd) - &(*tokenStart)));
                 mDataIt = getNextWord(tokenEnd, mDataItEnd);
 
-                if (svKeyword == "subsurface" || svKeyword == "scattering") {
-                    getFloatIfMaterialValid(&ObjFile::Material::subsurface_scattering);
-                } else if (svKeyword == "speculartint") {
-                    getFloatIfMaterialValid(&ObjFile::Material::specular_tint);
-                } else if (svKeyword == "sheen") {
-                    getFloatIfMaterialValid(&ObjFile::Material::sheen_grazing);
-                } else if (svKeyword == "sheentint") {
-                    getFloatIfMaterialValid(&ObjFile::Material::sheen_tint);
+                const std::string keywordLower = ai_stdStrToLower(std::string(svKeyword));
+                if (svKeyword == "subsurface" || svKeyword == "scattering" ||
+                        keywordLower == "speculartint" || svKeyword == "sheen" ||
+                        keywordLower == "sheentint") {
+                    LogIgnoreCommunityMtlToken(svKeyword);
                 } else {
-                    ASSIMP_LOG_WARN("Unhandled keyword: ", svKeyword);
+                    ASSIMP_LOG_WARN("OBJ/MTL: Unhandled keyword: ", svKeyword);
                 }
 
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
@@ -359,12 +340,11 @@ void ObjFileMtlImporter::load() {
                 std::string_view svKeyword(&(*tokenStart), static_cast<size_t>(&(*tokenEnd) - &(*tokenStart)));
                 mDataIt = getNextWord(tokenEnd, mDataItEnd);
 
-                if (svKeyword == "clearcoat") {
-                    getFloatIfMaterialValid(&ObjFile::Material::clearcoat);
-                } else if (svKeyword == "clearcoatgloss") {
-                    getFloatIfMaterialValid(&ObjFile::Material::clearcoat_gloss);
+                const std::string keywordLower = ai_stdStrToLower(std::string(svKeyword));
+                if (keywordLower == "clearcoat" || keywordLower == "clearcoatgloss") {
+                    LogIgnoreCommunityMtlToken(svKeyword);
                 } else {
-                    ASSIMP_LOG_WARN("Unhandled keyword: ", svKeyword);
+                    ASSIMP_LOG_WARN("OBJ/MTL: Unhandled keyword: ", svKeyword);
                 }
 
                 mDataIt = skipLine<DataArrayIt>(mDataIt, mDataItEnd, mLine);
@@ -396,13 +376,6 @@ void ObjFileMtlImporter::getColorRGBA(aiColor3D *pColor) {
 }
 
 // -------------------------------------------------------------------
-void ObjFileMtlImporter::getColorRGBA(Maybe<aiColor3D> &value) {
-    aiColor3D v;
-    getColorRGBA(&v);
-    value = Maybe<aiColor3D>(v);
-}
-
-// -------------------------------------------------------------------
 //  Loads the kind of illumination model.
 void ObjFileMtlImporter::getIlluminationModel(int &illum_model) {
     mDataIt = CopyNextWord<DataArrayIt>(mDataIt, mDataItEnd, &mBuffer[0], BUFFERSIZE);
@@ -420,34 +393,6 @@ void ObjFileMtlImporter::getFloatValue(ai_real &value) {
     }
 
     value = fast_atof(&mBuffer[0]);
-}
-
-// -------------------------------------------------------------------
-void ObjFileMtlImporter::getFloatValue(Maybe<ai_real> &value) {
-    mDataIt = CopyNextWord<DataArrayIt>(mDataIt, mDataItEnd, &mBuffer[0], BUFFERSIZE);
-    const size_t len = std::strlen(&mBuffer[0]);
-    if (len) {
-        value = Maybe<ai_real>(fast_atof(&mBuffer[0]));
-    } else {
-        value = Maybe<ai_real>();
-    }
-}
-
-// -------------------------------------------------------------------
-//  Writes a loaded single float value if material not null
-void ObjFileMtlImporter::getFloatIfMaterialValid(ai_real ObjFile::Material::*member) {
-    if (mModel != nullptr && mModel->mCurrentMaterial != nullptr) {
-        // This will call getFloatValue(ai_real&)
-        getFloatValue(mModel->mCurrentMaterial->*member);
-    }
-}
-
-// -------------------------------------------------------------------
-void ObjFileMtlImporter::getFloatIfMaterialValid(Maybe<ai_real> ObjFile::Material::*member) {
-    // It can directly access `m_pModel` because it's part of the class
-    if (mModel != nullptr && mModel->mCurrentMaterial != nullptr) {
-        getFloatValue(mModel->mCurrentMaterial->*member);
-    }
 }
 
 // -------------------------------------------------------------------
@@ -504,6 +449,7 @@ void ObjFileMtlImporter::createMaterial() {
 void ObjFileMtlImporter::getTexture() {
     aiString *out = nullptr;
     int clampIndex = -1;
+    bool isReflection = false;
 
     if (mModel->mCurrentMaterial == nullptr) {
         mModel->mCurrentMaterial = new ObjFile::Material();
@@ -542,34 +488,49 @@ void ObjFileMtlImporter::getTexture() {
         // Bump texture
         out = &mModel->mCurrentMaterial->textureBump;
         clampIndex = ObjFile::Material::TextureBumpType;
-    } else if (!ASSIMP_strincmp(pPtr, NormalTextureV1, static_cast<unsigned int>(strlen(NormalTextureV1))) || !ASSIMP_strincmp(pPtr, NormalTextureV2, static_cast<unsigned int>(strlen(NormalTextureV2)))) {
-        // Normal map
+    } else if (!ASSIMP_strincmp(pPtr, NormalTextureV1, static_cast<unsigned int>(strlen(NormalTextureV1)))) {
+        // Normal map (map_Kn)
         out = &mModel->mCurrentMaterial->textureNormal;
         clampIndex = ObjFile::Material::TextureNormalType;
-    } else if (!ASSIMP_strincmp(pPtr, ReflectionTexture, static_cast<unsigned int>(strlen(ReflectionTexture)))) {
-        // Reflection texture(s)
-        //Do nothing here
+    } else if (!ASSIMP_strincmp(pPtr, NormalTextureV2, static_cast<unsigned int>(strlen(NormalTextureV2)))) {
+        // Clara.io PBR: "norm" - not Wavefront (use bump / map_bump).
+        LogIgnoreCommunityMtlToken(NormalTextureV2);
         return;
+    } else if (!ASSIMP_strincmp(pPtr, MapReflectionTexture, static_cast<unsigned int>(strlen(MapReflectionTexture)))) {
+        // Non-standard (e.g. Blender). Wavefront MTL documents "refl", not "map_refl".
+        ASSIMP_LOG_WARN(
+                "OBJ/MTL: map_refl is not Wavefront MTL and is ignored. "
+                "Use: refl [-type sphere|cube_*] <file>. "
+                "See http://paulbourke.net/dataformats/mtl/");
+        return;
+    } else if (!ASSIMP_strincmp(pPtr, ReflectionTexture, static_cast<unsigned int>(strlen(ReflectionTexture)))) {
+        // Wavefront reflection map: "refl" [-type sphere|cube_*] file
+        // Francesco Guastella (2015) wired -type handling in getTextureOption; out stays
+        // null here on purpose so -type can select textureReflection[i].
+        // Andrew Parlane (2016) added an early return to avoid a NULL clamp[] crash when
+        // -type was missing - that also skipped getTextureOption and dropped all refl maps.
+        // Restore the intended path: parse options, default bare refl to sphere, guard clamp.
+        isReflection = true;
     } else if (!ASSIMP_strincmp(pPtr, SpecularityTexture, static_cast<unsigned int>(strlen(SpecularityTexture)))) {
         // Specularity scaling (glossiness)
         out = &mModel->mCurrentMaterial->textureSpecularity;
         clampIndex = ObjFile::Material::TextureSpecularityType;
-    } else if ( !ASSIMP_strincmp( pPtr, RoughnessTexture, static_cast<unsigned int>(strlen(RoughnessTexture)))) {
-        // PBR Roughness texture
-        out = & mModel->mCurrentMaterial->textureRoughness;
-        clampIndex = ObjFile::Material::TextureRoughnessType;
-    } else if ( !ASSIMP_strincmp( pPtr, MetallicTexture, static_cast<unsigned int>(strlen(MetallicTexture)))) {
-        // PBR Metallic texture
-        out = & mModel->mCurrentMaterial->textureMetallic;
-        clampIndex = ObjFile::Material::TextureMetallicType;
-    } else if (!ASSIMP_strincmp( pPtr, SheenTexture, static_cast<unsigned int>(strlen(SheenTexture)))) {
-        // PBR Sheen (reflectance) texture
-        out = & mModel->mCurrentMaterial->textureSheen;
-        clampIndex = ObjFile::Material::TextureSheenType;
-    } else if (!ASSIMP_strincmp( pPtr, RMATexture, static_cast<unsigned int>(strlen(RMATexture)))) {
-        // PBR Rough/Metal/AO texture
-        out = & mModel->mCurrentMaterial->textureRMA;
-        clampIndex = ObjFile::Material::TextureRMAType;
+    } else if (!ASSIMP_strincmp(pPtr, RoughnessTexture, static_cast<unsigned int>(strlen(RoughnessTexture)))) {
+        LogIgnoreCommunityMtlToken(RoughnessTexture);
+        return;
+    } else if (!ASSIMP_strincmp(pPtr, MetallicTexture, static_cast<unsigned int>(strlen(MetallicTexture)))) {
+        LogIgnoreCommunityMtlToken(MetallicTexture);
+        return;
+    } else if (!ASSIMP_strincmp(pPtr, SheenTexture, static_cast<unsigned int>(strlen(SheenTexture)))) {
+        LogIgnoreCommunityMtlToken(SheenTexture);
+        return;
+    } else if (!ASSIMP_strincmp(pPtr, RMATexture, static_cast<unsigned int>(strlen(RMATexture))) ||
+               !ASSIMP_strincmp(pPtr, ORMTexture, static_cast<unsigned int>(strlen(ORMTexture)))) {
+        // DirectXMesh community RMA/ORM packed maps - not Wavefront.
+        LogIgnoreCommunityMtlToken(ASSIMP_strincmp(pPtr, RMATexture, static_cast<unsigned int>(strlen(RMATexture))) == 0 ?
+                                           RMATexture :
+                                           ORMTexture);
+        return;
     } else {
         ASSIMP_LOG_ERROR("OBJ/MTL: Encountered unknown texture type");
         return;
@@ -577,7 +538,16 @@ void ObjFileMtlImporter::getTexture() {
 
     bool clamp = false;
     getTextureOption(clamp, clampIndex, out);
-    mModel->mCurrentMaterial->clamp[clampIndex] = clamp;
+
+    // Bare "refl file" without -type -> sphere (Wavefront default).
+    if (isReflection && out == nullptr) {
+        clampIndex = ObjFile::Material::TextureReflectionSphereType;
+        out = &mModel->mCurrentMaterial->textureReflection[0];
+    }
+
+    if (clampIndex >= 0) {
+        mModel->mCurrentMaterial->clamp[clampIndex] = clamp;
+    }
 
     std::string texture;
     mDataIt = getName<DataArrayIt>(mDataIt, mDataItEnd, texture);
