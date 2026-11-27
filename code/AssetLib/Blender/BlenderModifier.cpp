@@ -123,9 +123,9 @@ void BlenderModifierShowcase::ApplyModifiers(aiNode &out, ConversionData &conv_d
                 // fallback can carry eModifierType_Mirror while allocating only the header;
                 // DoIt must not static_cast to MirrorModifierData / SubsurfModifierData.
                 const char *need = modifier->RequiredDnaType();
-                if (need != nullptr && !BlendElemConvertedAs(*cur, need)) {
-                    const char *have = cur->converted_type ? cur->converted_type : cur->dna_type;
-                    ASSIMP_LOG_DEBUG("BlendModifier: skip `", dat.name, "` handler - converted as `",
+                if (need != nullptr && !BlendElemConvertedHullIs(*cur, need)) {
+                    const char *have = cur->converted_hull ? cur->converted_hull : cur->dna_type;
+                    ASSIMP_LOG_DEBUG("BlendModifier: skip `", dat.name, "` handler - converted hull `",
                             have ? have : "?", "`, need `", need, "`");
                     continue;
                 }

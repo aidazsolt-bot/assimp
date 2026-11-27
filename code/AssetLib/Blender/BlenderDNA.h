@@ -103,7 +103,7 @@ struct Error : DeadlyImportError {
 struct ElemBase {
     ElemBase() :
             dna_type(nullptr),
-            converted_type(nullptr) {
+            converted_hull(nullptr) {
         // empty
     }
 
@@ -118,24 +118,24 @@ struct ElemBase {
      * C++ converter hull actually allocated (usually same as #dna_type).
      * When the GenericModifierData fallback (or any undersized stand-in) is used,
      * this is the stand-in name while #dna_type stays the file SDNA label.
-     * Casts to concrete types must match #converted_type (or #dna_type if null).
+     * Casts to concrete types must match #converted_hull (or #dna_type if null).
      */
-    const char *converted_type;
+    const char *converted_hull;
 };
 
 /** True when @p e was converted as @p need (concrete hull), not a Generic stand-in. */
-inline bool BlendElemConvertedAs(const ElemBase &e, const char *need) {
+inline bool BlendElemConvertedHullIs(const ElemBase &e, const char *need) {
     if (need == nullptr) {
         return false;
     }
-    const char *have = e.converted_type != nullptr ? e.converted_type : e.dna_type;
+    const char *have = e.converted_hull != nullptr ? e.converted_hull : e.dna_type;
     return have != nullptr && std::strcmp(have, need) == 0;
 }
 
 /** Bind file SDNA name and allocated hull name after a FactoryPair convert. */
-inline void BlendElemBindTypes(ElemBase &e, const char *fileSdnaName, const char *allocatedHullName) {
+inline void BlendElemBindConvertedHull(ElemBase &e, const char *fileSdnaName, const char *allocatedHullName) {
     e.dna_type = fileSdnaName;
-    e.converted_type = allocatedHullName != nullptr ? allocatedHullName : fileSdnaName;
+    e.converted_hull = allocatedHullName != nullptr ? allocatedHullName : fileSdnaName;
 }
 
 // -------------------------------------------------------------------------------
