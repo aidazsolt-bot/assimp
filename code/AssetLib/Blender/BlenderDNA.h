@@ -55,14 +55,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // enable verbose log output. really verbose, so be careful.
 #ifdef ASSIMP_BUILD_DEBUG
-#   define ASSIMP_BUILD_BLENDER_DEBUG
+#define ASSIMP_BUILD_BLENDER_DEBUG
 #endif
 
 // set this to non-zero to dump BlenderDNA stuff to dna.txt.
 // you could set it on the assimp build command line too without touching it here.
 // !!! please make sure this is set to 0 in the repo !!!
 #ifndef ASSIMP_BUILD_BLENDER_DEBUG_DNA
-#   define ASSIMP_BUILD_BLENDER_DEBUG_DNA 0
+#define ASSIMP_BUILD_BLENDER_DEBUG_DNA 0
 #endif
 
 // #define ASSIMP_BUILD_BLENDER_NO_STATS
@@ -124,14 +124,14 @@ struct ElemBase {
  *  they used to point to.*/
 // -------------------------------------------------------------------------------
 struct Pointer {
-    uint64_t val{0};
+    uint64_t val{ 0 };
 };
 
 // -------------------------------------------------------------------------------
 /** Represents a generic offset within a BLEND file */
 // -------------------------------------------------------------------------------
 struct FileOffset {
-    uint64_t val{0};
+    uint64_t val{ 0 };
 };
 
 // -------------------------------------------------------------------------------
@@ -189,14 +189,14 @@ struct Field {
 enum ErrorPolicy {
     /** Substitute default value and ignore */
     ErrorPolicy_Igno,
-    /** Substitute default value and write to log */
+    /** Substitute default value; log only with ASSIMP_BUILD_BLENDER_DEBUG (DNA version gaps are common). */
     ErrorPolicy_Warn,
     /** Substitute a massive error message and crash the whole matrix. Its time for another zion */
     ErrorPolicy_Fail
 };
 
 #ifdef ASSIMP_BUILD_BLENDER_DEBUG
-#   define ErrorPolicy_Igno ErrorPolicy_Warn
+#define ErrorPolicy_Igno ErrorPolicy_Warn
 #endif
 
 // -------------------------------------------------------------------------------
@@ -302,23 +302,23 @@ public:
 
     // --------------------------------------------------------
     /**
-    *   @brief  field parsing for dynamic vectors
-    *   @param[in]  out vector of struct to be filled
-    *   @param[in]  name of field
-    *   @param[in]  db to access the file, dna, ...
-    *   @return true when read was successful
-    */
+     *   @brief  field parsing for dynamic vectors
+     *   @param[in]  out vector of struct to be filled
+     *   @param[in]  name of field
+     *   @param[in]  db to access the file, dna, ...
+     *   @return true when read was successful
+     */
     template <int error_policy, template <typename> class TOUT, typename T>
     bool ReadFieldPtrVector(vector<TOUT<T>> &out, const char *name, const FileDatabase &db) const;
 
     /**
-    *   @brief  parses raw customdata
-    *   @param[in]  out shared_ptr to be filled
-    *   @param[in]  cdtype customdata type to read
-    *   @param[in]  name of field ptr
-    *   @param[in]  db to access the file, dna, ...
-    *   @return true when read was successful
-    */
+     *   @brief  parses raw customdata
+     *   @param[in]  out shared_ptr to be filled
+     *   @param[in]  cdtype customdata type to read
+     *   @param[in]  name of field ptr
+     *   @param[in]  db to access the file, dna, ...
+     *   @return true when read was successful
+     */
     template <int error_policy>
     bool ReadCustomDataPtr(std::shared_ptr<ElemBase> &out, int cdtype, const char *name, const FileDatabase &db) const;
 
@@ -389,11 +389,17 @@ private:
 };
 
 // -------------------------------------------------------------------------------------------------------
-template<>
+template <>
 struct Structure::_defaultInitializer<ErrorPolicy_Warn> {
     template <typename T>
     void operator()(T &out, const char *reason = "<add reason>") {
+        // Match other importers: NORMAL builds stay quiet. Missing DNA fields across
+        // Blender versions are expected Presence gaps - spam only in BLENDER_DEBUG.
+#ifdef ASSIMP_BUILD_BLENDER_DEBUG
         ASSIMP_LOG_WARN(reason);
+#else
+        (void)reason;
+#endif
 
         // ... and let the show go on
         _defaultInitializer<0 /*ErrorPolicy_Igno*/>()(out);
@@ -401,7 +407,7 @@ struct Structure::_defaultInitializer<ErrorPolicy_Warn> {
 };
 
 // -------------------------------------------------------------------------------------------------------
-template<>
+template <>
 struct Structure::_defaultInitializer<ErrorPolicy_Fail> {
     template <typename T>
     void operator()(T & /*out*/, const char *message = "") {
@@ -413,22 +419,30 @@ struct Structure::_defaultInitializer<ErrorPolicy_Fail> {
 
 // -------------------------------------------------------------------------------------------------------
 template <>
-inline bool Structure ::ResolvePointer<std::shared_ptr, ElemBase>(std::shared_ptr<ElemBase> &out,
+inline bool Structure::ResolvePointer<std::shared_ptr, ElemBase>(std::shared_ptr<ElemBase> &out,
         const Pointer &ptrval,
         const FileDatabase &db,
         const Field &f,
         bool) const;
 
-template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(
-    std::shared_ptr<ElemBase>& out, const Pointer & ptrval,
-    const FileDatabase& db, const Field&, bool) const;
-template <> inline void Structure :: Convert<int>    (int& dest,const FileDatabase& db) const;
-template<> inline void Structure :: Convert<short>  (short& dest,const FileDatabase& db) const;
-template <> inline void Structure :: Convert<char>   (char& dest,const FileDatabase& db) const;
-template <> inline void Structure::Convert<unsigned char>(unsigned char& dest, const FileDatabase& db) const;
-template <> inline void Structure :: Convert<float>  (float& dest,const FileDatabase& db) const;
-template <> inline void Structure :: Convert<double> (double& dest,const FileDatabase& db) const;
-template <> inline void Structure :: Convert<Pointer> (Pointer& dest,const FileDatabase& db) const;
+template <>
+bool Structure::ResolvePointer<std::shared_ptr, ElemBase>(
+        std::shared_ptr<ElemBase> &out, const Pointer &ptrval,
+        const FileDatabase &db, const Field &, bool) const;
+template <>
+inline void Structure::Convert<int>(int &dest, const FileDatabase &db) const;
+template <>
+inline void Structure::Convert<short>(short &dest, const FileDatabase &db) const;
+template <>
+inline void Structure::Convert<char>(char &dest, const FileDatabase &db) const;
+template <>
+inline void Structure::Convert<unsigned char>(unsigned char &dest, const FileDatabase &db) const;
+template <>
+inline void Structure::Convert<float>(float &dest, const FileDatabase &db) const;
+template <>
+inline void Structure::Convert<double>(double &dest, const FileDatabase &db) const;
+template <>
+inline void Structure::Convert<Pointer>(Pointer &dest, const FileDatabase &db) const;
 
 // -------------------------------------------------------------------------------
 /** Represents the full data structure information for a single BLEND file.
@@ -455,7 +469,7 @@ public:
 public:
     // --------------------------------------------------------
     /** Access a structure by its canonical name, the pointer version returns nullptr on failure
-      * while the reference version raises an error. */
+     * while the reference version raises an error. */
     inline const Structure &operator[](const std::string &ss) const;
     inline const Structure *Get(const std::string &ss) const;
 
@@ -524,17 +538,17 @@ public:
 
 // special converters for primitive types
 template <>
-inline void Structure ::Convert<int>(int &dest, const FileDatabase &db) const;
+inline void Structure::Convert<int>(int &dest, const FileDatabase &db) const;
 template <>
-inline void Structure ::Convert<short>(short &dest, const FileDatabase &db) const;
+inline void Structure::Convert<short>(short &dest, const FileDatabase &db) const;
 template <>
-inline void Structure ::Convert<char>(char &dest, const FileDatabase &db) const;
+inline void Structure::Convert<char>(char &dest, const FileDatabase &db) const;
 template <>
-inline void Structure ::Convert<float>(float &dest, const FileDatabase &db) const;
+inline void Structure::Convert<float>(float &dest, const FileDatabase &db) const;
 template <>
-inline void Structure ::Convert<double>(double &dest, const FileDatabase &db) const;
+inline void Structure::Convert<double>(double &dest, const FileDatabase &db) const;
 template <>
-inline void Structure ::Convert<Pointer>(Pointer &dest, const FileDatabase &db) const;
+inline void Structure::Convert<Pointer>(Pointer &dest, const FileDatabase &db) const;
 
 // -------------------------------------------------------------------------------
 /** Describes a master file block header. Each master file sections holds n
@@ -701,7 +715,7 @@ public:
 };
 
 #ifdef _MSC_VER
-#   pragma warning(disable : 4355)
+#pragma warning(disable : 4355)
 #endif
 
 // -------------------------------------------------------------------------------
@@ -763,7 +777,7 @@ private:
 };
 
 #ifdef _MSC_VER
-#   pragma warning(default : 4355)
+#pragma warning(default : 4355)
 #endif
 
 // -------------------------------------------------------------------------------
@@ -796,14 +810,14 @@ private:
 };
 
 /**
-*   @brief  read CustomData's data to ptr to mem
-*   @param[out] out memory ptr to set
-*   @param[in]  cdtype  to read
-*   @param[in]  cnt cnt of elements to read
-*   @param[in]  dataSize size in bytes of the file block the elements are read from
-*   @param[in]  db to read elements from
-*   @return true when ok
-*/
+ *   @brief  read CustomData's data to ptr to mem
+ *   @param[out] out memory ptr to set
+ *   @param[in]  cdtype  to read
+ *   @param[in]  cnt cnt of elements to read
+ *   @param[in]  dataSize size in bytes of the file block the elements are read from
+ *   @param[in]  db to read elements from
+ *   @return true when ok
+ */
 bool readCustomData(std::shared_ptr<ElemBase> &out, int cdtype, size_t cnt, size_t dataSize, const FileDatabase &db);
 
 } // namespace Blender

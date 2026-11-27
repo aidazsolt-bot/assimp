@@ -46,74 +46,74 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef INCLUDED_AI_BLEND_DNA_INL
 #define INCLUDED_AI_BLEND_DNA_INL
 
-#include <memory>
 #include <assimp/TinyFormatter.h>
+#include <memory>
 
 namespace Assimp {
 namespace Blender {
 
 //--------------------------------------------------------------------------------
-const Field& Structure::operator [] (const std::string& ss) const {
+const Field &Structure::operator[](const std::string &ss) const {
     std::map<std::string, size_t>::const_iterator it = indices.find(ss);
     if (it == indices.end()) {
-        throw Error("BlendDNA: Did not find a field named `",ss,"` in structure `",name,"`");
+        throw Error("BlendDNA: Did not find a field named `", ss, "` in structure `", name, "`");
     }
 
     return fields[(*it).second];
 }
 
 //--------------------------------------------------------------------------------
-const Field* Structure::Get (const std::string& ss) const {
+const Field *Structure::Get(const std::string &ss) const {
     std::map<std::string, size_t>::const_iterator it = indices.find(ss);
     return it == indices.end() ? nullptr : &fields[(*it).second];
 }
 
 //--------------------------------------------------------------------------------
-const Field& Structure::operator [] (const size_t i) const {
+const Field &Structure::operator[](const size_t i) const {
     if (i >= fields.size()) {
-        throw Error("BlendDNA: There is no field with index `",i,"` in structure `",name,"`");
+        throw Error("BlendDNA: There is no field with index `", i, "` in structure `", name, "`");
     }
 
     return fields[i];
 }
 
 //--------------------------------------------------------------------------------
-template <typename T> 
+template <typename T>
 std::shared_ptr<ElemBase> Structure::Allocate() const {
     return std::shared_ptr<T>(new T());
 }
 
 //--------------------------------------------------------------------------------
-template <typename T> 
-void Structure::Convert(std::shared_ptr<ElemBase> in, const FileDatabase& db) const {
-    Convert<T> (*static_cast<T*> ( in.get() ),db);
+template <typename T>
+void Structure::Convert(std::shared_ptr<ElemBase> in, const FileDatabase &db) const {
+    Convert<T>(*static_cast<T *>(in.get()), db);
 }
 
 //--------------------------------------------------------------------------------
 template <int error_policy, typename T, size_t M>
-void Structure :: ReadFieldArray(T (& out)[M], const char* name, const FileDatabase& db) const {
+void Structure::ReadFieldArray(T (&out)[M], const char *name, const FileDatabase &db) const {
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
     try {
-        const Field& f = (*this)[name];
-        const Structure& s = db.dna[f.type];
+        const Field &f = (*this)[name];
+        const Structure &s = db.dna[f.type];
 
         // is the input actually an array?
         if (!(f.flags & FieldFlag_Array)) {
-            throw Error("Field `",name,"` of structure `",this->name,"` ought to be an array of size ",M);
+            throw Error("Field `", name, "` of structure `", this->name, "` ought to be an array of size ", M);
         }
 
         db.reader->IncPtr(f.offset);
 
         // size conversions are always allowed, regardless of error_policy
         unsigned int i = 0;
-        for(; i < std::min(f.array_sizes[0],M); ++i) {
-            s.Convert(out[i],db);
+        for (; i < std::min(f.array_sizes[0], M); ++i) {
+            s.Convert(out[i], db);
         }
-        for(; i < M; ++i) {
+        for (; i < M; ++i) {
             _defaultInitializer<ErrorPolicy_Igno>()(out[i]);
         }
-    } catch (const Error& e) {
-        _defaultInitializer<error_policy>()(out,e.what());
+    } catch (const Error &e) {
+        _defaultInitializer<error_policy>()(out, e.what());
     }
 
     // and recover the previous stream position
@@ -126,38 +126,36 @@ void Structure :: ReadFieldArray(T (& out)[M], const char* name, const FileDatab
 
 //--------------------------------------------------------------------------------
 template <int error_policy, typename T, size_t M, size_t N>
-void Structure :: ReadFieldArray2(T (& out)[M][N], const char* name, const FileDatabase& db) const {
+void Structure::ReadFieldArray2(T (&out)[M][N], const char *name, const FileDatabase &db) const {
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
     try {
-        const Field& f = (*this)[name];
-        const Structure& s = db.dna[f.type];
+        const Field &f = (*this)[name];
+        const Structure &s = db.dna[f.type];
 
         // is the input actually an array?
         if (!(f.flags & FieldFlag_Array)) {
-            throw Error("Field `",name,"` of structure `",
-                this->name,"` ought to be an array of size ",M,"*",N
-                );
+            throw Error("Field `", name, "` of structure `",
+                    this->name, "` ought to be an array of size ", M, "*", N);
         }
 
         db.reader->IncPtr(f.offset);
 
         // size conversions are always allowed, regardless of error_policy
         unsigned int i = 0;
-        for(; i < std::min(f.array_sizes[0],M); ++i) {
+        for (; i < std::min(f.array_sizes[0], M); ++i) {
             unsigned int j = 0;
-            for(; j < std::min(f.array_sizes[1],N); ++j) {
-                s.Convert(out[i][j],db);
+            for (; j < std::min(f.array_sizes[1], N); ++j) {
+                s.Convert(out[i][j], db);
             }
-            for(; j < N; ++j) {
+            for (; j < N; ++j) {
                 _defaultInitializer<ErrorPolicy_Igno>()(out[i][j]);
             }
         }
-        for(; i < M; ++i) {
+        for (; i < M; ++i) {
             _defaultInitializer<ErrorPolicy_Igno>()(out[i]);
         }
-    }
-    catch (const Error& e) {
-        _defaultInitializer<error_policy>()(out,e.what());
+    } catch (const Error &e) {
+        _defaultInitializer<error_policy>()(out, e.what());
     }
 
     // and recover the previous stream position
@@ -170,26 +168,26 @@ void Structure :: ReadFieldArray2(T (& out)[M][N], const char* name, const FileD
 
 //--------------------------------------------------------------------------------
 template <int error_policy, template <typename> class TOUT, typename T>
-bool Structure :: ReadFieldPtr(TOUT<T>& out, const char* name, const FileDatabase& db,
-    	bool non_recursive /*= false*/) const {
+bool Structure::ReadFieldPtr(TOUT<T> &out, const char *name, const FileDatabase &db,
+        bool non_recursive /*= false*/) const {
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
     Pointer ptrval;
-    const Field* f;
+    const Field *f;
     try {
         f = &(*this)[name];
 
         // sanity check, should never happen if the genblenddna script is right
         if (!(f->flags & FieldFlag_Pointer)) {
-            throw Error("Field `",name,"` of structure `",
-                this->name,"` ought to be a pointer");
+            throw Error("Field `", name, "` of structure `",
+                    this->name, "` ought to be a pointer");
         }
 
         db.reader->IncPtr(f->offset);
-        Convert(ptrval,db);
+        Convert(ptrval, db);
         // actually it is meaningless on which Structure the Convert is called
         // because the `Pointer` argument triggers a special implementation.
-    } catch (const Error& e) {
-        _defaultInitializer<error_policy>()(out,e.what());
+    } catch (const Error &e) {
+        _defaultInitializer<error_policy>()(out, e.what());
 
         out.reset();
         return false;
@@ -211,7 +209,7 @@ bool Structure :: ReadFieldPtr(TOUT<T>& out, const char* name, const FileDatabas
         return false;
     }
 
-    if(!non_recursive) {
+    if (!non_recursive) {
         // and recover the previous stream position
         db.reader->SetCurrentPos(old);
     }
@@ -225,49 +223,47 @@ bool Structure :: ReadFieldPtr(TOUT<T>& out, const char* name, const FileDatabas
 
 //--------------------------------------------------------------------------------
 template <int error_policy, template <typename> class TOUT, typename T, size_t N>
-bool Structure :: ReadFieldPtr(TOUT<T> (&out)[N], const char* name,
-    const FileDatabase& db) const
-{
+bool Structure::ReadFieldPtr(TOUT<T> (&out)[N], const char *name,
+        const FileDatabase &db) const {
     // XXX see if we can reduce this to call to the 'normal' ReadFieldPtr
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
     Pointer ptrval[N];
-    const Field* f;
+    const Field *f;
     try {
         f = &(*this)[name];
 
 #ifdef _DEBUG
         // sanity check, should never happen if the genblenddna script is right
-        if ((FieldFlag_Pointer|FieldFlag_Pointer) != (f->flags & (FieldFlag_Pointer|FieldFlag_Pointer))) {
-            throw Error("Field `",name,"` of structure `",
-                this->name,"` ought to be a pointer AND an array");
+        if ((FieldFlag_Pointer | FieldFlag_Pointer) != (f->flags & (FieldFlag_Pointer | FieldFlag_Pointer))) {
+            throw Error("Field `", name, "` of structure `",
+                    this->name, "` ought to be a pointer AND an array");
         }
 #endif // _DEBUG
 
         db.reader->IncPtr(f->offset);
 
         size_t i = 0;
-        for(; i < std::min(f->array_sizes[0],N); ++i) {
-            Convert(ptrval[i],db);
+        for (; i < std::min(f->array_sizes[0], N); ++i) {
+            Convert(ptrval[i], db);
         }
-        for(; i < N; ++i) {
+        for (; i < N; ++i) {
             _defaultInitializer<ErrorPolicy_Igno>()(ptrval[i]);
         }
 
         // actually it is meaningless on which Structure the Convert is called
         // because the `Pointer` argument triggers a special implementation.
-    }
-    catch (const Error& e) {
-        _defaultInitializer<error_policy>()(out,e.what());
-        for(size_t i = 0; i < N; ++i) {
+    } catch (const Error &e) {
+        _defaultInitializer<error_policy>()(out, e.what());
+        for (size_t i = 0; i < N; ++i) {
             out[i].reset();
         }
         return false;
     }
 
     bool res = true;
-    for(size_t i = 0; i < N; ++i) {
+    for (size_t i = 0; i < N; ++i) {
         // resolve the pointer and load the corresponding structure
-        res = ResolvePointer(out[i],ptrval[i],db,*f) && res;
+        res = ResolvePointer(out[i], ptrval[i], db, *f) && res;
     }
 
     // and recover the previous stream position
@@ -281,18 +277,17 @@ bool Structure :: ReadFieldPtr(TOUT<T> (&out)[N], const char* name,
 
 //--------------------------------------------------------------------------------
 template <int error_policy, typename T>
-void Structure::ReadField(T& out, const char* name, const FileDatabase& db) const {
+void Structure::ReadField(T &out, const char *name, const FileDatabase &db) const {
     const StreamReaderAny::pos old = db.reader->GetCurrentPos();
     try {
-        const Field& f = (*this)[name];
+        const Field &f = (*this)[name];
         // find the structure definition pertaining to this field
-        const Structure& s = db.dna[f.type];
+        const Structure &s = db.dna[f.type];
 
         db.reader->IncPtr(f.offset);
-        s.Convert(out,db);
-    }
-    catch (const Error& e) {
-        _defaultInitializer<error_policy>()(out,e.what());
+        s.Convert(out, db);
+    } catch (const Error &e) {
+        _defaultInitializer<error_policy>()(out, e.what());
     }
 
     // and recover the previous stream position
@@ -303,136 +298,133 @@ void Structure::ReadField(T& out, const char* name, const FileDatabase& db) cons
 #endif
 }
 
-
 //--------------------------------------------------------------------------------
 // field parsing for raw untyped data (like CustomDataLayer.data)
 template <int error_policy>
-bool Structure::ReadCustomDataPtr(std::shared_ptr<ElemBase>&out, int cdtype, const char* name, const FileDatabase& db) const {
+bool Structure::ReadCustomDataPtr(std::shared_ptr<ElemBase> &out, int cdtype, const char *name, const FileDatabase &db) const {
 
-	const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+    const StreamReaderAny::pos old = db.reader->GetCurrentPos();
 
-	Pointer ptrval;
-	const Field* f;
-	try	{
-		f = &(*this)[name];
+    Pointer ptrval;
+    const Field *f;
+    try {
+        f = &(*this)[name];
 
-		// sanity check, should never happen if the genblenddna script is right
-		if (!(f->flags & FieldFlag_Pointer)) {
-			throw Error("Field `", name, "` of structure `",
-				this->name, "` ought to be a pointer");
-		}
+        // sanity check, should never happen if the genblenddna script is right
+        if (!(f->flags & FieldFlag_Pointer)) {
+            throw Error("Field `", name, "` of structure `",
+                    this->name, "` ought to be a pointer");
+        }
 
-		db.reader->IncPtr(f->offset);
-		Convert(ptrval, db);
-		// actually it is meaningless on which Structure the Convert is called
-		// because the `Pointer` argument triggers a special implementation.
-	} catch (const Error& e) {
-		_defaultInitializer<error_policy>()(out, e.what());
-		out.reset();
-	}
+        db.reader->IncPtr(f->offset);
+        Convert(ptrval, db);
+        // actually it is meaningless on which Structure the Convert is called
+        // because the `Pointer` argument triggers a special implementation.
+    } catch (const Error &e) {
+        _defaultInitializer<error_policy>()(out, e.what());
+        out.reset();
+    }
 
-	bool readOk = true;
-	if (ptrval.val)	{
-		// get block for ptr
-		const FileBlockHead* block = LocateFileBlockForAddress(ptrval, db);
-		if (!block) {
-			out.reset();
-			readOk = false;
-		} else {
-			const size_t offset = static_cast<size_t>(ptrval.val - block->address.val);
-			db.reader->SetCurrentPos(block->start + offset);
-			// read block->num instances of given type to out
-			readOk = readCustomData(out, cdtype, block->num,
-					block->size - std::min(offset, block->size), db);
-		}
-	}
+    bool readOk = true;
+    if (ptrval.val) {
+        // get block for ptr
+        const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+        if (!block) {
+            out.reset();
+            readOk = false;
+        } else {
+            const size_t offset = static_cast<size_t>(ptrval.val - block->address.val);
+            db.reader->SetCurrentPos(block->start + offset);
+            // read block->num instances of given type to out
+            readOk = readCustomData(out, cdtype, block->num,
+                    block->size - std::min(offset, block->size), db);
+        }
+    }
 
-	// and recover the previous stream position
-	db.reader->SetCurrentPos(old);
+    // and recover the previous stream position
+    db.reader->SetCurrentPos(old);
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
-	++db.stats().fields_read;
+    ++db.stats().fields_read;
 #endif
 
-	return readOk;
+    return readOk;
 }
 
 //--------------------------------------------------------------------------------
 template <int error_policy, template <typename> class TOUT, typename T>
-bool Structure::ReadFieldPtrVector(vector<TOUT<T>>&out, const char* name, const FileDatabase& db) const {
-	out.clear();
+bool Structure::ReadFieldPtrVector(vector<TOUT<T>> &out, const char *name, const FileDatabase &db) const {
+    out.clear();
 
-	const StreamReaderAny::pos old = db.reader->GetCurrentPos();
+    const StreamReaderAny::pos old = db.reader->GetCurrentPos();
 
-	Pointer ptrval;
-	const Field* f;
-	try	{
-		f = &(*this)[name];
+    Pointer ptrval;
+    const Field *f;
+    try {
+        f = &(*this)[name];
 
-		// sanity check, should never happen if the genblenddna script is right
-		if (!(f->flags & FieldFlag_Pointer)) {
-			throw Error("Field `", name, "` of structure `",
-				this->name, "` ought to be a pointer");
-		}
+        // sanity check, should never happen if the genblenddna script is right
+        if (!(f->flags & FieldFlag_Pointer)) {
+            throw Error("Field `", name, "` of structure `",
+                    this->name, "` ought to be a pointer");
+        }
 
-		db.reader->IncPtr(f->offset);
-		Convert(ptrval, db);
-		// actually it is meaningless on which Structure the Convert is called
-		// because the `Pointer` argument triggers a special implementation.
-	}
-	catch (const Error& e) {
-		_defaultInitializer<error_policy>()(out, e.what());
-		out.clear();
-		return false;
-	}
+        db.reader->IncPtr(f->offset);
+        Convert(ptrval, db);
+        // actually it is meaningless on which Structure the Convert is called
+        // because the `Pointer` argument triggers a special implementation.
+    } catch (const Error &e) {
+        _defaultInitializer<error_policy>()(out, e.what());
+        out.clear();
+        return false;
+    }
 
-	if (ptrval.val)	{
-		// find the file block the pointer is pointing to
-		const FileBlockHead* block = LocateFileBlockForAddress(ptrval, db);
-		if (block) {
-			db.reader->SetCurrentPos(block->start + static_cast<size_t>((ptrval.val - block->address.val)));
-			// FIXME: basically, this could cause problems with 64 bit pointers on 32 bit systems.
-			// I really ought to improve StreamReader to work with 64 bit indices exclusively.
+    if (ptrval.val) {
+        // find the file block the pointer is pointing to
+        const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
+        if (block) {
+            db.reader->SetCurrentPos(block->start + static_cast<size_t>((ptrval.val - block->address.val)));
+            // FIXME: basically, this could cause problems with 64 bit pointers on 32 bit systems.
+            // I really ought to improve StreamReader to work with 64 bit indices exclusively.
 
-			const Structure *sPtr = db.dna.Get(f->type);
-			if (sPtr == nullptr || f->type == "void") {
-				sPtr = &db.dna[block->dna_index];
-			}
-			const Structure &s = *sPtr;
-			for (size_t i = 0; i < block->num; ++i)	{
-				TOUT<T> p(new T);
-				s.Convert(*p, db);
-				out.push_back(p);
-			}
-		}
-	}
+            const Structure *sPtr = db.dna.Get(f->type);
+            if (sPtr == nullptr || f->type == "void") {
+                sPtr = &db.dna[block->dna_index];
+            }
+            const Structure &s = *sPtr;
+            for (size_t i = 0; i < block->num; ++i) {
+                TOUT<T> p(new T);
+                s.Convert(*p, db);
+                out.push_back(p);
+            }
+        }
+    }
 
-	db.reader->SetCurrentPos(old);
+    db.reader->SetCurrentPos(old);
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
-	++db.stats().fields_read;
+    ++db.stats().fields_read;
 #endif
 
-	return true;
+    return true;
 }
-
 
 //--------------------------------------------------------------------------------
 template <template <typename> class TOUT, typename T>
-bool Structure::ResolvePointer(TOUT<T>& out, const Pointer & ptrval, const FileDatabase& db,
-    	const Field& f, bool non_recursive /*= false*/) const {
+bool Structure::ResolvePointer(TOUT<T> &out, const Pointer &ptrval, const FileDatabase &db,
+        const Field &f, bool non_recursive /*= false*/) const {
     out.reset(); // ensure null pointers work
     if (!ptrval.val) {
         return false;
     }
     // find the file block the pointer is pointing to
-    const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
+    const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
     if (!block) {
         return false;
     }
 
     // Target type from the block header (SDNA index written with the DATA).
-    const Structure& ss = db.dna[block->dna_index];
+    const Structure &ss = db.dna[block->dna_index];
 
     // Pre-2.5 DNA often types geometry pointers as void* (e.g. Mesh::*mface,
     // Mesh::*tface). `void` is a TYPE name only - not a STRC - so dna["void"]
@@ -445,15 +437,14 @@ bool Structure::ResolvePointer(TOUT<T>& out, const Pointer & ptrval, const FileD
 
     // also check if it matches the type which we expect.
     if (ss != s) {
-        throw Error("Expected target to be of type `",s.name,
-            "` but seemingly it is a `",ss.name,"` instead"
-            );
+        throw Error("Expected target to be of type `", s.name,
+                "` but seemingly it is a `", ss.name, "` instead");
     }
 
     const uint64_t cache_owner = (block->id == "DATA") ? block->owner_id.val : 0;
 
     // try to retrieve the object from the cache
-    db.cache(out).get(s,out,ptrval,cache_owner);
+    db.cache(out).get(s, out, ptrval, cache_owner);
     if (out) {
         return true;
     }
@@ -479,41 +470,40 @@ bool Structure::ResolvePointer(TOUT<T>& out, const Pointer & ptrval, const FileD
 
     // seek to this location, but save the previous stream pointer.
     const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
-    db.reader->SetCurrentPos(block->start+ static_cast<size_t>((ptrval.val - block->address.val) ));
+    db.reader->SetCurrentPos(block->start + static_cast<size_t>((ptrval.val - block->address.val)));
     // FIXME: basically, this could cause problems with 64 bit pointers on 32 bit systems.
     // I really ought to improve StreamReader to work with 64 bit indices exclusively.
 
     // continue conversion after allocating the required storage
     size_t num = block->size / ss.size;
-    T* o = _allocate(out,num);
+    T *o = _allocate(out, num);
 
     // cache the object before we convert it to avoid cyclic recursion.
-    db.cache(out).set(s,out,ptrval,cache_owner);
+    db.cache(out).set(s, out, ptrval, cache_owner);
 
     // if the non_recursive flag is set, we don't do anything but leave
     // the cursor at the correct position to resolve the object.
     if (!non_recursive) {
-        for (size_t i = 0; i < num; ++i,++o) {
-            s.Convert(*o,db);
+        for (size_t i = 0; i < num; ++i, ++o) {
+            s.Convert(*o, db);
         }
 
         db.reader->SetCurrentPos(pold);
     }
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
-    if(out) {
+    if (out) {
         ++db.stats().pointers_resolved;
     }
 #endif
     return false;
 }
 
-
 //--------------------------------------------------------------------------------
-inline bool Structure::ResolvePointer(std::shared_ptr<FileOffset>& out, const Pointer & ptrval,
-    const FileDatabase& db,
-    const Field&,
-    bool) const {
+inline bool Structure::ResolvePointer(std::shared_ptr<FileOffset> &out, const Pointer &ptrval,
+        const FileDatabase &db,
+        const Field &,
+        bool) const {
     // Currently used exclusively by PackedFile::data to represent
     // a simple offset into the mapped BLEND file.
     out.reset();
@@ -522,22 +512,22 @@ inline bool Structure::ResolvePointer(std::shared_ptr<FileOffset>& out, const Po
     }
 
     // find the file block the pointer is pointing to
-    const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
+    const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
     if (!block) {
         return false;
     }
 
-    out =  std::shared_ptr< FileOffset > (new FileOffset());
-    out->val = block->start+ static_cast<size_t>((ptrval.val - block->address.val) );
+    out = std::shared_ptr<FileOffset>(new FileOffset());
+    out->val = block->start + static_cast<size_t>((ptrval.val - block->address.val));
     return false;
 }
 
 //--------------------------------------------------------------------------------
 template <template <typename> class TOUT, typename T>
-bool Structure :: ResolvePointer(vector< TOUT<T> >& out, const Pointer & ptrval,
-    	const FileDatabase& db,
-    	const Field& f,
-    	bool) const {
+bool Structure::ResolvePointer(vector<TOUT<T>> &out, const Pointer &ptrval,
+        const FileDatabase &db,
+        const Field &f,
+        bool) const {
     // This is a function overload, not a template specialization. According to
     // the partial ordering rules, it should be selected by the compiler
     // for array-of-pointer inputs, i.e. Object::mats.
@@ -548,25 +538,25 @@ bool Structure :: ResolvePointer(vector< TOUT<T> >& out, const Pointer & ptrval,
     }
 
     // find the file block the pointer is pointing to
-    const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
+    const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
     if (!block) {
         return false;
     }
-    const size_t num = block->size / (db.i64bit?8:4);
+    const size_t num = block->size / (db.i64bit ? 8 : 4);
 
     // keep the old stream position
     const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
-    db.reader->SetCurrentPos(block->start+ static_cast<size_t>((ptrval.val - block->address.val) ));
+    db.reader->SetCurrentPos(block->start + static_cast<size_t>((ptrval.val - block->address.val)));
 
     bool res = false;
     // allocate raw storage for the array
     out.resize(num);
-    for (size_t i = 0; i< num; ++i) {
+    for (size_t i = 0; i < num; ++i) {
         Pointer val;
-        Convert(val,db);
+        Convert(val, db);
 
         // and resolve the pointees
-        res = ResolvePointer(out[i],val,db,f) && res;
+        res = ResolvePointer(out[i], val, db, f) && res;
     }
 
     db.reader->SetCurrentPos(pold);
@@ -574,12 +564,12 @@ bool Structure :: ResolvePointer(vector< TOUT<T> >& out, const Pointer & ptrval,
 }
 
 //--------------------------------------------------------------------------------
-template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shared_ptr<ElemBase>& out,
-    const Pointer & ptrval,
-    const FileDatabase& db,
-    const Field&,
-    bool
-) const {
+template <>
+bool Structure::ResolvePointer<std::shared_ptr, ElemBase>(std::shared_ptr<ElemBase> &out,
+        const Pointer &ptrval,
+        const FileDatabase &db,
+        const Field &,
+        bool) const {
     // Special case when the data type needs to be determined at runtime.
     // Less secure than in the `strongly-typed` case.
 
@@ -589,18 +579,18 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
     }
 
     // find the file block the pointer is pointing to
-    const FileBlockHead* block = LocateFileBlockForAddress(ptrval,db);
+    const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
     if (!block) {
         return false;
     }
 
     // determine the target type from the block header
-    const Structure& s = db.dna[block->dna_index];
+    const Structure &s = db.dna[block->dna_index];
 
     const uint64_t cache_owner = (block->id == "DATA") ? block->owner_id.val : 0;
 
     // try to retrieve the object from the cache
-    db.cache(out).get(s,out,ptrval,cache_owner);
+    db.cache(out).get(s, out, ptrval, cache_owner);
     if (out) {
         return true;
     }
@@ -625,17 +615,18 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
 
     // seek to this location, but save the previous stream pointer.
     const StreamReaderAny::pos pold = db.reader->GetCurrentPos();
-    db.reader->SetCurrentPos(block->start+ static_cast<size_t>((ptrval.val - block->address.val) ));
+    db.reader->SetCurrentPos(block->start + static_cast<size_t>((ptrval.val - block->address.val)));
     // FIXME: basically, this could cause problems with 64 bit pointers on 32 bit systems.
     // I really ought to improve StreamReader to work with 64 bit indices exclusively.
 
     // continue conversion after allocating the required storage
-    DNA::FactoryPair builders = db.dna.GetBlobToStructureConverter(s,db);
+    DNA::FactoryPair builders = db.dna.GetBlobToStructureConverter(s, db);
     if (!builders.first) {
         // this might happen if DNA::RegisterConverters hasn't been called so far
         // or if the target type is not contained in `our` DNA.
         out.reset();
-        ASSIMP_LOG_WARN( "Failed to find a converter for the `",s.name,"` structure" );
+        // Many node/storage DNA types are Presence-only; not a NORMAL-level warning.
+        ASSIMP_LOG_DEBUG("Failed to find a converter for the `", s.name, "` structure");
         return false;
     }
 
@@ -644,17 +635,16 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
 
     // cache the object immediately to prevent infinite recursion in a
     // circular list with a single element (i.e. a self-referencing element).
-    db.cache(out).set(s,out,ptrval,cache_owner);
+    db.cache(out).set(s, out, ptrval, cache_owner);
 
     // and do the actual conversion
-    (s.*builders.second)(out,db);
+    (s.*builders.second)(out, db);
     db.reader->SetCurrentPos(pold);
 
     // store a pointer to the name string of the actual type
     // in the object itself. This allows the conversion code
     // to perform additional type checking.
     out->dna_type = s.name.c_str();
-
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
     ++db.stats().pointers_resolved;
@@ -663,8 +653,8 @@ template <> bool Structure :: ResolvePointer<std::shared_ptr,ElemBase>(std::shar
 }
 
 //--------------------------------------------------------------------------------
-const FileBlockHead* Structure::LocateFileBlockForAddress(const Pointer &ptrval, 
-		const FileDatabase &db) const {
+const FileBlockHead *Structure::LocateFileBlockForAddress(const Pointer &ptrval,
+        const FileDatabase &db) const {
     // Blender pointer remap (blender.git):
     //   source/blender/blenloader/intern/readfile.cc
     //   - read_data_into_datamap() fills FileData::datamap (old heap -> file DATA)
@@ -717,7 +707,7 @@ const FileBlockHead* Structure::LocateFileBlockForAddress(const Pointer &ptrval,
     // works regardless where the data is stored.
     // find the last file block starting at or before the pointer - this is
     // the only block that may actually contain the pointed-to data.
-    auto it = std::upper_bound(db.entries.begin(),db.entries.end(),ptrval);
+    auto it = std::upper_bound(db.entries.begin(), db.entries.end(), ptrval);
     if (it == db.entries.begin()) {
         ASSIMP_LOG_DEBUG("BlendDNA: dangling pointer (no file block in range) - treating as null");
         return nullptr;
@@ -733,11 +723,24 @@ const FileBlockHead* Structure::LocateFileBlockForAddress(const Pointer &ptrval,
 // ------------------------------------------------------------------------------------------------
 // NOTE: The MSVC debugger keeps showing up this annoying `a cast to a smaller data type has
 // caused a loss of data`-warning. Avoid this warning by a masking with an appropriate bitmask.
-template <typename T> struct signless;
-template <> struct signless<char> {typedef unsigned char type;};
-template <> struct signless<short> {typedef unsigned short type;};
-template <> struct signless<int> {typedef unsigned int type;};
-template <> struct signless<unsigned char> { typedef unsigned char type; };
+template <typename T>
+struct signless;
+template <>
+struct signless<char> {
+    typedef unsigned char type;
+};
+template <>
+struct signless<short> {
+    typedef unsigned short type;
+};
+template <>
+struct signless<int> {
+    typedef unsigned int type;
+};
+template <>
+struct signless<unsigned char> {
+    typedef unsigned char type;
+};
 template <typename T>
 struct static_cast_silent {
     template <typename V>
@@ -747,21 +750,26 @@ struct static_cast_silent {
 };
 
 //------------------------------------------------------------------------------------------------
-template <> struct static_cast_silent<float> {
-    template <typename V> float  operator()(V in) {
-        return static_cast<float> (in);
+template <>
+struct static_cast_silent<float> {
+    template <typename V>
+    float operator()(V in) {
+        return static_cast<float>(in);
     }
 };
 
 //------------------------------------------------------------------------------------------------
-template <> struct static_cast_silent<double> {
-    template <typename V> double operator()(V in) {
+template <>
+struct static_cast_silent<double> {
+    template <typename V>
+    double operator()(V in) {
         return static_cast<double>(in);
     }
 };
 
 //------------------------------------------------------------------------------------------------
-template <typename T> inline void ConvertDispatcher(T& out, const Structure& in,const FileDatabase& db) {
+template <typename T>
+inline void ConvertDispatcher(T &out, const Structure &in, const FileDatabase &db) {
     if (in.name == "int") {
         out = static_cast_silent<T>()(db.reader->GetU4());
     } else if (in.name == "short") {
@@ -778,33 +786,33 @@ template <typename T> inline void ConvertDispatcher(T& out, const Structure& in,
 }
 
 // ------------------------------------------------------------------------------------------------
-template <> 
-inline void Structure::Convert<int>(int& dest,const FileDatabase& db) const {
-    ConvertDispatcher(dest,*this,db);
+template <>
+inline void Structure::Convert<int>(int &dest, const FileDatabase &db) const {
+    ConvertDispatcher(dest, *this, db);
 }
 
 // ------------------------------------------------------------------------------------------------
-template<> 
-inline void Structure::Convert<short>(short& dest,const FileDatabase& db) const {
+template <>
+inline void Structure::Convert<short>(short &dest, const FileDatabase &db) const {
     // automatic rescaling from short to float and vice versa (seems to be used by normals)
     if (name == "float") {
         float f = db.reader->GetF4();
-        if ( f > 1.0f )
+        if (f > 1.0f)
             f = 1.0f;
-        dest = static_cast<short>( f * 32767.f);
-        //db.reader->IncPtr(-4);
+        dest = static_cast<short>(f * 32767.f);
+        // db.reader->IncPtr(-4);
         return;
     } else if (name == "double") {
         dest = static_cast<short>(db.reader->GetF8() * 32767.);
-        //db.reader->IncPtr(-8);
+        // db.reader->IncPtr(-8);
         return;
     }
-    ConvertDispatcher(dest,*this,db);
+    ConvertDispatcher(dest, *this, db);
 }
 
 // ------------------------------------------------------------------------------------------------
-template<>
-inline void Structure::Convert<char>(char& dest,const FileDatabase& db) const {
+template <>
+inline void Structure::Convert<char>(char &dest, const FileDatabase &db) const {
     // automatic rescaling from char to float and vice versa (seems useful for RGB colors)
     if (name == "float") {
         dest = static_cast<char>(db.reader->GetF4() * 255.f);
@@ -813,26 +821,26 @@ inline void Structure::Convert<char>(char& dest,const FileDatabase& db) const {
         dest = static_cast<char>(db.reader->GetF8() * 255.f);
         return;
     }
-    ConvertDispatcher(dest,*this,db);
+    ConvertDispatcher(dest, *this, db);
 }
 
 // ------------------------------------------------------------------------------------------------
-template <> 
-inline void Structure::Convert<unsigned char>(unsigned char& dest, const FileDatabase& db) const {
-	// automatic rescaling from char to float and vice versa (seems useful for RGB colors)
-	if (name == "float") {
-		dest = static_cast<unsigned char>(db.reader->GetF4() * 255.f);
-		return;
-	} else if (name == "double") {
-		dest = static_cast<unsigned char>(db.reader->GetF8() * 255.f);
-		return;
-	}
-	ConvertDispatcher(dest, *this, db);
+template <>
+inline void Structure::Convert<unsigned char>(unsigned char &dest, const FileDatabase &db) const {
+    // automatic rescaling from char to float and vice versa (seems useful for RGB colors)
+    if (name == "float") {
+        dest = static_cast<unsigned char>(db.reader->GetF4() * 255.f);
+        return;
+    } else if (name == "double") {
+        dest = static_cast<unsigned char>(db.reader->GetF8() * 255.f);
+        return;
+    }
+    ConvertDispatcher(dest, *this, db);
 }
 
 // ------------------------------------------------------------------------------------------------
-template<> 
-inline void Structure::Convert<float>(float& dest,const FileDatabase& db) const {
+template <>
+inline void Structure::Convert<float>(float &dest, const FileDatabase &db) const {
     // automatic rescaling from char to float and vice versa (seems useful for RGB colors)
     if (name == "char") {
         dest = db.reader->GetI1() / 255.f;
@@ -843,12 +851,12 @@ inline void Structure::Convert<float>(float& dest,const FileDatabase& db) const 
         dest = db.reader->GetI2() / 32767.f;
         return;
     }
-    ConvertDispatcher(dest,*this,db);
+    ConvertDispatcher(dest, *this, db);
 }
 
 // ------------------------------------------------------------------------------------------------
-template<> 
-inline void Structure::Convert<double> (double& dest,const FileDatabase& db) const {
+template <>
+inline void Structure::Convert<double>(double &dest, const FileDatabase &db) const {
     if (name == "char") {
         dest = db.reader->GetI1() / 255.;
         return;
@@ -856,54 +864,55 @@ inline void Structure::Convert<double> (double& dest,const FileDatabase& db) con
         dest = db.reader->GetI2() / 32767.;
         return;
     }
-    ConvertDispatcher(dest,*this,db);
+    ConvertDispatcher(dest, *this, db);
 }
 
 // ------------------------------------------------------------------------------------------------
-template<> 
-inline void Structure::Convert<Pointer>(Pointer& dest,const FileDatabase& db) const {
+template <>
+inline void Structure::Convert<Pointer>(Pointer &dest, const FileDatabase &db) const {
     if (db.i64bit) {
         dest.val = db.reader->GetU8();
-        //db.reader->IncPtr(-8);
+        // db.reader->IncPtr(-8);
         return;
     }
     dest.val = db.reader->GetU4();
 }
 
 //--------------------------------------------------------------------------------
-const Structure& DNA::operator [] (const std::string& ss) const {
+const Structure &DNA::operator[](const std::string &ss) const {
     std::map<std::string, size_t>::const_iterator it = indices.find(ss);
     if (it == indices.end()) {
-        throw Error("BlendDNA: Did not find a structure named `",ss,"`");
+        throw Error("BlendDNA: Did not find a structure named `", ss, "`");
     }
 
     return structures[(*it).second];
 }
 
 //--------------------------------------------------------------------------------
-const Structure* DNA::Get (const std::string& ss) const {
+const Structure *DNA::Get(const std::string &ss) const {
     std::map<std::string, size_t>::const_iterator it = indices.find(ss);
     return it == indices.end() ? nullptr : &structures[(*it).second];
 }
 
 //--------------------------------------------------------------------------------
-const Structure& DNA::operator [] (const size_t i) const {
+const Structure &DNA::operator[](const size_t i) const {
     if (i >= structures.size()) {
-        throw Error("BlendDNA: There is no structure with index `",i,"`");
+        throw Error("BlendDNA: There is no structure with index `", i, "`");
     }
 
     return structures[i];
 }
 
 //--------------------------------------------------------------------------------
-template <template <typename> class TOUT> template <typename T> void ObjectCache<TOUT> :: get (
-    const Structure& s,
-    TOUT<T>& out,
-    const Pointer& ptr,
-    uint64_t owner_id
-) const {
+template <template <typename> class TOUT>
+template <typename T>
+void ObjectCache<TOUT>::get(
+        const Structure &s,
+        TOUT<T> &out,
+        const Pointer &ptr,
+        uint64_t owner_id) const {
 
-    if(s.cache_idx == static_cast<size_t>(-1)) {
+    if (s.cache_idx == static_cast<size_t>(-1)) {
         s.cache_idx = db.next_cache_idx++;
         caches.resize(db.next_cache_idx);
         return;
@@ -912,7 +921,7 @@ template <template <typename> class TOUT> template <typename T> void ObjectCache
     const CacheKey key(owner_id, ptr.val);
     typename StructureCache::const_iterator it = caches[s.cache_idx].find(key);
     if (it != caches[s.cache_idx].end()) {
-        out = std::static_pointer_cast<T>( (*it).second );
+        out = std::static_pointer_cast<T>((*it).second);
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
         ++db.stats().cache_hits;
@@ -921,26 +930,26 @@ template <template <typename> class TOUT> template <typename T> void ObjectCache
     // otherwise, out remains untouched
 }
 
-
 //--------------------------------------------------------------------------------
-template <template <typename> class TOUT> template <typename T> void ObjectCache<TOUT> :: set (
-    const Structure& s,
-    const TOUT<T>& out,
-    const Pointer& ptr,
-    uint64_t owner_id
-) {
-    if(s.cache_idx == static_cast<size_t>(-1)) {
+template <template <typename> class TOUT>
+template <typename T>
+void ObjectCache<TOUT>::set(
+        const Structure &s,
+        const TOUT<T> &out,
+        const Pointer &ptr,
+        uint64_t owner_id) {
+    if (s.cache_idx == static_cast<size_t>(-1)) {
         s.cache_idx = db.next_cache_idx++;
         caches.resize(db.next_cache_idx);
     }
-    caches[s.cache_idx][CacheKey(owner_id, ptr.val)] = std::static_pointer_cast<ElemBase>( out );
+    caches[s.cache_idx][CacheKey(owner_id, ptr.val)] = std::static_pointer_cast<ElemBase>(out);
 
 #ifndef ASSIMP_BUILD_BLENDER_NO_STATS
     ++db.stats().cached_objects;
 #endif
 }
 
-}
-}
+} // namespace Blender
+} // namespace Assimp
 
 #endif

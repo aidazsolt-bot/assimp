@@ -70,7 +70,6 @@ static const fpCreateModifier creators[] = {
     nullptr // sentinel
 };
 
-
 // ------------------------------------------------------------------------------------------------
 void BlenderModifierShowcase::ApplyModifiers(aiNode &out, ConversionData &conv_data, const Scene &in, const Object &orig_object) {
     size_t cnt = 0u, ful = 0u;
@@ -127,7 +126,8 @@ void BlenderModifierShowcase::ApplyModifiers(aiNode &out, ConversionData &conv_d
             }
         }
         if (curgod) {
-            ASSIMP_LOG_WARN("Couldn't find a handler for modifier: ", dat.name);
+            // Untyped / sidecar-deferred modifiers are expected; avoid Warn spam.
+            ASSIMP_LOG_DEBUG("Couldn't find a handler for modifier: ", dat.name);
         }
     }
 
@@ -141,12 +141,12 @@ void BlenderModifierShowcase::ApplyModifiers(aiNode &out, ConversionData &conv_d
 }
 
 // ------------------------------------------------------------------------------------------------
-bool BlenderModifier_Mirror ::IsActive(const ModifierData &modin) {
+bool BlenderModifier_Mirror::IsActive(const ModifierData &modin) {
     return modin.type == ModifierData::eModifierType_Mirror;
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderModifier_Mirror ::DoIt(aiNode &out, ConversionData &conv_data, const ElemBase &orig_modifier,
+void BlenderModifier_Mirror::DoIt(aiNode &out, ConversionData &conv_data, const ElemBase &orig_modifier,
         const Scene & /*in*/,
         const Object &orig_object) {
     // hijacking the ABI, see the big note in BlenderModifierShowcase::ApplyModifiers()
@@ -249,12 +249,12 @@ void BlenderModifier_Mirror ::DoIt(aiNode &out, ConversionData &conv_data, const
 }
 
 // ------------------------------------------------------------------------------------------------
-bool BlenderModifier_Subdivision ::IsActive(const ModifierData &modin) {
+bool BlenderModifier_Subdivision::IsActive(const ModifierData &modin) {
     return modin.type == ModifierData::eModifierType_Subsurf;
 }
 
 // ------------------------------------------------------------------------------------------------
-void BlenderModifier_Subdivision ::DoIt(aiNode &out, ConversionData &conv_data, const ElemBase &orig_modifier,
+void BlenderModifier_Subdivision::DoIt(aiNode &out, ConversionData &conv_data, const ElemBase &orig_modifier,
         const Scene & /*in*/,
         const Object &orig_object) {
     // hijacking the ABI, see the big note in BlenderModifierShowcase::ApplyModifiers()
