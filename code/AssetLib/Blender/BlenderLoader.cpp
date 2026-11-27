@@ -921,6 +921,53 @@ void BlendCollectObjectDrivers(const Assimp::Blender::Object *obj, Assimp::Blend
     }
 }
 
+// Matrix helpers are defined later in this TU (same anonymous namespace).
+void BlendIdentityM4(float m[4][4]);
+void BlendMulM3(float r[3][3], const float a[3][3], const float b[3][3]);
+void BlendMulM4(float r[4][4], const float a[4][4], const float b[4][4]);
+void BlendSizeToMat3(float m[3][3], const float size[3]);
+void BlendQuatToMat3(float m[3][3], const float q[4]);
+void BlendEulXYZToMat3(float m[3][3], const float eul[3]);
+void BlendCopyMat4ToAi(aiMatrix4x4 &out, const float m[4][4]);
+
+const Assimp::Blender::Bone *BlendCastBone(const Assimp::Blender::ElemBase *e) {
+    using namespace Assimp::Blender;
+    if (e == nullptr) {
+        return nullptr;
+    }
+    if (e->dna_type != nullptr && std::strcmp(e->dna_type, "Bone") != 0) {
+        return nullptr;
+    }
+    return static_cast<const Bone *>(e);
+}
+
+/** Parent-relative rest matrix from Bone.arm_mat (armature space). */
+void BlendBoneRestLocalM4(const Assimp::Blender::Bone *bone, const Assimp::Blender::Bone *parent,
+        float out[4][4]) {
+    if (bone == nullptr) {
+        BlendIdentityM4(out);
+        return;
+    }
+    if (parent == nullptr) {
+        for (unsigned i = 0; i < 4; ++i) {
+            for (unsigned j = 0; j < 4; ++j) {
+                out[i][j] = bone->arm_mat[i][j];
+            }
+        }
+        return;
+    }
+    // local = inv(parent.arm_mat) * bone.arm_mat
+    aiMatrix4x4 parentAi, boneAi;
+    BlendCopyMat4ToAi(parentAi, parent->arm_mat);
+    BlendCopyMat4ToAi(boneAi, bone->arm_mat);
+    const aiMatrix4x4 localAi = parentAi.Inverse() * boneAi;
+    for (unsigned x = 0; x < 4; ++x) {
+        for (unsigned y = 0; y < 4; ++y) {
+            out[x][y] = localAi[y][x];
+        }
+    }
+}
+
 /** Recursively emit bone aiNodes under an Armature object node. */
 void BlendEmitBoneNodeTree(aiNode *parentNode, const Assimp::Blender::Bone *bone,
         const Assimp::Blender::Bone *parentBone, const Assimp::Blender::Object &armObj,
