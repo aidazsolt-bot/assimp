@@ -453,7 +453,14 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
   - Musgrave/Noise Presence: `musgraveType` (DNA `SHD_MUSGRAVE_*` /
     `NodeTexNoise.type`) + optional `musgraveTypeName` when known; omit if unread
   - links: from/to node + sockets
-  - `hostProcedural`: `TexBrick` / `ColorRamp` when present
+  - `hostProcedural`: `TexBrick` / `ColorRamp` / `TexNoise` / `TexMusgrave` when
+    DNA present (same walk as MATKEY below)
+- **Typed Presence gate (MATKEY mirrors, no invent):** when the network bag is
+  attached for a material:
+  - `$mat.blend.shaderNetworkEval` = `"host"` (Assimp does not CPU-eval)
+  - `$mat.blend.hostProcedural` = comma list of the same tokens as bag
+    `hostProcedural[]` when non-empty; omit key when empty
+  Host may open the network JSON only when these Presence keys say so.
 - Host Look may generate diffuse/emissive maps from that bag (Cityscapes facade /
   window lights). **Look-specific Bake/render** in the renderer remains an
   optional alternate path (not Assimp Authoring-Bake).

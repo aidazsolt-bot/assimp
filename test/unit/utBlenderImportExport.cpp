@@ -41,13 +41,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "AbstractImportExportBase.h"
 #include "UnitTestPCH.h"
 
+#include <assimp/SpatialSort.h>
 #include <assimp/commonMetaData.h>
-#include <assimp/postprocess.h>
-#include <assimp/Importer.hpp>
 #include <assimp/metadata.h>
+#include <assimp/postprocess.h>
 #include <assimp/scene.h>
 #include <assimp/sidecar.h>
-#include <assimp/SpatialSort.h>
+#include <assimp/Importer.hpp>
 #include <cstring>
 
 using namespace Assimp;
@@ -155,7 +155,7 @@ TEST(utBlenderImporter, importCubeHierarchy_248) {
 TEST(utBlenderImporter, importHuman) {
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/BLEND/HUMAN.blend", aiProcess_ValidateDataStructure);
-	ASSERT_NE(nullptr, scene);
+    ASSERT_NE(nullptr, scene);
 }
 
 TEST(utBlenderImporter, importMirroredCube_252) {
@@ -263,8 +263,7 @@ TEST_F(utBlenderImporterExporter, importBlendWithSubdivisionSurface) {
     SpatialSort spatialSortVertices0;
     spatialSortVertices0.Fill(scene->mMeshes[0]->mVertices, scene->mMeshes[0]->mNumVertices, sizeof(aiVector3D), true);
 
-    for (unsigned int i = 0; i < scene->mMeshes[1]->mNumVertices; ++i)
-    {
+    for (unsigned int i = 0; i < scene->mMeshes[1]->mNumVertices; ++i) {
         auto positionMesh1 = scene->mMeshes[1]->mVertices[i];
         std::vector<unsigned int> spatialSortResult;
         spatialSortVertices0.FindPositions(positionMesh1, 1.0e-6f, spatialSortResult);
@@ -321,6 +320,20 @@ TEST(utBlenderImporter, categorySidecarsS1toS8Test) {
     ASSERT_NE(nullptr, matSc);
     ASSERT_NE(nullptr, matSc->mExtensionsJson);
     EXPECT_NE(nullptr, std::strstr(matSc->mExtensionsJson, "BLEND_shader"));
+    // Typed HostEval gate: network bag -> $mat.blend.shaderNetworkEval=host
+    if (std::strstr(matSc->mExtensionsJson, "BLEND_shader_network") != nullptr) {
+        aiString evalOwner;
+        ASSERT_EQ(AI_SUCCESS,
+                scene->mMaterials[0]->Get("$mat.blend.shaderNetworkEval", 0, 0, evalOwner));
+        EXPECT_STREQ("host", evalOwner.C_Str());
+        // hostProcedural MATKEY only when bag lists kinds (Presence; may be absent).
+        if (std::strstr(matSc->mExtensionsJson, "\"hostProcedural\"") != nullptr) {
+            aiString hostProc;
+            ASSERT_EQ(AI_SUCCESS,
+                    scene->mMaterials[0]->Get("$mat.blend.hostProcedural", 0, 0, hostProc));
+            EXPECT_GT(hostProc.length, 0u);
+        }
+    }
 
     // S4 cameras/lights + S8 skipped in heap scene JSON
     ASSERT_NE(0, aiSceneHasSceneSidecar(scene));

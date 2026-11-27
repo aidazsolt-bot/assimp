@@ -3775,6 +3775,107 @@ void BlendEmitWorldEnv(const Assimp::Blender::Scene &in, Assimp::Blender::Conver
     conv.worldEnvJson = wj.str();
 }
 
+/** DNA Presence: HostEval procedural kinds on a nodetree (no invent). */
+struct BlendHostProceduralKinds {
+    bool brick = false;
+    bool ramp = false;
+    bool noise = false;
+    bool musgrave = false;
+
+    bool any() const {
+        return brick || ramp || noise || musgrave;
+    }
+
+    void Collect(const BlendNodeGraph &g) {
+        using namespace Assimp::Blender;
+        for (const bNode *n : g.nodes) {
+            if (n == nullptr) {
+                continue;
+            }
+            if (BlendNodeIsTexBrick(*n)) {
+                brick = true;
+            } else if (BlendNodeIsColorRamp(*n)) {
+                ramp = true;
+            } else if (BlendNodeIsTexNoise(*n)) {
+                noise = true;
+            } else if (BlendNodeIsTexMusgrave(*n)) {
+                musgrave = true;
+            }
+        }
+    }
+
+    std::string MatKeyCsv() const {
+        std::string s;
+        auto add = [&](const char *tok) {
+            if (!s.empty()) {
+                s += ',';
+            }
+            s += tok;
+        };
+        if (brick) {
+            add("TexBrick");
+        }
+        if (ramp) {
+            add("ColorRamp");
+        }
+        if (noise) {
+            add("TexNoise");
+        }
+        if (musgrave) {
+            add("TexMusgrave");
+        }
+        return s;
+    }
+
+    void AppendJsonArray(std::ostringstream &nj) const {
+        if (!any()) {
+            return;
+        }
+        nj << ",\"hostProcedural\":[";
+        bool first = true;
+        auto add = [&](const char *tok) {
+            if (!first) {
+                nj << ',';
+            }
+            first = false;
+            nj << '"' << tok << '"';
+        };
+        if (brick) {
+            add("TexBrick");
+        }
+        if (ramp) {
+            add("ColorRamp");
+        }
+        if (noise) {
+            add("TexNoise");
+        }
+        if (musgrave) {
+            add("TexMusgrave");
+        }
+        nj << ']';
+    }
+};
+
+/**
+ * Presence MATKEYs mirroring bag eval / hostProcedural so Host can skip JSON
+ * open when HostEval is not needed. Emit only when network bag is attached.
+ */
+void BlendEmitShaderNetworkHostEvalMatKeys(aiMaterial *mout, const BlendNodeGraph &g) {
+    if (mout == nullptr) {
+        return;
+    }
+    aiString evalOwner("host");
+    mout->AddProperty(&evalOwner, "$mat.blend.shaderNetworkEval", 0, 0);
+    BlendHostProceduralKinds hp;
+    hp.Collect(g);
+    if (!hp.any()) {
+        return;
+    }
+    const std::string csv = hp.MatKeyCsv();
+    aiString hostProc(csv.c_str());
+    mout->AddProperty(&hostProc, "$mat.blend.hostProcedural", 0, 0);
+}
+
 std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         Assimp::Blender::ConversionData &conv, const BlendNodeGraph &g) {
     using namespace Assimp::Blender;
@@ -3813,6 +3914,9 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         pushUnique(parentsOf[tn->name], fn->name);
     }
 
+    BlendHostProceduralKinds hostProc;
+    hostProc.Collect(g);
+
     std::ostringstream nj;
     // Host-eval policy: emit authored socket defaults + ColorBand + links so the
     // renderer Look can implement Brick/Ramp (no Assimp bake; no invent).
@@ -3829,8 +3933,6 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
     }
     nj << ",\"nodes\":[";
     bool nfirst = true;
-    bool sawBrick = false;
-    bool sawRamp = false;
     for (const bNode *n : g.nodes) {
         if (n == nullptr) {
             continue;
@@ -3874,10 +3976,8 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         }
         if (BlendNodeIsTexBrick(*n)) {
             nj << ",\"procedural\":\"TexBrick\"";
-            sawBrick = true;
         } else if (BlendNodeIsColorRamp(*n)) {
             nj << ",\"procedural\":\"ColorRamp\"";
-            sawRamp = true;
         } else if (BlendNodeIsTexNoise(*n)) {
             nj << ",\"procedural\":\"TexNoise\"";
         } else if (BlendNodeIsTexMusgrave(*n)) {
@@ -4023,21 +4123,7 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         nj << '}';
     }
     nj << ']';
-    if (sawBrick || sawRamp) {
-        nj << ",\"hostProcedural\":[";
-        bool pfirst = true;
-        if (sawBrick) {
-            nj << "\"TexBrick\"";
-            pfirst = false;
-        }
-        if (sawRamp) {
-            if (!pfirst) {
-                nj << ',';
-            }
-            nj << "\"ColorRamp\"";
-        }
-        nj << ']';
-    }
+    hostProc.AppendJsonArray(nj);
     nj << '}';
     // Honesty: Assimp does not CPU-eval the graph; Host Look may. Do not list
     // TexBrick/ColorRamp under skipped[] when params were emitted for hostEval.
@@ -8725,6 +8811,10 @@ void BlenderImporter::BuildMaterials(ConversionData &conv_data) {
         }
         conv_data.materialSidecarJson.push_back(
                 BlendBuildMaterialSidecarJson(*mat, flat, conv_data, inventory, materialGraphPtr));
+        // Typed Presence gate for HostEval (mirrors bag eval / hostProcedural).
+        if (materialGraphPtr != nullptr) {
+            BlendEmitShaderNetworkHostEvalMatKeys(mout, *materialGraphPtr);
+        }
         if (flat.hasVolumeColor || flat.hasVolumeDensity || flat.hasVolumeDensityDefault ||
                 flat.hasVolumeDensityLinked || flat.hasVolumeDensityAttribute || flat.hasVolumeAnisotropy ||
                 flat.hasVolumeAbsorptionColor || flat.hasVolumeEmissionColor ||
