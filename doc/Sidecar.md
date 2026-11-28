@@ -455,6 +455,18 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
     on `aiMaterial` via the existing flatten path.
   - nodes: idname/name, `procedural`/`kind` (incl. `Mapping`), **unlinked input defaults**
     (`value` / `rgba` / `vector`), **ColorBand** stops for `ShaderNodeValToRGB`
+  - **MixRGB `blend_type` (2026-11-28b):** when node is MixRGB / `ShaderNodeMixRGB`
+    (DNA `custom1` = `MA_RAMP_*`), emit `blend_typeCode` and string `blend_type`
+    (`MIX`/`ADD`/`MULTIPLY`/…) when the code has a known alias; omit the string for
+    unknown codes; never invent. **Not** emitted for `ShaderNodeMix` color mode
+    (`custom1` is socket data_type there; `NodeShaderMix.blend_type` unread).
+  - **ShaderNodeGroup expand (2026-11-28b):** DNA-resolved group trees are inlined
+    into the same bag under `GroupInstanceName/InnerNode` names, with bridge
+    `links[]` across Group Input/Output so HostEval can walk Fac-prep chains
+    (e.g. MixRGB→Invert→Bright/Contrast→Mix Shader) without inventing group
+    internals. Group stub keeps `kind:"Group"`, `expanded:true` when inlined,
+    optional `groupTree` from DNA `bNodeTree.id.name`. Unresolved group id → stub
+    only (no invent). Nested groups recurse (depth cap).
   - **ShaderNodeMapping** Location/Rotation/Scale: Presence `vector` from SOCK_VECTOR
     socket defaults when unlinked; pre-2.81 files from DNA `TexMapping` storage
     (`source:"TexMapping"`) — Image and procedural paths.
@@ -464,9 +476,9 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
     Host applies for Image and procedural (Brick, etc.).
   - Musgrave/Noise Presence: `musgraveType` (DNA `SHD_MUSGRAVE_*` /
     `NodeTexNoise.type`) + optional `musgraveTypeName` when known; omit if unread
-  - links: from/to node + sockets
+  - links: from/to node + sockets (incl. group-bridge links when expanded)
   - `hostProcedural`: `TexBrick` / `ColorRamp` / `TexNoise` / `TexMusgrave` when
-    DNA present (same walk as MATKEY below)
+    DNA present (same walk as MATKEY below; includes kinds inside expanded groups)
 - **Typed Presence gate (MATKEY mirrors, no invent):** when the network bag is
   attached for a material:
   - `$mat.blend.shaderNetworkEval` = `"host"` (Assimp does not CPU-eval)

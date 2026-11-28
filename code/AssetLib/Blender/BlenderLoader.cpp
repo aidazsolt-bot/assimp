@@ -75,6 +75,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <initializer_list>
 #include <map>
@@ -3864,6 +3865,63 @@ void BlendEmitWorldEnv(const Assimp::Blender::Scene &in, Assimp::Blender::Conver
 }
 
 /** DNA Presence: HostEval procedural kinds on a nodetree (no invent). */
+/** DNA MA_RAMP_* (MixRGB custom1 / ramp blend). nullptr when code has no known alias. */
+const char *BlendMaRampBlendTypeName(int code) {
+    switch (code) {
+    case 0: return "MIX";
+    case 1: return "ADD";
+    case 2: return "MULTIPLY";
+    case 3: return "SUBTRACT";
+    case 4: return "SCREEN";
+    case 5: return "DIVIDE";
+    case 6: return "DIFFERENCE";
+    case 7: return "DARKEN";
+    case 8: return "LIGHTEN";
+    case 9: return "OVERLAY";
+    case 10: return "DODGE";
+    case 11: return "BURN";
+    case 12: return "HUE";
+    case 13: return "SATURATION";
+    case 14: return "VALUE";
+    case 15: return "COLOR";
+    case 16: return "SOFT_LIGHT";
+    case 17: return "LINEAR_LIGHT";
+    case 18: return "EXCLUSION";
+    default: return nullptr;
+    }
+}
+
+/** Blender ID.name is "NTTreeName" - strip 2-char block code when present. */
+std::string BlendDnaIdNameBody(const char *idName) {
+    if (idName == nullptr || idName[0] == '\0') {
+        return {};
+    }
+    if (idName[0] != '\0' && idName[1] != '\0') {
+        return std::string(idName + 2);
+    }
+    return std::string(idName);
+}
+
+bool BlendNetworkSocketsMatch(const Assimp::Blender::bNodeSocket &a,
+        const Assimp::Blender::bNodeSocket &b) {
+    if (a.identifier[0] != '\0' && b.identifier[0] != '\0' &&
+            std::strcmp(a.identifier, b.identifier) == 0) {
+        return true;
+    }
+    if (BlendSockNameIs(a, b.name) || BlendSockNameIs(b, a.name)) {
+        return true;
+    }
+    if (a.identifier[0] != '\0' &&
+            (BlendSockNameIs(b, a.identifier) || std::strcmp(b.name, a.identifier) == 0)) {
+        return true;
+    }
+    if (b.identifier[0] != '\0' &&
+            (BlendSockNameIs(a, b.identifier) || std::strcmp(a.name, b.identifier) == 0)) {
+        return true;
+    }
+    return false;
+}
+
 struct BlendHostProceduralKinds {
     bool brick = false;
     bool ramp = false;
@@ -3874,8 +3932,9 @@ struct BlendHostProceduralKinds {
         return brick || ramp || noise || musgrave;
     }
 
-    void Collect(const BlendNodeGraph &g) {
+    void Collect(const BlendNodeGraph &g, int depth = 0) {
         using namespace Assimp::Blender;
+        constexpr int kMaxGroupDepth = 16;
         for (const bNode *n : g.nodes) {
             if (n == nullptr) {
                 continue;
@@ -3888,6 +3947,11 @@ struct BlendHostProceduralKinds {
                 noise = true;
             } else if (BlendNodeIsTexMusgrave(*n)) {
                 musgrave = true;
+            } else if (BlendNodeIsGroup(*n) && depth < kMaxGroupDepth) {
+                const bNodeTree *gt = BlendNodeGroupTree(*n);
+                if (gt != nullptr) {
+                    Collect(BlendBuildGraph(*gt), depth + 1);
+                }
             }
         }
     }
@@ -3970,9 +4034,179 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
     (void)conv;
     (void)mat;
 
-    // Link DAG structure (Presence): roots = Material Output; parents = upstream
-    // (fromnode), children = downstream (tonode). Socket-level refs stay in links[].
-    // Typed Principled flatten is unchanged - this bag is HostEval only.
+    // HostEval bag: root nodetree + DNA-resolved ShaderNodeGroup trees inlined
+    // under "GroupInstance/InnerNode" names, with bridge links across Group I/O.
+    // MixRGB emits blend_type from custom1 (MA_RAMP_*); ShaderNodeMix color omits
+    // (blend lives in unread NodeShaderMix storage - no invent).
+    struct FlatNode {
+        std::string name;
+        const bNode *node = nullptr;
+        const BlendNodeGraph *graph = nullptr;
+        bool groupStub = false;
+        bool groupExpanded = false;
+        std::string groupTree;
+    };
+    struct FlatLink {
+        std::string from;
+        std::string to;
+        std::string fromSock;
+        std::string toSock;
+    };
+
+    constexpr int kMaxGroupDepth = 16;
+    // deque: push_back must not invalidate FlatNode.graph pointers into owned graphs.
+    std::deque<BlendNodeGraph> ownedGraphs;
+    std::vector<FlatNode> flatNodes;
+    std::vector<FlatLink> flatLinks;
+    flatNodes.reserve(g.nodes.size() * 2);
+    flatLinks.reserve(g.links.size() * 2);
+
+    auto sockLabel = [](const bNodeSocket *s) -> std::string {
+        if (s == nullptr) {
+            return {};
+        }
+        return s->identifier[0] != '\0' ? std::string(s->identifier) : std::string(s->name);
+    };
+
+    std::function<void(const BlendNodeGraph &, const std::string &, int)> appendGraph;
+    appendGraph = [&](const BlendNodeGraph &gg, const std::string &prefix, int depth) {
+        auto qname = [&](const char *raw) -> std::string {
+            if (raw == nullptr || raw[0] == '\0') {
+                return {};
+            }
+            return prefix.empty() ? std::string(raw) : (prefix + raw);
+        };
+
+        for (const bNode *n : gg.nodes) {
+            if (n == nullptr || n->name[0] == '\0') {
+                continue;
+            }
+            FlatNode fn;
+            fn.name = qname(n->name);
+            fn.node = n;
+            fn.graph = &gg;
+            if (BlendNodeIsGroup(*n)) {
+                fn.groupStub = true;
+                const bNodeTree *gt = BlendNodeGroupTree(*n);
+                if (gt != nullptr) {
+                    fn.groupTree = BlendDnaIdNameBody(gt->id.name);
+                    if (depth < kMaxGroupDepth) {
+                        fn.groupExpanded = true;
+                    }
+                }
+            }
+            flatNodes.push_back(std::move(fn));
+        }
+
+        for (const bNodeLink *l : gg.links) {
+            if (l == nullptr) {
+                continue;
+            }
+            const bNode *fn = BlendCastNode(l->fromnode.get());
+            const bNode *tn = BlendCastNode(l->tonode.get());
+            if (fn == nullptr || tn == nullptr || fn->name[0] == '\0' || tn->name[0] == '\0') {
+                continue;
+            }
+            FlatLink fl;
+            fl.from = qname(fn->name);
+            fl.to = qname(tn->name);
+            fl.fromSock = sockLabel(BlendCastSocket(l->fromsock.get()));
+            fl.toSock = sockLabel(BlendCastSocket(l->tosock.get()));
+            flatLinks.push_back(std::move(fl));
+        }
+
+        if (depth >= kMaxGroupDepth) {
+            return;
+        }
+        for (const bNode *gn : gg.nodes) {
+            if (gn == nullptr || !BlendNodeIsGroup(*gn) || gn->name[0] == '\0') {
+                continue;
+            }
+            const bNodeTree *gt = BlendNodeGroupTree(*gn);
+            if (gt == nullptr) {
+                continue;
+            }
+            ownedGraphs.push_back(BlendBuildGraph(*gt));
+            const BlendNodeGraph &sub = ownedGraphs.back();
+            const std::string subPrefix = qname(gn->name) + "/";
+
+            // Bridge host -> group inputs into GroupInput destinations.
+            for (const bNodeLink *hl : gg.links) {
+                if (hl == nullptr || BlendCastNode(hl->tonode.get()) != gn) {
+                    continue;
+                }
+                const bNode *hFrom = BlendCastNode(hl->fromnode.get());
+                const bNodeSocket *hToSock = BlendCastSocket(hl->tosock.get());
+                if (hFrom == nullptr || hFrom->name[0] == '\0' || hToSock == nullptr) {
+                    continue;
+                }
+                for (const bNode *gin : sub.nodes) {
+                    if (gin == nullptr || !BlendNodeIsGroupInput(*gin)) {
+                        continue;
+                    }
+                    for (const bNodeLink *il : sub.links) {
+                        if (il == nullptr || BlendCastNode(il->fromnode.get()) != gin) {
+                            continue;
+                        }
+                        const bNodeSocket *gOut = BlendCastSocket(il->fromsock.get());
+                        if (gOut == nullptr || !BlendNetworkSocketsMatch(*gOut, *hToSock)) {
+                            continue;
+                        }
+                        const bNode *inner = BlendCastNode(il->tonode.get());
+                        if (inner == nullptr || inner->name[0] == '\0') {
+                            continue;
+                        }
+                        FlatLink bridge;
+                        bridge.from = qname(hFrom->name);
+                        bridge.to = subPrefix + inner->name;
+                        bridge.fromSock = sockLabel(BlendCastSocket(hl->fromsock.get()));
+                        bridge.toSock = sockLabel(BlendCastSocket(il->tosock.get()));
+                        flatLinks.push_back(std::move(bridge));
+                    }
+                }
+            }
+
+            // Bridge GroupOutput sources -> host consumers.
+            for (const bNodeLink *hl : gg.links) {
+                if (hl == nullptr || BlendCastNode(hl->fromnode.get()) != gn) {
+                    continue;
+                }
+                const bNode *hTo = BlendCastNode(hl->tonode.get());
+                const bNodeSocket *hFromSock = BlendCastSocket(hl->fromsock.get());
+                if (hTo == nullptr || hTo->name[0] == '\0' || hFromSock == nullptr) {
+                    continue;
+                }
+                for (const bNode *gout : sub.nodes) {
+                    if (gout == nullptr || !BlendNodeIsGroupOutput(*gout)) {
+                        continue;
+                    }
+                    for (const bNodeLink *il : sub.links) {
+                        if (il == nullptr || BlendCastNode(il->tonode.get()) != gout) {
+                            continue;
+                        }
+                        const bNodeSocket *gIn = BlendCastSocket(il->tosock.get());
+                        if (gIn == nullptr || !BlendNetworkSocketsMatch(*gIn, *hFromSock)) {
+                            continue;
+                        }
+                        const bNode *inner = BlendCastNode(il->fromnode.get());
+                        if (inner == nullptr || inner->name[0] == '\0') {
+                            continue;
+                        }
+                        FlatLink bridge;
+                        bridge.from = subPrefix + inner->name;
+                        bridge.to = qname(hTo->name);
+                        bridge.fromSock = sockLabel(BlendCastSocket(il->fromsock.get()));
+                        bridge.toSock = sockLabel(BlendCastSocket(hl->tosock.get()));
+                        flatLinks.push_back(std::move(bridge));
+                    }
+                }
+            }
+
+            appendGraph(sub, subPrefix, depth + 1);
+        }
+    };
+    appendGraph(g, std::string(), 0);
+
     auto pushUnique = [](std::vector<std::string> &dst, const std::string &name) {
         if (name.empty()) {
             return;
@@ -3984,30 +4218,21 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
     std::map<std::string, std::vector<std::string>> parentsOf;
     std::map<std::string, std::vector<std::string>> childrenOf;
     std::vector<std::string> roots;
-    for (const bNode *n : g.nodes) {
-        if (n != nullptr && BlendNodeIsOutput(*n) && n->name[0] != '\0') {
-            pushUnique(roots, n->name);
+    for (const FlatNode &fn : flatNodes) {
+        if (fn.node != nullptr && BlendNodeIsOutput(*fn.node) &&
+                fn.name.find('/') == std::string::npos) {
+            pushUnique(roots, fn.name);
         }
     }
-    for (const bNodeLink *l : g.links) {
-        if (l == nullptr) {
-            continue;
-        }
-        const bNode *fn = BlendCastNode(l->fromnode.get());
-        const bNode *tn = BlendCastNode(l->tonode.get());
-        if (fn == nullptr || tn == nullptr || fn->name[0] == '\0' || tn->name[0] == '\0') {
-            continue;
-        }
-        pushUnique(childrenOf[fn->name], tn->name);
-        pushUnique(parentsOf[tn->name], fn->name);
+    for (const FlatLink &l : flatLinks) {
+        pushUnique(childrenOf[l.from], l.to);
+        pushUnique(parentsOf[l.to], l.from);
     }
 
     BlendHostProceduralKinds hostProc;
     hostProc.Collect(g);
 
     std::ostringstream nj;
-    // Host-eval policy: emit authored socket defaults + ColorBand + links so the
-    // renderer Look can implement Brick/Ramp (no Assimp bake; no invent).
     nj << "{\"schemaVersion\":1,\"eval\":\"host\",\"assimpEval\":false";
     if (!roots.empty()) {
         nj << ",\"roots\":[";
@@ -4021,7 +4246,8 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
     }
     nj << ",\"nodes\":[";
     bool nfirst = true;
-    for (const bNode *n : g.nodes) {
+    for (const FlatNode &fn : flatNodes) {
+        const bNode *n = fn.node;
         if (n == nullptr) {
             continue;
         }
@@ -4035,11 +4261,9 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         } else {
             nj << "\"type\":" << n->type;
         }
-        if (n->name[0] != '\0') {
-            nj << ",\"name\":\"" << BlendJsonEscape(n->name) << '"';
-        }
-        if (n->name[0] != '\0') {
-            const auto pit = parentsOf.find(n->name);
+        nj << ",\"name\":\"" << BlendJsonEscape(fn.name) << '"';
+        {
+            const auto pit = parentsOf.find(fn.name);
             if (pit != parentsOf.end() && !pit->second.empty()) {
                 nj << ",\"parents\":[";
                 for (size_t pi = 0; pi < pit->second.size(); ++pi) {
@@ -4050,7 +4274,7 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
                 }
                 nj << ']';
             }
-            const auto cit = childrenOf.find(n->name);
+            const auto cit = childrenOf.find(fn.name);
             if (cit != childrenOf.end() && !cit->second.empty()) {
                 nj << ",\"children\":[";
                 for (size_t ci = 0; ci < cit->second.size(); ++ci) {
@@ -4071,7 +4295,6 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         } else if (BlendNodeIsTexMusgrave(*n)) {
             nj << ",\"procedural\":\"TexMusgrave\"";
         } else if (BlendNodeIsMapping(*n)) {
-            // Host 0aj: Mapping Location/Rotation/Scale defaults for Image + procedural paths.
             nj << ",\"kind\":\"Mapping\"";
         } else if (BlendNodeIsAddShader(*n)) {
             nj << ",\"kind\":\"AddShader\"";
@@ -4079,10 +4302,28 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             nj << ",\"kind\":\"Emission\"";
         } else if (BlendNodeIsMixColor(*n)) {
             nj << ",\"kind\":\"Mix\"";
+            // MixRGB / legacy: custom1 = MA_RAMP_*. ShaderNodeMix: custom1 = data_type - skip.
+            if (BlendNodeIsMixRgbBlendType(*n)) {
+                nj << ",\"blend_typeCode\":" << static_cast<int>(n->custom1);
+                if (const char *bt = BlendMaRampBlendTypeName(static_cast<int>(n->custom1))) {
+                    nj << ",\"blend_type\":\"" << bt << '"';
+                }
+            }
+        } else if (fn.groupStub) {
+            nj << ",\"kind\":\"Group\"";
+            if (fn.groupExpanded) {
+                nj << ",\"expanded\":true";
+            }
+            if (!fn.groupTree.empty()) {
+                nj << ",\"groupTree\":\"" << BlendJsonEscape(fn.groupTree) << '"';
+            }
+        } else if (BlendNodeIsGroupInput(*n)) {
+            nj << ",\"kind\":\"GroupInput\"";
+        } else if (BlendNodeIsGroupOutput(*n)) {
+            nj << ",\"kind\":\"GroupOutput\"";
         }
 
-        // Unlinked input socket defaults (Presence - omit linked / unread).
-        // Vector (SOCK_VECTOR): Mapping Location/Rotation/Scale and Tex Image Vector, etc.
+        const BlendNodeGraph *own = fn.graph != nullptr ? fn.graph : &g;
         nj << ",\"inputs\":[";
         bool ifirst = true;
         bool haveLoc = false, haveRot = false, haveScl = false;
@@ -4091,7 +4332,7 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             if (sock == nullptr) {
                 break;
             }
-            const bool linked = g.FindLinkToSocket(*sock) != nullptr;
+            const bool linked = own->FindLinkToSocket(*sock) != nullptr;
             float f = 0.f;
             float rgba[4] = { 0, 0, 0, 0 };
             float vec[3] = { 0, 0, 0 };
@@ -4125,7 +4366,6 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             }
             cur = sock->next;
         }
-        // Pre-2.81 Mapping: Location/Rotation/Scale lived in TexMapping storage, not sockets.
         if (BlendNodeIsMapping(*n) && n->storage && n->storage->dna_type &&
                 BlendElemConvertedHullIs(*(n->storage), "TexMapping")) {
             const auto *tm = static_cast<const TexMapping *>(n->storage.get());
@@ -4147,7 +4387,6 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
         }
         nj << ']';
 
-        // ColorRamp storage (ColorBand stops).
         if (n->storage && n->storage->dna_type != nullptr &&
                 BlendElemConvertedHullIs(*(n->storage), "ColorBand")) {
             const auto *band = static_cast<const ColorBand *>(n->storage.get());
@@ -4163,7 +4402,6 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             }
             nj << "]}";
         }
-        // Musgrave / Noise type Presence (SHD_MUSGRAVE_* == SHD_NOISE_*; omit if unread).
         if (n->storage && n->storage->dna_type != nullptr) {
             int musgraveType = -1;
             if (BlendElemConvertedHullIs(*(n->storage), "NodeTexNoise")) {
@@ -4184,37 +4422,26 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
     }
     nj << "],\"links\":[";
     bool lfirst = true;
-    for (const bNodeLink *l : g.links) {
-        if (l == nullptr) {
-            continue;
-        }
-        const bNode *fn = BlendCastNode(l->fromnode.get());
-        const bNode *tn = BlendCastNode(l->tonode.get());
-        const bNodeSocket *fs = BlendCastSocket(l->fromsock.get());
-        const bNodeSocket *ts = BlendCastSocket(l->tosock.get());
-        if (fn == nullptr || tn == nullptr) {
+    for (const FlatLink &l : flatLinks) {
+        if (l.from.empty() || l.to.empty()) {
             continue;
         }
         if (!lfirst) {
             nj << ',';
         }
         lfirst = false;
-        nj << "{\"from\":\"" << BlendJsonEscape(fn->name) << "\",\"to\":\"" << BlendJsonEscape(tn->name) << '"';
-        if (fs != nullptr) {
-            const char *sn = fs->identifier[0] != '\0' ? fs->identifier : fs->name;
-            nj << ",\"fromSock\":\"" << BlendJsonEscape(sn) << '"';
+        nj << "{\"from\":\"" << BlendJsonEscape(l.from) << "\",\"to\":\"" << BlendJsonEscape(l.to) << '"';
+        if (!l.fromSock.empty()) {
+            nj << ",\"fromSock\":\"" << BlendJsonEscape(l.fromSock) << '"';
         }
-        if (ts != nullptr) {
-            const char *sn = ts->identifier[0] != '\0' ? ts->identifier : ts->name;
-            nj << ",\"toSock\":\"" << BlendJsonEscape(sn) << '"';
+        if (!l.toSock.empty()) {
+            nj << ",\"toSock\":\"" << BlendJsonEscape(l.toSock) << '"';
         }
         nj << '}';
     }
     nj << ']';
     hostProc.AppendJsonArray(nj);
     nj << '}';
-    // Honesty: Assimp does not CPU-eval the graph; Host Look may. Do not list
-    // TexBrick/ColorRamp under skipped[] when params were emitted for hostEval.
     return nj.str();
 }
 
