@@ -3865,7 +3865,7 @@ void BlendEmitWorldEnv(const Assimp::Blender::Scene &in, Assimp::Blender::Conver
 }
 
 /** DNA Presence: HostEval procedural kinds on a nodetree (no invent). */
-/** DNA MA_RAMP_* (MixRGB custom1 / ramp blend). nullptr when code has no known alias. */
+/** DNA MA_RAMP_* (MixRGB custom1 / NodeShaderMix.blend_type). nullptr when unknown. */
 const char *BlendMaRampBlendTypeName(int code) {
     switch (code) {
     case 0: return "MIX";
@@ -3889,6 +3889,74 @@ const char *BlendMaRampBlendTypeName(int code) {
     case 18: return "EXCLUSION";
     default: return nullptr;
     }
+}
+
+/** DNA ColorBand.ipotype (COLBAND_INTERP_*). */
+const char *BlendColorBandIpoTypeName(int code) {
+    switch (code) {
+    case 0: return "LINEAR";
+    case 1: return "EASE";
+    case 2: return "B_SPLINE";
+    case 3: return "CARDINAL";
+    case 4: return "CONSTANT";
+    default: return nullptr;
+    }
+}
+
+/** DNA ColorBand.color_mode (COLBAND_BLEND_*). */
+const char *BlendColorBandColorModeName(int code) {
+    switch (code) {
+    case 0: return "RGB";
+    case 1: return "HSV";
+    case 2: return "HSL";
+    default: return nullptr;
+    }
+}
+
+/** DNA ColorBand.ipotype_hue (COLBAND_HUE_*). */
+const char *BlendColorBandHueIpoName(int code) {
+    switch (code) {
+    case 0: return "NEAR";
+    case 1: return "FAR";
+    case 2: return "CW";
+    case 3: return "CCW";
+    default: return nullptr;
+    }
+}
+
+/** Emit Mix blend_type / clamp Presence from MixRGB custom1/2 or NodeShaderMix storage. */
+void BlendEmitMixBlendPresence(std::ostringstream &nj, const Assimp::Blender::bNode &n) {
+    using namespace Assimp::Blender;
+    // Legacy MixRGB: custom1 = MA_RAMP_*; custom2 = SHD_MIXRGB_USE_ALPHA|CLAMP.
+    if (BlendNodeIsMixRgbBlendType(n)) {
+        nj << ",\"blend_typeCode\":" << static_cast<int>(n.custom1);
+        if (const char *bt = BlendMaRampBlendTypeName(static_cast<int>(n.custom1))) {
+            nj << ",\"blend_type\":\"" << bt << '"';
+        }
+        nj << ",\"useAlpha\":" << ((n.custom2 & 1) ? "true" : "false");
+        nj << ",\"clamp\":" << ((n.custom2 & 2) ? "true" : "false");
+        return;
+    }
+    // ShaderNodeMix color: blend_type in NodeShaderMix storage (custom1 = data_type).
+    if (n.idname[0] == '\0' || std::strcmp(n.idname, "ShaderNodeMix") != 0) {
+        return;
+    }
+    if (!n.storage || n.storage->dna_type == nullptr ||
+            !BlendElemConvertedHullIs(*(n.storage), "NodeShaderMix")) {
+        return;
+    }
+    const auto *mix = static_cast<const NodeShaderMix *>(n.storage.get());
+    // SOCK_RGBA = 2: only then blend_type is a color ramp mode. Omit otherwise (no invent).
+    constexpr char kSockRgba = 2;
+    if (mix->data_type != kSockRgba) {
+        return;
+    }
+    nj << ",\"blend_typeCode\":" << static_cast<int>(mix->blend_type);
+    if (const char *bt = BlendMaRampBlendTypeName(static_cast<int>(mix->blend_type))) {
+        nj << ",\"blend_type\":\"" << bt << '"';
+    }
+    nj << ",\"clampFactor\":" << (mix->clamp_factor ? "true" : "false");
+    nj << ",\"clamp\":" << (mix->clamp_result ? "true" : "false");
 }
 
 /** Blender ID.name is "NTTreeName" - strip 2-char block code when present. */
@@ -4302,13 +4370,7 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             nj << ",\"kind\":\"Emission\"";
         } else if (BlendNodeIsMixColor(*n)) {
             nj << ",\"kind\":\"Mix\"";
-            // MixRGB / legacy: custom1 = MA_RAMP_*. ShaderNodeMix: custom1 = data_type - skip.
-            if (BlendNodeIsMixRgbBlendType(*n)) {
-                nj << ",\"blend_typeCode\":" << static_cast<int>(n->custom1);
-                if (const char *bt = BlendMaRampBlendTypeName(static_cast<int>(n->custom1))) {
-                    nj << ",\"blend_type\":\"" << bt << '"';
-                }
-            }
+            BlendEmitMixBlendPresence(nj, *n);
         } else if (fn.groupStub) {
             nj << ",\"kind\":\"Group\"";
             if (fn.groupExpanded) {
@@ -4391,8 +4453,19 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
                 BlendElemConvertedHullIs(*(n->storage), "ColorBand")) {
             const auto *band = static_cast<const ColorBand *>(n->storage.get());
             const int tot = std::max(0, std::min(static_cast<int>(band->tot), 32));
-            nj << ",\"colorBand\":{\"tot\":" << tot << ",\"ipotype\":" << static_cast<int>(band->ipotype)
-               << ",\"elements\":[";
+            nj << ",\"colorBand\":{\"tot\":" << tot << ",\"ipotype\":" << static_cast<int>(band->ipotype);
+            if (const char *ipo = BlendColorBandIpoTypeName(static_cast<int>(band->ipotype))) {
+                nj << ",\"ipotypeName\":\"" << ipo << '"';
+            }
+            nj << ",\"ipotypeHue\":" << static_cast<int>(band->ipotype_hue);
+            if (const char *hue = BlendColorBandHueIpoName(static_cast<int>(band->ipotype_hue))) {
+                nj << ",\"ipotypeHueName\":\"" << hue << '"';
+            }
+            nj << ",\"colorMode\":" << static_cast<int>(band->color_mode);
+            if (const char *cm = BlendColorBandColorModeName(static_cast<int>(band->color_mode))) {
+                nj << ",\"colorModeName\":\"" << cm << '"';
+            }
+            nj << ",\"elements\":[";
             for (int ei = 0; ei < tot; ++ei) {
                 if (ei) {
                     nj << ',';

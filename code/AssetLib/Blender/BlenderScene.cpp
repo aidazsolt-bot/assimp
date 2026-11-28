@@ -1769,6 +1769,19 @@ void Structure::Convert<TexMapping>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure::Convert<NodeShaderMix>(
+        NodeShaderMix &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.data_type, "data_type", db);
+    ReadField<ErrorPolicy_Igno>(dest.factor_mode, "factor_mode", db);
+    ReadField<ErrorPolicy_Igno>(dest.clamp_factor, "clamp_factor", db);
+    ReadField<ErrorPolicy_Igno>(dest.clamp_result, "clamp_result", db);
+    ReadField<ErrorPolicy_Igno>(dest.blend_type, "blend_type", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure::Convert<NodeTexNoise>(
         NodeTexNoise &dest,
         const FileDatabase &db) const {
@@ -1879,6 +1892,7 @@ void Structure::Convert<bNode>(
         dest.type = typeLegacy;
     }
     ReadField<ErrorPolicy_Igno>(dest.custom1, "custom1", db);
+    ReadField<ErrorPolicy_Igno>(dest.custom2, "custom2", db);
     ReadFieldPtr<ErrorPolicy_Igno>(dest.id, "*id", db);
     // DNA *storage is void*. DATA blocks often have SDNAnr 0 ("Link"), so typed
     // ResolvePointer fails - same as bNodeSocket.default_value. For UV Map nodes,
@@ -1912,6 +1926,9 @@ void Structure::Convert<bNode>(
                 (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeTexNoise") == 0);
         const bool isTexMusgraveNode =
                 (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeTexMusgrave") == 0);
+        // ShaderNodeMix (generic Mix): blend_type lives in NodeShaderMix storage.
+        const bool isShaderMixNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeMix") == 0);
         const char *forceStorageType = nullptr;
         if (isUvMapNode) {
             forceStorageType = "NodeShaderUVMap";
@@ -1923,6 +1940,8 @@ void Structure::Convert<bNode>(
             forceStorageType = "NodeTexNoise";
         } else if (isTexMusgraveNode) {
             forceStorageType = "NodeTexMusgrave";
+        } else if (isShaderMixNode) {
+            forceStorageType = "NodeShaderMix";
         }
         if (ptrval.val && forceStorageType != nullptr) {
             const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
@@ -2737,6 +2756,7 @@ void DNA::RegisterConverters() {
     converters["TexMapping"] = DNA::FactoryPair(&Structure::Allocate<TexMapping>, &Structure::Convert<TexMapping>);
     converters["NodeTexNoise"] = DNA::FactoryPair(&Structure::Allocate<NodeTexNoise>, &Structure::Convert<NodeTexNoise>);
     converters["NodeTexMusgrave"] = DNA::FactoryPair(&Structure::Allocate<NodeTexMusgrave>, &Structure::Convert<NodeTexMusgrave>);
+    converters["NodeShaderMix"] = DNA::FactoryPair(&Structure::Allocate<NodeShaderMix>, &Structure::Convert<NodeShaderMix>);
     converters["CBData"] = DNA::FactoryPair(&Structure::Allocate<CBData>, &Structure::Convert<CBData>);
     converters["ColorBand"] = DNA::FactoryPair(&Structure::Allocate<ColorBand>, &Structure::Convert<ColorBand>);
     converters["bNodeSocket"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocket>, &Structure::Convert<bNodeSocket>);

@@ -455,11 +455,14 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
     on `aiMaterial` via the existing flatten path.
   - nodes: idname/name, `procedural`/`kind` (incl. `Mapping`), **unlinked input defaults**
     (`value` / `rgba` / `vector`), **ColorBand** stops for `ShaderNodeValToRGB`
-  - **MixRGB `blend_type` (2026-11-28b):** when node is MixRGB / `ShaderNodeMixRGB`
-    (DNA `custom1` = `MA_RAMP_*`), emit `blend_typeCode` and string `blend_type`
-    (`MIX`/`ADD`/`MULTIPLY`/…) when the code has a known alias; omit the string for
-    unknown codes; never invent. **Not** emitted for `ShaderNodeMix` color mode
-    (`custom1` is socket data_type there; `NodeShaderMix.blend_type` unread).
+  - **MixRGB / Mix Color `blend_type` (2026-11-28b/c):** MixRGB / `ShaderNodeMixRGB`:
+    `blend_typeCode` + `blend_type` from DNA `custom1` (`MA_RAMP_*`) + `useAlpha` /
+    `clamp` from `custom2` bits. Modern `ShaderNodeMix` color: same keys from DNA
+    `NodeShaderMix` storage (`blend_type`, `clamp_factor`→`clampFactor`,
+    `clamp_result`→`clamp`) when storage resolves; omit when unread. Never invent.
+  - **ColorBand aliases (2026-11-28c):** beside numeric `ipotype`, emit
+    `ipotypeName` / `ipotypeHue`+`ipotypeHueName` / `colorMode`+`colorModeName`
+    when enum known (`LINEAR`/`EASE`/…, `RGB`/`HSV`/`HSL`, `NEAR`/…).
   - **ShaderNodeGroup expand (2026-11-28b):** DNA-resolved group trees are inlined
     into the same bag under `GroupInstanceName/InnerNode` names, with bridge
     `links[]` across Group Input/Output so HostEval can walk Fac-prep chains

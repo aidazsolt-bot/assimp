@@ -535,6 +535,26 @@ struct NodeTexMusgrave final : ElemBase {
             dimensions(0) {}
 };
 
+/**
+ * DNA NodeShaderMix (bNode.storage for ShaderNodeMix).
+ * blend_type is MA_RAMP_* when data_type is color (SOCK_RGBA); custom1 on the
+ * node is the socket data_type, not the blend mode.
+ */
+struct NodeShaderMix final : ElemBase {
+    char data_type;
+    char factor_mode;
+    char clamp_factor;
+    char clamp_result;
+    char blend_type;
+
+    NodeShaderMix() :
+            data_type(0),
+            factor_mode(0),
+            clamp_factor(0),
+            clamp_result(0),
+            blend_type(0) {}
+};
+
 /** Subset of DNA ColorBand / CBData (ShaderNodeValToRGB storage). */
 struct CBData final : ElemBase {
     float r, g, b, a, pos;
@@ -585,7 +605,8 @@ struct bNode final : ElemBase {
     char name[64];
     char idname[64];
     short type; // DNA "type" / "type_legacy"
-    short custom1; // MixRGB blend type (MA_RAMP_*), etc.
+    short custom1; // MixRGB blend type (MA_RAMP_*), ShaderNodeMix data_type, etc.
+    short custom2; // MixRGB SHD_MIXRGB_USE_ALPHA / SHD_MIXRGB_CLAMP, etc.
     std::shared_ptr<ElemBase> id; // e.g. Image* for ShaderNodeTexImage
     std::shared_ptr<ElemBase> storage; // e.g. NodeShaderUVMap for ShaderNodeUVMap
 
@@ -594,6 +615,7 @@ struct bNode final : ElemBase {
         memset(idname, 0, sizeof idname);
         type = 0;
         custom1 = 0;
+        custom2 = 0;
     }
 };
 
