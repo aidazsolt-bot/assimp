@@ -3935,6 +3935,7 @@ void BlendEmitMixBlendPresence(std::ostringstream &nj, const Assimp::Blender::bN
         }
         nj << ",\"useAlpha\":" << ((n.custom2 & 1) ? "true" : "false");
         nj << ",\"clamp\":" << ((n.custom2 & 2) ? "true" : "false");
+        // Fac bakery path - Host should consume (no invent ADD/clamp).
         return;
     }
     // ShaderNodeMix color: blend_type in NodeShaderMix storage (custom1 = data_type).
@@ -3957,6 +3958,111 @@ void BlendEmitMixBlendPresence(std::ostringstream &nj, const Assimp::Blender::bN
     }
     nj << ",\"clampFactor\":" << (mix->clamp_factor ? "true" : "false");
     nj << ",\"clamp\":" << (mix->clamp_result ? "true" : "false");
+    // Per-node optional: bag-level eval/host + assimpEval:false do not skip nodes.
+    // Host Fac bakery may ignore modern Mix Color until wired (Presence still honest).
+    nj << ",\"hostEval\":\"optional\"";
+}
+
+/** DNA NODE_MATH_* (ShaderNodeMath.custom1). */
+const char *BlendMathOperationName(int code) {
+    switch (code) {
+    case 0: return "ADD";
+    case 1: return "SUBTRACT";
+    case 2: return "MULTIPLY";
+    case 3: return "DIVIDE";
+    case 4: return "SINE";
+    case 5: return "COSINE";
+    case 6: return "TANGENT";
+    case 7: return "ARCSINE";
+    case 8: return "ARCCOSINE";
+    case 9: return "ARCTANGENT";
+    case 10: return "POWER";
+    case 11: return "LOGARITHM";
+    case 12: return "MINIMUM";
+    case 13: return "MAXIMUM";
+    case 14: return "ROUND";
+    case 15: return "LESS_THAN";
+    case 16: return "GREATER_THAN";
+    case 17: return "MODULO";
+    case 18: return "ABSOLUTE";
+    case 19: return "ARCTAN2";
+    case 20: return "FLOOR";
+    case 21: return "CEIL";
+    case 22: return "FRACTION";
+    case 23: return "SQRT";
+    case 24: return "INV_SQRT";
+    case 25: return "SIGN";
+    case 26: return "EXPONENT";
+    case 27: return "RADIANS";
+    case 28: return "DEGREES";
+    case 29: return "SINH";
+    case 30: return "COSH";
+    case 31: return "TANH";
+    case 32: return "TRUNC";
+    case 33: return "SNAP";
+    case 34: return "WRAP";
+    case 35: return "COMPARE";
+    case 36: return "MULTIPLY_ADD";
+    case 37: return "PINGPONG";
+    case 38: return "SMOOTH_MIN";
+    case 39: return "SMOOTH_MAX";
+    case 40: return "FLOORED_MODULO";
+    default: return nullptr;
+    }
+}
+
+/** DNA NODE_MAP_RANGE_* interpolation. */
+const char *BlendMapRangeInterpName(int code) {
+    switch (code) {
+    case 0: return "LINEAR";
+    case 1: return "STEPPED";
+    case 2: return "SMOOTHSTEP";
+    case 3: return "SMOOTHERSTEP";
+    default: return nullptr;
+    }
+}
+
+bool BlendNodeIsMath(const Assimp::Blender::bNode &n) {
+    return n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeMath") == 0;
+}
+
+bool BlendNodeIsMapRange(const Assimp::Blender::bNode &n) {
+    return n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeMapRange") == 0;
+}
+
+void BlendEmitMathMapRangePresence(std::ostringstream &nj, const Assimp::Blender::bNode &n) {
+    using namespace Assimp::Blender;
+    if (BlendNodeIsMath(n)) {
+        nj << ",\"kind\":\"Math\"";
+        nj << ",\"operationCode\":" << static_cast<int>(n.custom1);
+        if (const char *op = BlendMathOperationName(static_cast<int>(n.custom1))) {
+            nj << ",\"operation\":\"" << op << '"';
+        }
+        // SHD_MATH_CLAMP = 1 on custom2
+        nj << ",\"clamp\":" << ((n.custom2 & 1) ? "true" : "false");
+        nj << ",\"hostEval\":\"optional\"";
+        return;
+    }
+    if (!BlendNodeIsMapRange(n)) {
+        return;
+    }
+    nj << ",\"kind\":\"MapRange\"";
+    int interp = static_cast<int>(n.custom2);
+    bool clamp = (n.custom1 != 0);
+    if (n.storage && n.storage->dna_type != nullptr &&
+            BlendElemConvertedHullIs(*(n.storage), "NodeMapRange")) {
+        const auto *mr = static_cast<const NodeMapRange *>(n.storage.get());
+        interp = static_cast<int>(mr->interpolation_type);
+        clamp = (mr->clamp != 0);
+        // eCustomDataType ints vary by Blender version - emit code only (no invent alias).
+        nj << ",\"dataTypeCode\":" << static_cast<int>(mr->data_type);
+    }
+    nj << ",\"interpolationCode\":" << interp;
+    if (const char *iname = BlendMapRangeInterpName(interp)) {
+        nj << ",\"interpolation\":\"" << iname << '"';
+    }
+    nj << ",\"clamp\":" << (clamp ? "true" : "false");
+    nj << ",\"hostEval\":\"optional\"";
 }
 
 /** Blender ID.name is "NTTreeName" - strip 2-char block code when present. */
@@ -4104,8 +4210,7 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
 
     // HostEval bag: root nodetree + DNA-resolved ShaderNodeGroup trees inlined
     // under "GroupInstance/InnerNode" names, with bridge links across Group I/O.
-    // MixRGB emits blend_type from custom1 (MA_RAMP_*); ShaderNodeMix color omits
-    // (blend lives in unread NodeShaderMix storage - no invent).
+    // MixRGB / NodeShaderMix color emit blend_type; modern Mix marks hostEval:optional.
     struct FlatNode {
         std::string name;
         const bNode *node = nullptr;
@@ -4368,6 +4473,8 @@ std::string BlendBuildShaderNetworkJson(const Assimp::Blender::Material &mat,
             nj << ",\"kind\":\"AddShader\"";
         } else if (BlendNodeIsEmission(*n)) {
             nj << ",\"kind\":\"Emission\"";
+        } else if (BlendNodeIsMath(*n) || BlendNodeIsMapRange(*n)) {
+            BlendEmitMathMapRangePresence(nj, *n);
         } else if (BlendNodeIsMixColor(*n)) {
             nj << ",\"kind\":\"Mix\"";
             BlendEmitMixBlendPresence(nj, *n);
@@ -6833,8 +6940,38 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                     }
                 }
             }
-            // 0al4: Particle MTex maps -> typed material (after BuildMaterials).
-            // Sidecar textures[] decommissioned - Presence typedMaterial = settings DNA name.
+            // 0al6: typedMaterial = PATH render object/mesh slot mat (DNA omat).
+            // 0al4: settingsMaterial = ParticleSettings name when MTex maps queue a
+            // synthetic typed mat (Host influence maps). Do not overload typedMaterial.
+            if (p.hasOmat) {
+                partJson << ",\"omat\":" << static_cast<int>(p.omat);
+            }
+            if (p.hasOmat && p.omat >= 1) {
+                const size_t idx = static_cast<size_t>(p.omat - 1);
+                std::shared_ptr<Material> slotShared;
+                if (idx < obj->mat.size() && obj->mat[idx]) {
+                    slotShared = obj->mat[idx];
+                } else if (obj->type == Object::Type_MESH && obj->data) {
+                    const Mesh *emesh = static_cast<const Mesh *>(obj->data.get());
+                    if (emesh != nullptr && idx < emesh->mat.size() && emesh->mat[idx]) {
+                        slotShared = emesh->mat[idx];
+                    }
+                }
+                if (slotShared && slotShared->id.name[2] != '\0') {
+                    const std::string slotName = slotShared->id.name + 2;
+                    partJson << ",\"typedMaterial\":\"" << BlendJsonEscape(slotName) << '"';
+                    bool inRaw = false;
+                    for (const auto &mr : conv.materials_raw) {
+                        if (mr.get() == slotShared.get()) {
+                            inRaw = true;
+                            break;
+                        }
+                    }
+                    if (!inRaw) {
+                        conv.materials_raw.push_back(slotShared);
+                    }
+                }
+            }
             if (p.id.name[2] != '\0') {
                 bool anyMtex = false;
                 for (size_t ti = 0; ti < sizeof(p.mtex) / sizeof(p.mtex[0]); ++ti) {
@@ -6850,7 +6987,7 @@ void CollectBlendPhysicsModifiers(const Assimp::Blender::Object *obj, Assimp::Bl
                 }
                 if (anyMtex) {
                     const std::string settingsName = p.id.name + 2;
-                    partJson << ",\"typedMaterial\":\"" << BlendJsonEscape(settingsName) << '"';
+                    partJson << ",\"settingsMaterial\":\"" << BlendJsonEscape(settingsName) << '"';
                     bool queued = false;
                     for (const ParticleSettings *queuedPart : conv.pendingParticleMtex) {
                         if (queuedPart == &p) {

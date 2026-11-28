@@ -336,6 +336,11 @@ void Structure::Convert<NodeShaderMix>(
         const FileDatabase &db) const;
 
 template <>
+void Structure::Convert<NodeMapRange>(
+        NodeMapRange &dest,
+        const FileDatabase &db) const;
+
+template <>
 void Structure::Convert<TexMapping>(
         TexMapping &dest,
         const FileDatabase &db) const;

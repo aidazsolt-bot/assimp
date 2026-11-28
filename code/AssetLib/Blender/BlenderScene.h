@@ -555,6 +555,18 @@ struct NodeShaderMix final : ElemBase {
             blend_type(0) {}
 };
 
+/** DNA NodeMapRange (bNode.storage for ShaderNodeMapRange). */
+struct NodeMapRange final : ElemBase {
+    char data_type; // eCustomDataType
+    char interpolation_type; // NODE_MAP_RANGE_*
+    char clamp;
+
+    NodeMapRange() :
+            data_type(0),
+            interpolation_type(0),
+            clamp(0) {}
+};
+
 /** Subset of DNA ColorBand / CBData (ShaderNodeValToRGB storage). */
 struct CBData final : ElemBase {
     float r, g, b, a, pos;
@@ -1611,6 +1623,12 @@ struct ParticleSettings final : ElemBase {
     float branch_thres WARN;
     float clength WARN;
     float clength_thres WARN;
+    /**
+     * 0al6: DNA ParticleSettings.omat - PATH render material slot on emitter
+     * (RNA material_slot). 1-based object/mesh slot index; 0 = Default.
+     */
+    short omat WARN;
+    bool hasOmat WARN;
     bool hasNormfac WARN;
     bool hasUserjit WARN;
     bool hasGridRes WARN;
@@ -1788,6 +1806,8 @@ struct ParticleSettings final : ElemBase {
             branch_thres(0.f),
             clength(1.f),
             clength_thres(0.f),
+            omat(0),
+            hasOmat(false),
             hasNormfac(false),
             hasUserjit(false),
             hasGridRes(false),
@@ -1994,6 +2014,12 @@ struct Object final : ElemBase {
     /** Empty display (DNA empty_drawtype / empty_drawsize). */
     char empty_drawtype WARN;
     float empty_drawsize WARN;
+    /**
+     * DNA Object.mat / totcol - material slots (PATH hair omat indexes these).
+     * When unread, emitter Mesh.mat is the fallback slot list (Presence only).
+     */
+    vector<std::shared_ptr<Material>> mat WARN;
+    short totcol WARN;
 
     Object() :
             type(Type_EMPTY),
@@ -2003,7 +2029,8 @@ struct Object final : ElemBase {
             has_world_matrix(false),
             parent(nullptr),
             empty_drawtype(0),
-            empty_drawsize(0.f) {
+            empty_drawsize(0.f),
+            totcol(0) {
         // Identity parentinv / unit scale / unit quat (Blender defaults).
         for (unsigned int i = 0; i < 4; ++i) {
             for (unsigned int j = 0; j < 4; ++j) {

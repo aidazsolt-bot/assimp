@@ -120,6 +120,13 @@ void Structure::Convert<Object>(
     ReadFieldPtr<ErrorPolicy_Igno>(dest.rigidbody_constraint, "*rigidbody_constraint", db);
     ReadField<ErrorPolicy_Igno>(dest.empty_drawtype, "empty_drawtype", db);
     ReadField<ErrorPolicy_Igno>(dest.empty_drawsize, "empty_drawsize", db);
+    // Material slots (PATH hair omat). Presence - omit when SDNA absent.
+    if (Get("**mat") != nullptr) {
+        ReadFieldPtr<ErrorPolicy_Igno>(dest.mat, "**mat", db);
+    }
+    if (Get("totcol") != nullptr) {
+        ReadField<ErrorPolicy_Igno>(dest.totcol, "totcol", db);
+    }
 
     db.reader->IncPtr(size);
 }
@@ -1324,6 +1331,11 @@ void Structure::Convert<ParticleSettings>(
     if (dest.hasClengthThres) {
         ReadField<ErrorPolicy_Igno>(dest.clength_thres, "clength_thres", db);
     }
+    // 0al6 PATH material_slot (DNA omat).
+    dest.hasOmat = (Get("omat") != nullptr);
+    if (dest.hasOmat) {
+        ReadField<ErrorPolicy_Igno>(dest.omat, "omat", db);
+    }
     if (Get("*instance_collection") != nullptr) {
         ReadFieldPtr<ErrorPolicy_Igno>(dest.dup_group, "*instance_collection", db);
     } else {
@@ -1782,6 +1794,17 @@ void Structure::Convert<NodeShaderMix>(
 
 //--------------------------------------------------------------------------------
 template <>
+void Structure::Convert<NodeMapRange>(
+        NodeMapRange &dest,
+        const FileDatabase &db) const {
+    ReadField<ErrorPolicy_Igno>(dest.data_type, "data_type", db);
+    ReadField<ErrorPolicy_Igno>(dest.interpolation_type, "interpolation_type", db);
+    ReadField<ErrorPolicy_Igno>(dest.clamp, "clamp", db);
+    db.reader->IncPtr(size);
+}
+
+//--------------------------------------------------------------------------------
+template <>
 void Structure::Convert<NodeTexNoise>(
         NodeTexNoise &dest,
         const FileDatabase &db) const {
@@ -1929,6 +1952,8 @@ void Structure::Convert<bNode>(
         // ShaderNodeMix (generic Mix): blend_type lives in NodeShaderMix storage.
         const bool isShaderMixNode =
                 (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeMix") == 0);
+        const bool isMapRangeNode =
+                (dest.idname[0] != '\0' && std::strcmp(dest.idname, "ShaderNodeMapRange") == 0);
         const char *forceStorageType = nullptr;
         if (isUvMapNode) {
             forceStorageType = "NodeShaderUVMap";
@@ -1942,6 +1967,8 @@ void Structure::Convert<bNode>(
             forceStorageType = "NodeTexMusgrave";
         } else if (isShaderMixNode) {
             forceStorageType = "NodeShaderMix";
+        } else if (isMapRangeNode) {
+            forceStorageType = "NodeMapRange";
         }
         if (ptrval.val && forceStorageType != nullptr) {
             const FileBlockHead *block = LocateFileBlockForAddress(ptrval, db);
@@ -2757,6 +2784,7 @@ void DNA::RegisterConverters() {
     converters["NodeTexNoise"] = DNA::FactoryPair(&Structure::Allocate<NodeTexNoise>, &Structure::Convert<NodeTexNoise>);
     converters["NodeTexMusgrave"] = DNA::FactoryPair(&Structure::Allocate<NodeTexMusgrave>, &Structure::Convert<NodeTexMusgrave>);
     converters["NodeShaderMix"] = DNA::FactoryPair(&Structure::Allocate<NodeShaderMix>, &Structure::Convert<NodeShaderMix>);
+    converters["NodeMapRange"] = DNA::FactoryPair(&Structure::Allocate<NodeMapRange>, &Structure::Convert<NodeMapRange>);
     converters["CBData"] = DNA::FactoryPair(&Structure::Allocate<CBData>, &Structure::Convert<CBData>);
     converters["ColorBand"] = DNA::FactoryPair(&Structure::Allocate<ColorBand>, &Structure::Convert<ColorBand>);
     converters["bNodeSocket"] = DNA::FactoryPair(&Structure::Allocate<bNodeSocket>, &Structure::Convert<bNodeSocket>);

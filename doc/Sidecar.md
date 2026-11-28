@@ -249,7 +249,7 @@ Fluid / smoke nodes additionally bind the visual mesh:
 
 `BLEND_modifier_curve`: CurveModifier DNA — `curveObject`, `defaxis`, optional `vgroup`.
 
-`BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. When `phystype` SDNA present: numeric `phystype` + `phys_kind` (`newtonian`/`keyed`/`boids`/`fluid`/`no`). Hair thickness Presence when SDNA present: `rad_root`/`rad_tip`/`rad_scale`/`shape`/`shape_flag` (+ `use_close_tip` when `PART_SHAPE_CLOSE_TIP`); Cycles uses these, not `size`. **0al5 Child-Distribution** when SDNA present: `childtype`/`child_type`, `child_nbr`|`child_percent`, `ren_child_nbr`|`child_render_percent`, `child_flag` (+ curve/noise bools when bits set), `childrad`/`childsize`/`childrandsize`/`childflat`/`parents`/`child_seed`, `clumpfac`/`clumppow`, `kink`/`kink_kind` + `kink_amp`/`kink_freq`/`kink_shape`/…, `parting_*`/`branch_thres`/`clength`/`clength_thres`; optional `child_effect`/`child_long_hair`/`child_guide` when `flag` bits set. Host expands children after parents; no invent / no Depsgraph child paths. No invent for dust/damage (no DNA types).
+`BLEND_physics_particles`: `part_kind` from DNA `eParticleType` (`hair`, `emitter`, `fluid_spray`, …); `ren_as_kind`; `path_start`/`path_end` when SDNA present. When `phystype` SDNA present: numeric `phystype` + `phys_kind` (`newtonian`/`keyed`/`boids`/`fluid`/`no`). Hair thickness Presence when SDNA present: `rad_root`/`rad_tip`/`rad_scale`/`shape`/`shape_flag` (+ `use_close_tip` when `PART_SHAPE_CLOSE_TIP`); Cycles uses these, not `size`. **0al6** when SDNA `omat` present: numeric `omat` + `typedMaterial` = PATH object/mesh slot mat name when `omat>=1` resolves (mat ensured in typed scene even if unused on faces); **`settingsMaterial`** = ParticleSettings id when MTex maps queue the synthetic influence mat (0al4). **0al5 Child-Distribution** when SDNA present: `childtype`/`child_type`, `child_nbr`|`child_percent`, `ren_child_nbr`|`child_render_percent`, `child_flag` (+ curve/noise bools when bits set), `childrad`/`childsize`/`childrandsize`/`childflat`/`parents`/`child_seed`, `clumpfac`/`clumppow`, `kink`/`kink_kind` + `kink_amp`/`kink_freq`/`kink_shape`/…, `parting_*`/`branch_thres`/`clength`/`clength_thres`; optional `child_effect`/`child_long_hair`/`child_guide` when `flag` bits set. Host expands children after parents; no invent / no Depsgraph child paths. No invent for dust/damage (no DNA types).
 
 **Emitter / Force Presence (2026-11-26):** classic DNA as above. Geometry Nodes particle modifier (`NodesModifierData`): read `settings.properties` IDProperty inputs + `node_group.inputs` labels — emit `inputs{label:value}`, and when resolved: `totpart` (socket `Count`/`Amount`/`Number` only — never from `Lifetime`), `emissionDensity` (`Emission Density`), `lifetime` (`Lifetime`), `attractionStrength` + `forcefield_kind:"attraction"` (`Attraction Strength`), `gravity[]` + `phys_kind:"newtonian"` (`Gravity`). Omit keys when DNA/input missing. Host Force-Step from these keys (no Name-Score).
 
@@ -460,6 +460,14 @@ Assimp does **not** CPU-eval Brick/ColorRamp into typed maps.
     `clamp` from `custom2` bits. Modern `ShaderNodeMix` color: same keys from DNA
     `NodeShaderMix` storage (`blend_type`, `clamp_factor`→`clampFactor`,
     `clamp_result`→`clamp`) when storage resolves; omit when unread. Never invent.
+    **Per-node Host gate:** modern Mix Color also emits `hostEval:"optional"` —
+    Host Fac bakery may ignore until wired. Bag-level `eval:"host"` /
+    `assimpEval:false` / `$mat.blend.shaderNetworkEval=host` do **not** mean
+    “skip this node”; they mean Assimp does not CPU-eval the graph.
+  - **Math / MapRange (2026-11-28d):** `ShaderNodeMath` → `kind:"Math"`,
+    `operationCode`/`operation` from `custom1`, `clamp` from `custom2`;
+    `ShaderNodeMapRange` → `kind:"MapRange"`, `interpolation(+Code)`, `clamp`,
+    optional `dataTypeCode` from `NodeMapRange` storage. Both `hostEval:"optional"`.
   - **ColorBand aliases (2026-11-28c):** beside numeric `ipotype`, emit
     `ipotypeName` / `ipotypeHue`+`ipotypeHueName` / `colorMode`+`colorModeName`
     when enum known (`LINEAR`/`EASE`/…, `RGB`/`HSV`/`HSL`, `NEAR`/…).
