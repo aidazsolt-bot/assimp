@@ -357,6 +357,11 @@ start) that feeds that hit (e.g. Image `Color` / `Alpha` into Mix Fac). Presence
 only - omit when unread. Host uses `fromSocket` to pick Alpha vs Color-luma for
 mixFac without guessing.
 
+**`$tex.blend.usage` Mix Shader Fac ≠ Mix RGB Fac (2026-11-28):** `mixFac` only when
+the Image feeds **Mix / MixRGB** Factor (albedo/color mix). Image → **Mix Shader**
+Factor → `shaderMixFac` (not an albedo bake weight). Glossy BSDF Color →
+`glossyColor` (`aiTextureType_SPECULAR`), not `baseColor`/`mixColor`.
+
 ### BLEND World Env / Skymap (Arris)
 
 When `World.nodetree` has Environment Texture (or Image Tex) -> Background ->

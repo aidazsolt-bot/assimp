@@ -450,6 +450,11 @@ bool BlendNodeIsMixShader(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeMixShader") == 0) {
         return true;
     }
+    // Unified ShaderNodeMix with data_type SOCK_SHADER (eNodeSocketDatatype=3).
+    // custom1 is data_type only for ShaderNodeMix - not for MixRGB (blend mode).
+    if (n.idname[0] != '\0' && std::strcmp(n.idname, "ShaderNodeMix") == 0 && n.custom1 == 3) {
+        return true;
+    }
     return n.type == kSH_NODE_MIX_SHADER;
 }
 
@@ -502,8 +507,14 @@ bool BlendNodeIsGroup(const Assimp::Blender::bNode &n) {
 
 bool BlendNodeIsMixColor(const Assimp::Blender::bNode &n) {
     if (n.idname[0] != '\0') {
-        return std::strcmp(n.idname, "ShaderNodeMix") == 0 ||
-               std::strcmp(n.idname, "ShaderNodeMixRGB") == 0;
+        if (std::strcmp(n.idname, "ShaderNodeMixRGB") == 0) {
+            return true;
+        }
+        // ShaderNodeMix: custom1 = eNodeSocketDatatype; SOCK_SHADER=3 is Mix Shader, not color.
+        if (std::strcmp(n.idname, "ShaderNodeMix") == 0) {
+            return n.custom1 != 3;
+        }
+        return false;
     }
     return n.type == 75; // SH_NODE_MIX_RGB_LEGACY
 }
@@ -3147,15 +3158,24 @@ bool BlendClassifySocketUsage(const char *sockName, const Assimp::Blender::bNode
     std::strncpy(out.socket, sockName, sizeof(out.socket) - 1);
     out.socket[sizeof(out.socket) - 1] = '\0';
 
-    // Fac into Mix = mask Influence (caller must not walk through Mix Color).
     // Fac into ColorRamp selects the ramp - not a terminal usage (keep walking).
+    // Mix Shader Fac ≠ Mix RGB Fac (Enterprise Decals / Aztec_Base_Material).
     if (std::strcmp(sockName, "Fac") == 0 || std::strcmp(sockName, "Factor") == 0) {
         if (BlendNodeIsColorRamp(toNode)) {
             return false;
         }
-        out.type = aiTextureType_UNKNOWN;
-        out.usage = "mixFac";
-        return true;
+        if (BlendNodeIsMixShader(toNode)) {
+            out.type = aiTextureType_UNKNOWN;
+            out.usage = "shaderMixFac";
+            return true;
+        }
+        if (BlendNodeIsMixColor(toNode)) {
+            out.type = aiTextureType_UNKNOWN;
+            out.usage = "mixFac";
+            return true;
+        }
+        // Fac into other nodes: not a typed albedo mix mask - leave unresolved.
+        return false;
     }
     // Mix Color1/Color2/A/B are pass-through operands - not a terminal usage.
     if (BlendNodeIsMixColor(toNode) &&
@@ -3163,6 +3183,13 @@ bool BlendClassifySocketUsage(const char *sockName, const Assimp::Blender::bNode
                     std::strcmp(sockName, "Color") == 0 || std::strcmp(sockName, "A") == 0 ||
                     std::strcmp(sockName, "B") == 0 || std::strcmp(sockName, "Result") == 0)) {
         return false;
+    }
+    // Glossy BSDF Color = specular/gloss lobe (not albedo baseColor / mixColor).
+    if (BlendNodeIsGlossy(toNode) &&
+            (std::strcmp(sockName, "Color") == 0 || std::strcmp(sockName, "color") == 0)) {
+        out.type = aiTextureType_SPECULAR;
+        out.usage = "glossyColor";
+        return true;
     }
     if (BlendNodeIsBump(toNode) || BlendNodeIsDisplacement(toNode)) {
         if (std::strcmp(sockName, "Height") == 0 || std::strcmp(sockName, "height") == 0) {
@@ -3320,7 +3347,7 @@ void BlendCollectTexImageInventory(const BlendNodeGraph &g, const BlendNodeGraph
  * Walk outbound DNA links from a TexImage (through Mix/Reroute/NormalMap/Bump/
  * Group Output) and collect usage hits. Presence only - no filename invent.
  * ColorRamp is procedural HostEval: do not attribute ramp-output sockets to the
- * source Image (keeps mixFac on Fac Images; Specular stays network-only).
+ * source Image (keeps mixFac on MixRGB Fac; shaderMixFac on Mix Shader Fac).
  */
 void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::bNode *texNode,
         std::vector<BlendTexUsageHit> &out, int depth = 0,
@@ -3387,8 +3414,8 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
             if (!already(hit)) {
                 out.push_back(hit);
             }
-            // Mix.Fac: Color comes from Color1/Color2 - do not attribute Mix Color to this map.
-            if (std::strcmp(hit.usage, "mixFac") == 0 && BlendNodeIsMixColor(*to)) {
+            // MixRGB.Fac / MixShader.Fac: do not attribute Mix Color/Shader operands to this map.
+            if (std::strcmp(hit.usage, "mixFac") == 0 || std::strcmp(hit.usage, "shaderMixFac") == 0) {
                 continue;
             }
         }
@@ -3477,7 +3504,8 @@ void BlendCollectTexImageUsages(const BlendNodeGraph &g, const Assimp::Blender::
                         if (!already(ih)) {
                             out.push_back(ih);
                         }
-                        if (std::strcmp(ih.usage, "mixFac") == 0) {
+                        if (std::strcmp(ih.usage, "mixFac") == 0 ||
+                                std::strcmp(ih.usage, "shaderMixFac") == 0) {
                             continue;
                         }
                     }
